@@ -12,7 +12,7 @@ per drink and the customers arrival at about the same rate.
 
 [[./readme-assets/2.png]]
 
-This is a code example for generating the above, from `main.rs`:
+This is a code example for generating the above, from =main.rs=:
 
 #+BEGIN_SRC rust
 use plotters::prelude::*;
