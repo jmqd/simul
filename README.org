@@ -10,8 +10,8 @@ lambda=60.0.
 In other words, generally speaking the barista processes at around 60 seconds
 per drink and the customers arrival at about the same rate.
 
-This simulation has a =halt_check= condition of =time == 60*60*12=, representing
-a full 12-hour day of the cafe being open.
+This simulation has a =halt_check= condition of the simulation's time being
+equal to =60*60*12=, representing a full 12-hour day of the cafe being open.
 
 [[./readme-assets/2.png]]
 
