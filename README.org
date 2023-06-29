@@ -1,8 +1,6 @@
 #+title: Readme
 
-A discrete simulation library for simulating
-[https://authors.library.caltech.edu/60491/1/MGM%20113.pdf][Complex Adaptive
-Systems].
+A discrete simulation library for simulating [[https://authors.library.caltech.edu/60491/1/MGM%20113.pdf][Complex Adaptive Systems]].
 
 Here's an example of an outputted graph of a simulation showing the average
 waiting time of customers in a line at a cafe given a Poisson-distributed
