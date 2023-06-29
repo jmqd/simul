@@ -3,6 +3,20 @@ name = "simul"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "simul"
+path = "src/lib.rs"
+
+[[bin]]
+name = "simul-bin"
+path = "src/main.rs"
 
 [dependencies]
+rand = {version = "0", features = ["alloc"]}
+rand_distr = "0.4"
+ringbuffer = "0.14"
+env_logger = "0.10"
+log = "0.4"
+plotters = "0.3.3"
+
+#![feature(let_chains)]
