@@ -1,0 +1,118 @@
+#+title: Readme
+
+A discrete simulation library for simulating
+[https://authors.library.caltech.edu/60491/1/MGM%20113.pdf][Complex Adaptive
+Systems].
+
+Here's an example of an outputted graph of a simulation showing the average
+waiting time of customers in a line at a cafe given a Poisson-distributed
+arrival rate with lambda=60.0 and a Poisson-distributed processing rate with
+lambda=60.0.
+
+In other words, generally speaking the barista processes at around 60 seconds
+per drink and the customers arrival at about the same rate.
+
+[[./readme-assets/2.png]]
+
+This is a code example for generating the above, from `main.rs`:
+
+#+BEGIN_SRC rust
+use plotters::prelude::*;
+use rand_distr::Poisson;
+use simul::agent::*;
+use simul::*;
+use std::path::PathBuf;
+
+fn main() {
+    plot_stuff();
+}
+
+fn plot_stuff() -> Result<(), Box<dyn std::error::Error>> {
+    let mut simulation = Simulation::new(
+        vec![
+            poisson_distributed_consuming_agent("Starbucks Clerk", Poisson::new(60.0).unwrap()),
+            poisson_distributed_producing_agent(
+                "Starbucks Customers",
+                Poisson::new(60.0).unwrap(),
+                "Starbucks Clerk",
+            ),
+        ],
+        0,
+        true,
+        |s: &Simulation| s.time == 60 * 60 * 12,
+    );
+    simulation.run();
+    plot_queued_durations_for_processed_tickets(
+        &simulation,
+        &["Starbucks Clerk".into()],
+        &"/tmp/plot.png".to_string().into(),
+    )
+}
+
+fn plot_queued_durations_for_processed_tickets(
+    simulation: &Simulation,
+    agents: &[String],
+    output: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut processing_latency: Vec<Vec<(u64, u64)>> = vec![];
+    for a in agents.iter() {
+        if let Some(consumed) = simulation.consumed_for_agent(a) {
+            processing_latency.push(
+                consumed
+                    .into_iter()
+                    .map(|e| {
+                        (
+                            e.completed_time.unwrap(),
+                            e.completed_time.unwrap() - e.queued_time,
+                        )
+                    })
+                    .collect(),
+            );
+        }
+    }
+
+    println!("Processing latency {:?}", &processing_latency);
+
+    let max_y = processing_latency
+        .iter()
+        .flatten()
+        .map(|n| n.1)
+        .max()
+        .unwrap() as u64;
+
+    let root = BitMapBackend::new(output, (2560, 1920)).into_drawing_area();
+    root.fill(&WHITE)?;
+    let mut chart = ChartBuilder::on(&root)
+        .caption("queued time", ("sans-serif", 50).into_font())
+        .margin(5)
+        .set_all_label_area_size(64)
+        .build_cartesian_2d(0u64..simulation.time + 1, 0u64..max_y + 1)?;
+
+    let mut series_idx = 0;
+    for processing_latency_series in processing_latency {
+        if !processing_latency_series.is_empty() {
+            let color = Palette99::pick(series_idx).filled();
+            chart
+                .draw_series(
+                    processing_latency_series
+                        .iter()
+                        .map(|(x, y)| Circle::new((*x, *y), 4, color.filled())),
+                )?
+                .label(format!(
+                    "{} processing_time",
+                    agents.get(series_idx).unwrap()
+                ))
+                .legend(move |(x, y)| Rectangle::new([(x - 16, y + 16), (x + 16, y - 16)], color));
+        }
+        series_idx += 1;
+    }
+
+    chart
+        .configure_mesh()
+        .x_desc("Processing Epoch (u64)")
+        .y_desc("Processing Latency")
+        .label_style(("sans-serif", 32, &BLACK))
+        .draw()?;
+    Ok(())
+}
+#+END_SRC
