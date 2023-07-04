@@ -18,9 +18,9 @@ pub enum AgentState {
 /// This is hacky and it should be removed/refactored away.
 #[derive(Default, Debug, Clone)]
 pub struct CommonTraits {
-    period: Option<u64>,
-    target: Option<String>,
-    period_poisson_distribution: Option<Poisson<f64>>,
+    pub period: Option<u64>,
+    pub target: Option<String>,
+    pub period_poisson_distribution: Option<Poisson<f64>>,
 }
 
 /// The bread and butter of the Simulation -- the Agent.
