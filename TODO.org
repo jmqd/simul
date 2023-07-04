@@ -1,3 +1,31 @@
 * To-do
 * Done
-** DONE Poisson creation helper functions for Agents
+** TODO Poisson creation helper functions for Agents
+** TODO Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
+#+BEGIN_SRC rust
+/// An ObjectiveFunction is used in simulated annealing and it is the function
+/// that we try to maximize when running many simulations.
+///
+/// For more information on simulated annealing and objective functions, you can refer to the following resources:
+/// - Simulated annealing: https://en.wikipedia.org/wiki/Simulated_annealing
+/// - Objective function: https://en.wikipedia.org/wiki/Objective_function
+///
+/// Here is an example usage, in this case findinng the fastest simulation without wasting
+/// cycles on too fast of a consuming agent:
+/// ```
+/// let objective_fn: ObjectiveFunction = |s: &Simulation| {
+///    -(s.time as i64)
+///        + s.agents
+///            .iter()
+///            .find(|a| a.name == "consumer")
+///            .as_ref()
+///            .unwrap()
+///            .common_traits
+///            .as_ref()
+///            .unwrap()
+///            .period
+///            .unwrap() as i64
+/// }
+/// ```
+pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
+#+END_SRC
