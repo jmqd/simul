@@ -11,6 +11,134 @@ fn inc(num: &mut usize) -> usize {
     return *num;
 }
 
+/// Sandbox for running a simulated annealing experiment.
+fn run_experiment() {
+    let halt_condition = |s: &Simulation| {
+        s.agents
+            .iter()
+            .find(|a| a.name == "consumer")
+            .unwrap()
+            .consumed
+            .len()
+            > 10
+    };
+
+    // Creates an agent generator w/ a fixed producer at interval 2 and a
+    // consumer whose period randomly varies between [0, 10]
+    let agent_generator = periodic_agent_generator_fixed_producer(2, 10);
+
+    // This is the objective function which we're trying to approximately
+    // optimize via simulated experiment.  This objective function tries to find
+    // the simulation that completed the Simulation in the least time and
+    // doesn't "overuse" consumer period.
+    //
+    // In this specific example, negative simulation time means that we're
+    // optimizing for the simulation that completes the fastest. If this were
+    // the only parameter, there would be two solutions: 0 and 1. Because the
+    // producer is fixed at a period of 2, a consumer with period 0 or 1 can
+    // sufficiently keep up with that producer.
+    //
+    // By subtracting the period of the consumer from the simulation time, we're
+    // looking to get the fastest simulation time without wasting any resources.
+    let objective_fn = |s: &Simulation| {
+        -(s.time as i64)
+            + s.agents
+                .iter()
+                .find(|a| a.name == "consumer")
+                .as_ref()
+                .unwrap()
+                .common_traits
+                .as_ref()
+                .unwrap()
+                .period
+                .unwrap() as i64
+    };
+
+    let simulation_limit = 1000;
+
+    // Run the simulation 1000 different times, randomly varying the agent
+    // configuration, and return the one that maximized the objective function.
+    let approx_optimal = experimentally_anneal_objective(
+        agent_generator,
+        halt_condition,
+        simulation_limit,
+        objective_fn,
+    );
+
+    println!(
+        "{:?}",
+        approx_optimal
+            .unwrap()
+            .agents
+            .iter()
+            .map(|a| (&a.name, &a.common_traits))
+    );
+}
+
+/// Given a producer with a fixed period, returns producer-consumer two Agent
+/// configurations (where only the consumer varies).
+///
+/// The consumer randomly varies between 0 and consumer_max_period. The two
+/// agents are always named "producer" and "consumer".
+fn periodic_agent_generator_fixed_producer(
+    producer_period: u64,
+    consumer_max_period: u64,
+) -> impl Fn() -> Vec<Agent> {
+    move || {
+        let consumer_period = rand::random::<u32>() % (consumer_max_period + 1) as u32;
+        let producer_agent = periodic_producing_agent("producer", producer_period, "consumer");
+        let consumer_agent = periodic_consuming_agent("consumer", consumer_period as u64);
+        vec![producer_agent, consumer_agent]
+    }
+}
+
+/// Given a function that generates various configurations of Agents, continue
+/// running simulations with various different agent configurations (via calling
+/// the generator) to try to determine the simulation that is approximately optimal
+/// by maximizing the provided objective_function.
+///
+/// The simplest and most common objective function is negative simulation time.
+/// An objective function that returns negative simulation time will find the
+/// fastest simulation.
+///
+/// The halt_condition for the simulation is also provided by the user.
+fn experimentally_anneal_objective(
+    agent_generator: impl Fn() -> Vec<Agent>,
+    halt_condition: fn(&Simulation) -> bool,
+    simulation_limit: u32,
+    objective_function: impl Fn(&Simulation) -> i64,
+) -> Option<Simulation> {
+    let mut approx_optimal_simulation: Option<Simulation> = None;
+    let mut high_score = std::i64::MIN;
+
+    for _ in 0..simulation_limit {
+        let agents = agent_generator();
+        let mut simulation = Simulation::new(agents, 0, true, halt_condition);
+        simulation.run();
+
+        let score = objective_function(&simulation);
+        println!(
+            "period = {:?}, score = {}",
+            simulation
+                .agents
+                .iter()
+                .find(|a| a.name == "consumer")
+                .unwrap()
+                .common_traits
+                .as_ref()
+                .unwrap()
+                .period,
+            score
+        );
+        if score > high_score {
+            approx_optimal_simulation = Some(simulation.clone());
+            high_score = score;
+        }
+    }
+
+    approx_optimal_simulation
+}
+
 fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
     let mut simulation = Simulation::new(
         vec![
@@ -279,4 +407,5 @@ fn main() {
     test_plotting().expect("Plotting failed.");
     test_plotting_2().expect("Plotting 2 failed.");
     test_plotting_3().expect("Plotting 3 failed.");
+    run_experiment();
 }
