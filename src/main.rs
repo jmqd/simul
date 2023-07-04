@@ -274,6 +274,7 @@ fn plot_queued_durations_for_processed_tickets(
     Ok(())
 }
 
+/// Note, this main.rs binary file is just for library prototyping at the moment.
 fn main() {
     test_plotting().expect("Plotting failed.");
     test_plotting_2().expect("Plotting 2 failed.");
