@@ -1,6 +1,6 @@
 * To-do
 * Done
-** TODO Poisson creation helper functions for Agents
+** DONE Poisson creation helper functions for Agents
 ** TODO Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
 #+BEGIN_SRC rust
 /// An ObjectiveFunction is used in simulated annealing and it is the function
@@ -29,3 +29,4 @@
 /// ```
 pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
+** TODO
