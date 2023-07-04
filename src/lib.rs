@@ -81,20 +81,6 @@ impl Simulation {
         self.queue_depth_metrics.get(agent_name).cloned()
     }
 
-    /// An internal function used to wakeup sleeping Agents due to wake.
-    fn wakeup_agents_scheduled_to_wakeup_now(&mut self) {
-        for agent in self.agents.iter_mut() {
-            match agent.state {
-                AgentState::AsleepUntil(scheduled_wakeup) => {
-                    if self.time >= scheduled_wakeup {
-                        agent.state = AgentState::Active;
-                    }
-                }
-                _ => (),
-            }
-        }
-    }
-
     /// Runs the simulation. This should only be called after adding all the beginning state.
     pub fn run(&mut self) {
         self.state = SimulationState::Running;
@@ -204,6 +190,20 @@ impl Simulation {
         }
 
         return data;
+    }
+
+    /// An internal function used to wakeup sleeping Agents due to wake.
+    fn wakeup_agents_scheduled_to_wakeup_now(&mut self) {
+        for agent in self.agents.iter_mut() {
+            match agent.state {
+                AgentState::AsleepUntil(scheduled_wakeup) => {
+                    if self.time >= scheduled_wakeup {
+                        agent.state = AgentState::Active;
+                    }
+                }
+                _ => (),
+            }
+        }
     }
 }
 
