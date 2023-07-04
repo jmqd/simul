@@ -29,4 +29,5 @@
 /// ```
 pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
-** TODO Remove the "stringly-typed" feel of agents currently. Change the API so that agent names are statically determined?
+** TODO Remove the "stringly-typed" feel of agents currently.
+Change the API so that agent names are statically determined?
