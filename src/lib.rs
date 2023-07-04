@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use ticket::*;
 
 /// The current state of the simultion.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SimulationState {
     /// The Simulation has only been constructed.
     Constructed,
@@ -29,7 +29,7 @@ pub enum SimulationState {
 ///
 /// The Simulation engine uses a concept of `Tickets` to communicate between
 /// agents. Agents can receive tickets and send tickets to other Agents.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
     /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
