@@ -64,6 +64,11 @@ impl Simulation {
         }
     }
 
+    /// Finds an agent in the simulation and return a copy.
+    pub fn find_agent(&self, name: &str) -> Option<Agent> {
+        self.agents.iter().find(|a| a.name == name).cloned()
+    }
+
     /// Returns the consumed tickets for a given Agent during the Simulation.
     pub fn consumed_for_agent(&self, name: &str) -> Option<Vec<Ticket>> {
         let agent = self.agents.iter().find(|a| a.name == name)?;
