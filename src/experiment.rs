@@ -20,7 +20,7 @@ pub fn experiment_by_annealing_objective(
     let mut approx_optimal_simulation: Option<Simulation> = None;
     let mut high_score = std::i64::MIN;
 
-    for i in 0..simulation_limit {
+    for _ in 0..simulation_limit {
         let agents = agent_generator();
         let mut simulation = Simulation::new(agents, 0, true, halt_condition);
         simulation.run();
@@ -43,8 +43,6 @@ pub fn experiment_by_annealing_objective(
             approx_optimal_simulation = Some(simulation.clone());
             high_score = score;
         }
-        // // For plotting the output of every experiment.
-        // plot_simulation(&simulation, &["producer".into(), "consumer".into()], &format!("/tmp/{}.png", i).into());
     }
 
     approx_optimal_simulation
