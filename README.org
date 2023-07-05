@@ -1,6 +1,36 @@
-#+title: Readme
+#+title: =simul=, discrete-event simulation
 
 A discrete simulation library for simulating [[https://authors.library.caltech.edu/60491/1/MGM%20113.pdf][Complex Adaptive Systems]].
+Specifically, =simul= is a /discrete-event simulator/ using /incremental time
+progression/, with [[https://en.wikipedia.org/wiki/M/M/c_queue][=M/M/c= queues]] for interactions between agents.
+
+* Usage
+** Barebones basic example
+#+BEGIN_SRC toml
+[dependencies]
+simul = "0.1"
+#+END_SRC
+
+#+BEGIN_SRC rust
+use simul::Simulation;
+use simul::agent::*;
+
+// Runs a simulation with a producer that produces work at every tick of
+// discrete time (period=1), and a consumer that cannot keep up (can only
+// process that work every third tick)
+let mut simulation = Simulation::new(
+    vec![
+        periodic_producing_agent("producer", 1, "consumer"),
+        periodic_consuming_agent("consumer", 3),
+    ],
+    0,
+    true,
+    |s: &Simulation| s.time == 10,
+);
+simulation.run();
+#+END_SRC
+
+** Poisson-distributed example w/ Plotting
 
 Here's an example of an outputted graph of a simulation showing the average
 waiting time of customers in a line at a cafe given a Poisson-distributed
@@ -17,7 +47,7 @@ equal to =60*60*12=, representing a full 12-hour day of the cafe being open.
 
 This is a code example for generating the above, from =main.rs=:
 
-#+BEGIN_SRC rust
+,#+BEGIN_SRC rust
 use plotters::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
