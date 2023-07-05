@@ -122,11 +122,11 @@ fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
 fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
     let mut simulation = Simulation::new(SimulationParameters {
         agents: vec![
-            poisson_distributed_consuming_agent("Starbucks Clerk", Poisson::new(60.0).unwrap()),
+            poisson_distributed_consuming_agent("Barista", Poisson::new(60.0).unwrap()),
             poisson_distributed_producing_agent(
-                "Starbucks Customers",
+                "Customers",
                 Poisson::new(60.0).unwrap(),
-                "Starbucks Clerk",
+                "Barista",
             ),
         ],
         starting_time: 0,
@@ -136,8 +136,8 @@ fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
     simulation.run();
     plot_simulation(
         &simulation,
-        &["Starbucks Customers".into(), "Starbucks Clerk".into()],
-        &"/tmp/1.png".to_string().into(),
+        &["Customers".into(), "Barista".into()],
+        &"/tmp/cafe-example.png".to_string().into(),
     )?;
     Ok(())
 }
@@ -145,11 +145,11 @@ fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
 fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
     let mut simulation = Simulation::new(SimulationParameters {
         agents: vec![
-            poisson_distributed_consuming_agent("Starbucks Clerk", Poisson::new(60.0).unwrap()),
+            poisson_distributed_consuming_agent("Barista", Poisson::new(60.0).unwrap()),
             poisson_distributed_producing_agent(
-                "Starbucks Customers",
+                "Customers",
                 Poisson::new(60.0).unwrap(),
-                "Starbucks Clerk",
+                "Barista",
             ),
         ],
         starting_time: 0,
@@ -159,8 +159,8 @@ fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
     simulation.run();
     plot_queued_durations_for_processed_tickets(
         &simulation,
-        &["Starbucks Clerk".into()],
-        &"/tmp/2.png".to_string().into(),
+        &["Barista".into()],
+        &"/tmp/cafe-example-queued-durations.png".to_string().into(),
     )
 }
 
