@@ -1,23 +1,24 @@
-#+title: =simul=, discrete-event simulation
+A discrete simulation library for simulating [Complex Adaptive
+Systems](https://authors.library.caltech.edu/60491/1/MGM%20113.pdf).
+Specifically, `simul` is a *discrete-event simulator* using *incremental
+time progression*, with [M/M/c
+queues](https://en.wikipedia.org/wiki/M/M/c_queue) for interactions
+between agents.
 
-A discrete simulation library for simulating [[https://authors.library.caltech.edu/60491/1/MGM%20113.pdf][Complex Adaptive Systems]].
-Specifically, =simul= is a /discrete-event simulator/ using /incremental time
-progression/, with [[https://en.wikipedia.org/wiki/M/M/c_queue][M/M/c queues]] for interactions between agents.
+# Usage
 
-* Usage
-#+BEGIN_QUOTE
-*Warning*
+> **Warning**
+>
+> Experimental and unstable. Almost all APIs are expected to change.
 
-Experimental and unstable. Almost all APIs are expected to change.
-#+END_QUOTE
+## Barebones basic example
 
-** Barebones basic example
-#+BEGIN_SRC toml
+``` toml
 [dependencies]
 simul = "0.1"
-#+END_SRC
+```
 
-#+BEGIN_SRC rust
+``` rust
 use simul::Simulation;
 use simul::agent::*;
 
@@ -44,30 +45,32 @@ let mut simulation = Simulation::new(
 });
 
 simulation.run();
-#+END_SRC
+```
 
-** Poisson-distributed example w/ Plotting
+## Poisson-distributed example w/ Plotting
 
 Here's an example of an outputted graph from a simulation run. In this
-simulation, we show the average waiting time of customers in a line at a cafe.
-The customers arrive at a Poisson-distributed arrival rate (=lambda<-60.0=) and a
-Poisson-distributed coffee-serving rate with the same distribution.
+simulation, we show the average waiting time of customers in a line at a
+cafe. The customers arrive at a Poisson-distributed arrival rate
+(`lambda<-60.0`) and a Poisson-distributed coffee-serving rate with the
+same distribution.
 
 This simulation maps to the real world by assuming one tick of
 discrete-simulation time is equal to one second.
 
-Basically, the barista serves coffees at around 60 seconds per drink and the
-customers arrive at about the same rate, both modeled by a stochastic Poisson
-generator.
+Basically, the barista serves coffees at around 60 seconds per drink and
+the customers arrive at about the same rate, both modeled by a
+stochastic Poisson generator.
 
-This simulation has a =halt_check= condition of the simulation's time being
-equal to =60*60*12=, representing a full 12-hour day of the cafe being open.
+This simulation has a `halt_check` condition of the simulation's time
+being equal to `60*60*12`, representing a full 12-hour day of the cafe
+being open.
 
-[[./readme-assets/cafe-example-queued-durations.png]]
+![](./readme-assets/cafe-example-queued-durations.png)
 
-This is a code example for generating the above, from =main.rs=:
+This is a code example for generating the above, from `main.rs`:
 
-#+BEGIN_SRC rust
+``` rust
 use plotters::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
@@ -101,6 +104,8 @@ fn run_example_cafe_simulation() -> Result<(), Box<dyn std::error::Error>> {
         &"/tmp/cafe-example-queued-durations.png".to_string().into(),
     )
 }
-#+END_SRC
-* Contributing
-** Issues, bugs, features are tracked in TODO.org
+```
+
+# Contributing
+
+## Issues, bugs, features are tracked in TODO.org
