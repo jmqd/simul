@@ -14,11 +14,12 @@ fn inc(num: &mut usize) -> usize {
 }
 
 /// Sandbox for running a simulated annealing experiment.
-fn run_experiment() -> Option<()> {
+fn run_experiment() {
     let halt_condition = |s: &Simulation| {
         s.agents
             .iter()
-            .find(|a| a.name == "consumer")?
+            .find(|a| a.name == "consumer")
+            .expect("No consumer agent?")
             .consumed
             .len()
             > 10
@@ -54,10 +55,13 @@ fn run_experiment() -> Option<()> {
             + s.agents
                 .iter()
                 .find(|a| a.name == "consumer")
-                .as_ref()?
+                .as_ref()
+                .unwrap()
                 .extensions
-                .as_ref()?
-                .period? as i64
+                .as_ref()
+                .unwrap()
+                .period
+                .unwrap() as i64
     };
 
     let replications_limit = 100;
@@ -72,7 +76,8 @@ fn run_experiment() -> Option<()> {
 
     info!(
         "{:?}",
-        approx_optimal?
+        approx_optimal
+            .unwrap()
             .agents
             .iter()
             .map(|a| (&a.name, &a.extensions))
@@ -170,7 +175,7 @@ fn plot_simulation(
             consumed_series.push(
                 consumed
                     .into_iter()
-                    .map(|e| (e.completed_time?, 1))
+                    .map(|e| (e.completed_time.unwrap(), 1))
                     .collect(),
             );
         }
@@ -197,7 +202,8 @@ fn plot_simulation(
         .chain(queue_depth_series.iter())
         .flatten()
         .map(|n| n.1)
-        .max()? as u64;
+        .max()
+        .unwrap() as u64;
 
     let root = BitMapBackend::new(output, (2560, 1920)).into_drawing_area();
     root.fill(&WHITE)?;
@@ -294,7 +300,12 @@ fn plot_queued_durations_for_processed_messages(
             processing_latency.push(
                 consumed
                     .into_iter()
-                    .map(|e| (e.completed_time?, e.completed_time? - e.queued_time))
+                    .map(|e| {
+                        (
+                            e.completed_time.unwrap(),
+                            e.completed_time.unwrap() - e.queued_time,
+                        )
+                    })
                     .collect(),
             );
         }
@@ -302,7 +313,12 @@ fn plot_queued_durations_for_processed_messages(
 
     info!("Processing latency {:?}", &processing_latency);
 
-    let max_y = processing_latency.iter().flatten().map(|n| n.1).max()? as u64;
+    let max_y = processing_latency
+        .iter()
+        .flatten()
+        .map(|n| n.1)
+        .max()
+        .unwrap() as u64;
 
     let root = BitMapBackend::new(output, (2560, 1920)).into_drawing_area();
     root.fill(&WHITE)?;
@@ -322,7 +338,10 @@ fn plot_queued_durations_for_processed_messages(
                         .iter()
                         .map(|(x, y)| Circle::new((*x, *y), 4, color.filled())),
                 )?
-                .label(format!("{} processing_time", agents.get(series_idx)?))
+                .label(format!(
+                    "{} processing_time",
+                    agents.get(series_idx).unwrap()
+                ))
                 .legend(move |(x, y)| Rectangle::new([(x - 16, y + 16), (x + 16, y - 16)], color));
         }
         series_idx += 1;
