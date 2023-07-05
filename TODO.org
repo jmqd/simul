@@ -1,7 +1,5 @@
-* To-do
-* Done
-** DONE Poisson creation helper functions for Agents
-** TODO Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
+* DONE Poisson creation helper functions for Agents
+* TODO Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
 #+BEGIN_SRC rust
 /// An ObjectiveFunction is used in simulated annealing and it is the function
 /// that we try to maximize when running many simulations.
@@ -29,13 +27,13 @@
 /// ```
 pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
-** TODO Remove the "stringly-typed" feel of agents currently.
+* TODO Remove the "stringly-typed" feel of agents currently.
 Change the API so that agent names are statically determined?
-** TODO Add SimulationParams struct and pass it into the constructor.
+* TODO Add SimulationParams struct and pass it into the constructor.
 This is to make it more readable etc.
-** TODO Consider adding params struct for construction of Agents too.
-** TODO Rename =Ticket= to =Message= or =Packet= for better readability.
-** TODO Add experiment in experiment.rs to support running same experiment over
+* TODO Consider adding params struct for construction of Agents too.
+* TODO Rename =Ticket= to =Message= or =Packet= for better readability.
+* TODO Add experiment in experiment.rs to support running same experiment over
    and over for getting precise confidence interval
-** TODO Remove env_logger dependency
-** TODO If possible, move =log= dependency to feature
+* TODO Remove env_logger dependency
+* TODO If possible, move =log= dependency to feature
