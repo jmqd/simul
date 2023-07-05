@@ -28,7 +28,7 @@ Use-cases:
 
 ``` toml
 [dependencies]
-simul = "0.1"
+simul = "0.2"
 ```
 
 ``` rust
