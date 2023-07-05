@@ -34,12 +34,21 @@ pub struct CommonTraits {
 /// * A single-celled organism.
 #[derive(Debug, Clone)]
 pub struct Agent {
+    /// The queue of incoming Messages for the Agent.
     pub queue: VecDeque<Message>,
+    /// The current state of the Agent.
     pub state: AgentState,
+    /// Messages this agent produced.
     pub produced: Vec<Message>,
+    /// Mesages this agent consumed.
     pub consumed: Vec<Message>,
+    /// This function is called upon Messages when popped from the incoming queue.
     pub consumption_fn: fn(&mut Agent, u64) -> Option<Vec<Message>>,
+    /// The name of the Agent. Should be unique.
+    /// Note: This field is a wart in the abstraction. Ideally it is replaced with a better design.
     pub name: String,
+    /// A bag of common extensions to Agent behavior.
+    /// Note: This field is a wart in the abstraction. Ideally it is replaced with a better design.
     pub common_traits: Option<CommonTraits>,
 }
 
