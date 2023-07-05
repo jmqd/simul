@@ -29,13 +29,11 @@ fn run_experiment() {
     let agent_generator = periodic_agent_generator_fixed_producer(2, 10);
 
     // SimulationParameters generator that holds all else static except for agents.
-    let simulation_parameters_generator = move || {
-        SimulationParameters {
-            agents: agent_generator(),
-            starting_time: 0,
-            halt_check: halt_condition,
-            enable_queue_depth_telemetry: false,
-        }
+    let simulation_parameters_generator = move || SimulationParameters {
+        agents: agent_generator(),
+        starting_time: 0,
+        halt_check: halt_condition,
+        enable_queue_depth_telemetry: false,
     };
 
     // This is the objective function which we're trying to approximately
