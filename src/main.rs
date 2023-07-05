@@ -94,15 +94,15 @@ fn periodic_agent_generator_fixed_producer(
 }
 
 fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::new(
-        vec![
+    let mut simulation = Simulation::from_parameters(SimulationParameters {
+        agents: vec![
             periodic_producing_agent("producer", 1, "consumer"),
             periodic_consuming_agent("consumer", 3),
         ],
-        0,
-        true,
-        |s: &Simulation| s.time == 10,
-    );
+        starting_time: 0,
+        enable_queue_depth_telemetry: true,
+        halt_check: |s: &Simulation| s.time == 10,
+    });
     simulation.run();
     plot_simulation(
         &simulation,
@@ -113,8 +113,8 @@ fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::new(
-        vec![
+    let mut simulation = Simulation::from_parameters(SimulationParameters {
+        agents: vec![
             poisson_distributed_consuming_agent("Starbucks Clerk", Poisson::new(60.0).unwrap()),
             poisson_distributed_producing_agent(
                 "Starbucks Customers",
@@ -122,10 +122,10 @@ fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
                 "Starbucks Clerk",
             ),
         ],
-        0,
-        true,
-        |s: &Simulation| s.time == 60 * 60 * 12,
-    );
+        starting_time: 0,
+        enable_queue_depth_telemetry: true,
+        halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
+    });
     simulation.run();
     plot_simulation(
         &simulation,
@@ -136,8 +136,8 @@ fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::new(
-        vec![
+    let mut simulation = Simulation::from_parameters(SimulationParameters {
+        agents: vec![
             poisson_distributed_consuming_agent("Starbucks Clerk", Poisson::new(60.0).unwrap()),
             poisson_distributed_producing_agent(
                 "Starbucks Customers",
@@ -145,10 +145,10 @@ fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
                 "Starbucks Clerk",
             ),
         ],
-        0,
-        true,
-        |s: &Simulation| s.time == 60 * 60 * 12,
-    );
+        starting_time: 0,
+        enable_queue_depth_telemetry: true,
+        halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
+    });
     simulation.run();
     plot_queued_durations_for_processed_tickets(
         &simulation,

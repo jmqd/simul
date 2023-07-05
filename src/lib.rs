@@ -256,15 +256,15 @@ mod tests {
     #[test]
     fn basic_periodic_test() {
         init();
-        let mut simulation = Simulation::new(
-            vec![
+        let mut simulation = Simulation::from_parameters(SimulationParameters {
+            agents: vec![
                 periodic_producing_agent("producer", 1, "consumer"),
                 periodic_consuming_agent("consumer", 1),
             ],
-            0,
-            false,
-            |s: &Simulation| s.time == 5,
-        );
+            starting_time: 0,
+            enable_queue_depth_telemetry: false,
+            halt_check: |s: &Simulation| s.time == 5,
+        });
         simulation.run();
         let produced_stats = simulation.calc_produced_len_statistics();
         assert_eq!(produced_stats.get("producer"), Some(&5));
@@ -278,8 +278,8 @@ mod tests {
     #[test]
     fn starbucks_clerk() {
         init();
-        let mut simulation = Simulation::new(
-            vec![
+        let mut simulation = Simulation::from_parameters(SimulationParameters {
+            agents: vec![
                 Agent {
                     queue: VecDeque::with_capacity(8),
                     state: AgentState::Active,
@@ -318,10 +318,10 @@ mod tests {
                     "Starbucks Clerk",
                 ),
             ],
-            1,
-            false,
-            |s: &Simulation| s.time > 500,
-        );
+            starting_time: 1,
+            enable_queue_depth_telemetry: false,
+            halt_check: |s: &Simulation| s.time > 500,
+        });
         simulation.run();
         assert_eq!(Some(simulation).is_some(), true);
     }
