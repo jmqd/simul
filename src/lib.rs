@@ -109,7 +109,7 @@ impl Simulation {
             debug!("Running next tick of simulation at time {}", self.time);
             let mut message_bus = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
-            for mut agent in self.agents.iter_mut() {
+            for agent in self.agents.iter_mut() {
                 if self.enable_queue_depth_metrics {
                     self.queue_depth_metrics
                         .get_mut(&agent.name)
@@ -118,7 +118,7 @@ impl Simulation {
                 }
 
                 match agent.state {
-                    AgentState::Active => match (agent.consumption_fn)(&mut agent, self.time) {
+                    AgentState::Active => match (agent.consumption_fn)(agent, self.time) {
                         Some(messages) => {
                             message_bus.extend(messages);
                         }
