@@ -3,7 +3,7 @@ pub mod experiment;
 pub mod message;
 
 use agent::*;
-use log::{debug, info};
+use log::debug;
 use message::*;
 use std::collections::HashMap;
 
