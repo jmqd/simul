@@ -41,3 +41,4 @@ Note: Moved to dev-dependencies
 * TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
 * TODO Address all uses of =unwrap()=
 * TODO Consider allowing Messages w/ no target -- fanout / global broadcast
+* TODO Add doctests throughout
