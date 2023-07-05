@@ -284,7 +284,7 @@ mod tests {
                     consumption_fn: |a: &mut Agent, t: u64| {
                         debug!("{} looking for a customer.", a.name);
                         if let Some(last) = a.consumed.last() {
-                            if last.completed_time.unwrap() + 60 > t {
+                            if last.completed_time? + 60 > t {
                                 debug!("Sorry, we're still serving the last customer.");
                                 return None;
                             }
