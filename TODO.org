@@ -37,3 +37,5 @@ This is to make it more readable etc.
 ** TODO Rename =Ticket= to =Message= or =Packet= for better readability.
 ** TODO Add experiment in experiment.rs to support running same experiment over
    and over for getting precise confidence interval
+** TODO Remove env_logger dependency
+** TODO If possible, move =log= dependency to feature
