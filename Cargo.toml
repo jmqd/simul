@@ -3,6 +3,7 @@ name = "simul"
 version = "0.1.5"
 edition = "2021"
 authors = ["Jordan McQueen <j@jm.dev>"]
+license = "MIT"
 license-file = "LICENSE"
 
 keywords = ["sim", "simulation", "annealing", "experiment"]
