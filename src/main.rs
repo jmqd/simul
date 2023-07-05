@@ -57,7 +57,7 @@ fn run_experiment() {
                 .find(|a| a.name == "consumer")
                 .as_ref()
                 .unwrap()
-                .common_traits
+                .extensions
                 .as_ref()
                 .unwrap()
                 .period
@@ -80,7 +80,7 @@ fn run_experiment() {
             .unwrap()
             .agents
             .iter()
-            .map(|a| (&a.name, &a.common_traits))
+            .map(|a| (&a.name, &a.extensions))
     );
 }
 

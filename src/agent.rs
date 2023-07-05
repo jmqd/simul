@@ -17,7 +17,7 @@ pub enum AgentState {
 /// Sort of like extension-properties for an Agent that are sometimes used.
 /// This is hacky and it should be removed/refactored away.
 #[derive(Default, Debug, Clone)]
-pub struct CommonTraits {
+pub struct AgentExtensions {
     pub period: Option<u64>,
     pub target: Option<String>,
     pub period_poisson_distribution: Option<Poisson<f64>>,
@@ -49,7 +49,7 @@ pub struct Agent {
     pub name: String,
     /// A bag of common extensions to Agent behavior.
     /// Note: This field is a wart in the abstraction. Ideally it is replaced with a better design.
-    pub common_traits: Option<CommonTraits>,
+    pub extensions: Option<AgentExtensions>,
 }
 
 impl Agent {
@@ -69,7 +69,7 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
             let cooldown_period = a
-                .common_traits
+                .extensions
                 .as_ref()?
                 .period_poisson_distribution?
                 .sample(&mut rand::thread_rng()) as u64;
@@ -85,7 +85,7 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
             return None;
         },
         name: name.into(),
-        common_traits: Some(CommonTraits {
+        extensions: Some(AgentExtensions {
             period: None,
             target: None,
             period_poisson_distribution: Some(dist),
@@ -105,19 +105,19 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
             let cooldown_period = a
-                .common_traits
+                .extensions
                 .as_ref()?
                 .period_poisson_distribution?
                 .sample(&mut rand::thread_rng()) as u64;
             a.state = AgentState::AsleepUntil(t + cooldown_period);
 
             // The agent produces some new work to its target now, since it is active.
-            let t = Message::new(t, &a.name, a.common_traits.as_ref()?.target.as_ref()?);
+            let t = Message::new(t, &a.name, a.extensions.as_ref()?.target.as_ref()?);
             a.produced.push(t.clone());
             Some(vec![t])
         },
         name: name.to_owned(),
-        common_traits: Some(CommonTraits {
+        extensions: Some(AgentExtensions {
             period: None,
             target: Some(target.to_owned()),
             period_poisson_distribution: Some(dist),
@@ -134,12 +134,12 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
         consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
             if a.produced.last().is_none()
-                || a.produced.last()?.queued_time + a.common_traits.as_ref()?.period? >= t
+                || a.produced.last()?.queued_time + a.extensions.as_ref()?.period? >= t
             {
                 return Some(vec![Message {
                     queued_time: t,
                     source: a.name.to_owned(),
-                    destination: a.common_traits.as_ref()?.target.as_ref()?.clone(),
+                    destination: a.extensions.as_ref()?.target.as_ref()?.clone(),
                     ..Default::default()
                 }]);
             } else {
@@ -147,7 +147,7 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
             }
         },
         name: name.to_owned(),
-        common_traits: Some(CommonTraits {
+        extensions: Some(AgentExtensions {
             period: Some(period),
             target: Some(target.to_owned()),
             period_poisson_distribution: None,
@@ -164,9 +164,9 @@ pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
         produced: vec![],
         consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
-            if t >= a.common_traits.as_ref()?.period?
+            if t >= a.extensions.as_ref()?.period?
                 && (a.consumed.last().is_none()
-                    || a.consumed.last()?.completed_time? + a.common_traits.as_ref()?.period? <= t)
+                    || a.consumed.last()?.completed_time? + a.extensions.as_ref()?.period? <= t)
             {
                 if let Some(message) = a.queue.pop_front() {
                     a.consumed.push(Message {
@@ -178,7 +178,7 @@ pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
             return None;
         },
         name: name.to_owned(),
-        common_traits: Some(CommonTraits {
+        extensions: Some(AgentExtensions {
             period: Some(period),
             target: None,
             period_poisson_distribution: None,

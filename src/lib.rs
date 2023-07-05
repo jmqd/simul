@@ -305,7 +305,7 @@ mod tests {
                         }
                         return None;
                     },
-                    common_traits: None,
+                    extensions: None,
                 },
                 poisson_distributed_producing_agent(
                     "Starbucks Customers",
