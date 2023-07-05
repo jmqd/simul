@@ -5,6 +5,12 @@ Specifically, =simul= is a /discrete-event simulator/ using /incremental time
 progression/, with [[https://en.wikipedia.org/wiki/M/M/c_queue][=M/M/c= queues]] for interactions between agents.
 
 * Usage
+#+BEGIN_QUOTE
+*Warning*
+
+Experimental and unstable. Almost all APIs are expected to change.
+#+END_QUOTE
+
 ** Barebones basic example
 #+BEGIN_SRC toml
 [dependencies]
