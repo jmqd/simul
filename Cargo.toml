@@ -2,7 +2,7 @@
 name = "simul"
 version = "0.1.0"
 edition = "2021"
-authors = "Jordan McQueen <j@jm.dev>"
+authors = ["Jordan McQueen <j@jm.dev>"]
 license-file = "LICENSE"
 keywords = [
          "sim", "simulation", "queue theory", "annealing", "experiment",
