@@ -48,13 +48,17 @@ simulation.run();
 
 ** Poisson-distributed example w/ Plotting
 
-Here's an example of an outputted graph of a simulation showing the average
-waiting time of customers in a line at a cafe given a Poisson-distributed
-arrival rate with lambda=60.0 and a Poisson-distributed processing rate with
-lambda=60.0.
+Here's an example of an outputted graph from a simulation run. In this
+simulation, we show the average waiting time of customers in a line at a cafe.
+The customers arrive at a Poisson-distributed arrival rate (=lambda<-60.0=) and a
+Poisson-distributed coffee-serving rate with the same distribution.
 
-In other words, generally speaking the barista processes at around 60 seconds
-per drink and the customers arrival at about the same rate.
+This simulation maps to the real world by assuming one tick of
+discrete-simulation time is equal to one second.
+
+Basically, the barista serves coffees at around 60 seconds per drink and the
+customers arrive at about the same rate, both modeled by a stochastic Poisson
+generator.
 
 This simulation has a =halt_check= condition of the simulation's time being
 equal to =60*60*12=, representing a full 12-hour day of the cafe being open.
