@@ -17,7 +17,6 @@ homepage = "https://github.com/jmqd/simul"
 repository = "https://github.com/jmqd/simul"
 readme = "README.org"
 
-
 [lib]
 name = "simul"
 path = "src/lib.rs"
