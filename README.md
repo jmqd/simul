@@ -3,12 +3,12 @@ with [M/M/c queues](https://en.wikipedia.org/wiki/M/M/c_queue) for interactions
 between agents.
 
 Use-cases:
-- [Discrete-event Simulation](https://en.wikipedia.org/wiki/Discrete-event_simulation)
-- [Complex Adaptive Systems](https://authors.library.caltech.edu/60491/1/MGM%20113.pdf)
-- [Simulated Annealing](https://en.wikipedia.org/wiki/Simulated_annealing)
+- [Discrete-event simulation](https://en.wikipedia.org/wiki/Discrete-event_simulation)
+- [Complex adaptive systems](https://authors.library.caltech.edu/60491/1/MGM%20113.pdf)
+- [Simulated annealing](https://en.wikipedia.org/wiki/Simulated_annealing)
 - [Job-shop scheduling](https://en.wikipedia.org/wiki/Job-shop_scheduling)
 - [Birth-death processes](https://en.wikipedia.org/wiki/Birth%E2%80%93death_process)
-- [Computer Experiments](https://en.wikipedia.org/wiki/Computer_experiment)
+- [Computer experiments](https://en.wikipedia.org/wiki/Computer_experiment)
 
 # Usage
 
