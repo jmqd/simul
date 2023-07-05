@@ -10,12 +10,20 @@ keywords = [
          "monte carlo", "M/M/c", "M/M/1", "birth death", "markov chain",
          "operations research", "modeling"]
 categories = ["mathematics", "science", "development-tools"]
-description = "A discrete-event simulation library aimed at high-level use-cases to quickly simulate a real-world problem and run simulated experiments."
+description = """
+A discrete-event simulation library aimed at high-level use-cases to
+quickly simulate a real-world problem and run simulated experiments.
+"""
 
 # homepage, documentation, repository currently all point to the GitHub repo.
 homepage = "https://github.com/jmqd/simul"
 repository = "https://github.com/jmqd/simul"
 readme = "README.org"
+
+[features]
+default = []
+plotters = ["dep:plotters"]
+build-binary = ["plotters"]
 
 [lib]
 name = "simul"
