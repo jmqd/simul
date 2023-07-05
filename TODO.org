@@ -39,3 +39,4 @@ This is to make it more readable etc.
 Note: Moved to dev-dependencies
 * TODO If possible, move =log= dependency to feature
 * TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
+* TODO Address all uses of =unwrap()=
