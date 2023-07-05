@@ -14,7 +14,6 @@ description = "A discrete-event simulation library aimed at high-level use-cases
 
 # homepage, documentation, repository currently all point to the GitHub repo.
 homepage = "https://github.com/jmqd/simul"
-documentation = "https://github.com/jmqd/simul"
 repository = "https://github.com/jmqd/simul"
 readme = "README.org"
 
