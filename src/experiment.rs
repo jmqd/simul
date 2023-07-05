@@ -1,5 +1,9 @@
-use crate::Agent;
 use crate::Simulation;
+use crate::SimulationParameters;
+
+/// ObjectiveScore is a measure of how a Simulation performed according to an
+/// objective function. This is used to find approximate global optimazations.
+type ObjectiveScore = i64;
 
 /// Given a function that generates various configurations of Agents, continue
 /// running simulations with various different agent configurations (via calling
@@ -12,17 +16,15 @@ use crate::Simulation;
 ///
 /// The halt_condition for the simulation is also provided by the user.
 pub fn experiment_by_annealing_objective(
-    agent_generator: impl Fn() -> Vec<Agent>,
-    halt_condition: fn(&Simulation) -> bool,
-    simulation_limit: u32,
-    objective_function: impl Fn(&Simulation) -> i64,
+    simulation_parameters_generator: impl Fn() -> SimulationParameters,
+    replications_limit: u32,
+    objective_function: impl Fn(&Simulation) -> ObjectiveScore,
 ) -> Option<Simulation> {
     let mut approx_optimal_simulation: Option<Simulation> = None;
-    let mut high_score = std::i64::MIN;
+    let mut high_score = ObjectiveScore::MIN;
 
-    for _ in 0..simulation_limit {
-        let agents = agent_generator();
-        let mut simulation = Simulation::new(agents, 0, true, halt_condition);
+    for _ in 0..replications_limit {
+        let mut simulation = Simulation::from_parameters(simulation_parameters_generator());
         simulation.run();
 
         let score = objective_function(&simulation);

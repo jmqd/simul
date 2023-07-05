@@ -28,6 +28,16 @@ fn run_experiment() {
     // consumer whose period randomly varies between [0, 10]
     let agent_generator = periodic_agent_generator_fixed_producer(2, 10);
 
+    // SimulationParameters generator that holds all else static except for agents.
+    let simulation_parameters_generator = move || {
+        SimulationParameters {
+            agents: agent_generator(),
+            starting_time: 0,
+            halt_check: halt_condition,
+            enable_queue_depth_telemetry: false,
+        }
+    };
+
     // This is the objective function which we're trying to approximately
     // optimize via simulated experiment.  This objective function tries to find
     // the simulation that completed the Simulation in the least time and
@@ -55,14 +65,13 @@ fn run_experiment() {
                 .unwrap() as i64
     };
 
-    let simulation_limit = 100;
+    let replications_limit = 100;
 
-    // Run the simulation 1000 different times, randomly varying the agent
+    // Run the simulation 100 different times, randomly varying the agent
     // configuration, and return the one that maximized the objective function.
     let approx_optimal = experiment_by_annealing_objective(
-        agent_generator,
-        halt_condition,
-        simulation_limit,
+        simulation_parameters_generator,
+        replications_limit,
         objective_fn,
     );
 
