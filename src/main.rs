@@ -319,7 +319,7 @@ fn plot_queued_durations_for_processed_tickets(
         }
     }
 
-    println!("Processing latency {:?}", &processing_latency);
+    info!("Processing latency {:?}", &processing_latency);
 
     let max_y = processing_latency
         .iter()
