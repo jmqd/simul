@@ -19,4 +19,3 @@ env_logger = "0.10"
 log = "0.4"
 plotters = "0.3.3"
 
-#![feature(let_chains)]
