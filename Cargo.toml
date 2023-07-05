@@ -16,6 +16,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "simul-bin"
 path = "src/main.rs"
+required-features = ["build-binary"]
+
+[features]
+default = []
+plotters = ["dep:plotters"]
+build-binary = ["plotters"]
 
 [dependencies]
 rand = {version = "0", features = ["alloc"]}
@@ -23,5 +29,4 @@ rand_distr = "0.4"
 ringbuffer = "0.14"
 env_logger = "0.10"
 log = "0.4"
-plotters = "0.3.3"
-
+plotters = {version = "0.3.3", optional = true}
