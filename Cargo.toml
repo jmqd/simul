@@ -34,11 +34,6 @@ name = "simul-bin"
 path = "src/main.rs"
 required-features = ["build-binary"]
 
-[features]
-default = []
-plotters = ["dep:plotters"]
-build-binary = ["plotters"]
-
 [dev-dependencies]
 env_logger = "0.10"
 
