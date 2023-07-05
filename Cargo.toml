@@ -9,7 +9,11 @@ keywords = ["sim", "simulation", "annealing", "experiment"]
 categories = ["mathematics", "science", "development-tools"]
 description = """
 A discrete-event simulation library aimed at high-level use-cases to
-quickly simulate a real-world problem and run simulated experiments.
+quickly simulate a real-world problems and run simulated experiments.
+
+Some example use cases might include simulating logistics or operations research
+problems, running experiments to determine optimal parameters, simulating
+queueing systems, distributed systems, and so on.
 """
 
 # homepage, documentation, repository currently all point to the GitHub repo.
