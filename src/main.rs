@@ -199,10 +199,10 @@ fn plot_simulation(
         }
     }
 
-    println!("Agents {:?}", &agents);
-    println!("Produced {:?}", &produced_series);
-    println!("Consumed {:?}", &consumed_series);
-    println!("Queue depth {:?}", &queue_depth_series);
+    info!("Agents {:?}", &agents);
+    info!("Produced {:?}", &produced_series);
+    info!("Consumed {:?}", &consumed_series);
+    info!("Queue depth {:?}", &queue_depth_series);
 
     let max_y = produced_series
         .iter()
