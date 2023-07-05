@@ -125,21 +125,12 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
         consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
             if a.produced.last().is_none()
-                || a.produced.last().unwrap().queued_time
-                    + a.common_traits.as_ref().unwrap().period.unwrap()
-                    >= t
+                || a.produced.last()?.queued_time + a.common_traits.as_ref()?.period? >= t
             {
                 return Some(vec![Message {
                     queued_time: t,
                     source: a.name.to_owned(),
-                    destination: a
-                        .common_traits
-                        .as_ref()
-                        .unwrap()
-                        .target
-                        .as_ref()
-                        .unwrap()
-                        .clone(),
+                    destination: a.common_traits.as_ref()?.target.as_ref()?.clone(),
                     ..Default::default()
                 }]);
             } else {
