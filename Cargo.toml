@@ -7,7 +7,7 @@ license-file = "LICENSE"
 
 keywords = [
          "sim", "simulation", "annealing", "experiment", "monte", "carlo",
-         "M/M/c", "M/M/1", "markov", "chain", "modeling"]
+         "markov", "chain", "modeling"]
 categories = ["mathematics", "science", "development-tools"]
 description = """
 A discrete-event simulation library aimed at high-level use-cases to
