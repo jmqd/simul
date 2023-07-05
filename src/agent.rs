@@ -164,11 +164,9 @@ pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
         produced: vec![],
         consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
-            if t >= a.common_traits.as_ref().unwrap().period.unwrap()
+            if t >= a.common_traits.as_ref()?.period?
                 && (a.consumed.last().is_none()
-                    || a.consumed.last().unwrap().completed_time.unwrap()
-                        + a.common_traits.as_ref().unwrap().period.unwrap()
-                        <= t)
+                    || a.consumed.last()?.completed_time? + a.common_traits.as_ref()?.period? <= t)
             {
                 if let Some(message) = a.queue.pop_front() {
                     a.consumed.push(Message {
