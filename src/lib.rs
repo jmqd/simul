@@ -64,7 +64,7 @@ pub struct SimulationParameters {
 }
 
 impl Simulation {
-    pub fn from_parameters(parameters: SimulationParameters) -> Simulation {
+    pub fn new(parameters: SimulationParameters) -> Simulation {
         Simulation {
             state: SimulationState::Constructed,
             queue_depth_metrics: parameters
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn basic_periodic_test() {
         init();
-        let mut simulation = Simulation::from_parameters(SimulationParameters {
+        let mut simulation = Simulation::new(SimulationParameters {
             agents: vec![
                 periodic_producing_agent("producer", 1, "consumer"),
                 periodic_consuming_agent("consumer", 1),
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn starbucks_clerk() {
         init();
-        let mut simulation = Simulation::from_parameters(SimulationParameters {
+        let mut simulation = Simulation::new(SimulationParameters {
             agents: vec![
                 Agent {
                     queue: VecDeque::with_capacity(8),

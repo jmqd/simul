@@ -103,7 +103,7 @@ fn periodic_agent_generator_fixed_producer(
 }
 
 fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::from_parameters(SimulationParameters {
+    let mut simulation = Simulation::new(SimulationParameters {
         agents: vec![
             periodic_producing_agent("producer", 1, "consumer"),
             periodic_consuming_agent("consumer", 3),
@@ -122,7 +122,7 @@ fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::from_parameters(SimulationParameters {
+    let mut simulation = Simulation::new(SimulationParameters {
         agents: vec![
             poisson_distributed_consuming_agent("Starbucks Clerk", Poisson::new(60.0).unwrap()),
             poisson_distributed_producing_agent(
@@ -145,7 +145,7 @@ fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::from_parameters(SimulationParameters {
+    let mut simulation = Simulation::new(SimulationParameters {
         agents: vec![
             poisson_distributed_consuming_agent("Starbucks Clerk", Poisson::new(60.0).unwrap()),
             poisson_distributed_producing_agent(

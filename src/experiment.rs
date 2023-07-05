@@ -24,7 +24,7 @@ pub fn experiment_by_annealing_objective(
     let mut high_score = ObjectiveScore::MIN;
 
     for _ in 0..replications_limit {
-        let mut simulation = Simulation::from_parameters(simulation_parameters_generator());
+        let mut simulation = Simulation::new(simulation_parameters_generator());
         simulation.run();
 
         let score = objective_function(&simulation);
