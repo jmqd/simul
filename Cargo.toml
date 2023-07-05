@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 authors = "Jordan McQueen <j@jm.dev>"
 license-file = "LICENSE"
+keywords = [
+         "sim", "simulation", "queue theory", "annealing", "experiment",
+         "monte carlo", "M/M/c", "M/M/1", "birth death", "markov chain"]
+categories = ["mathematics", "science", "development-tools"]
 
 [lib]
 name = "simul"
