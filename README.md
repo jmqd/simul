@@ -112,7 +112,7 @@ fn run_example_cafe_simulation() -> Result<(), Box<dyn std::error::Error>> {
 
     simulation.run();
 
-    plot_queued_durations_for_processed_tickets(
+    plot_queued_durations_for_processed_messages(
         &simulation,
         &["Barista".into()],
         &"/tmp/cafe-example-queued-durations.png".to_string().into(),
@@ -122,4 +122,4 @@ fn run_example_cafe_simulation() -> Result<(), Box<dyn std::error::Error>> {
 
 # Contributing
 
-## Issues, bugs, features are tracked in TODO.org
+Issues, bugs, features are tracked in TODO.org
