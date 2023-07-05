@@ -143,11 +143,7 @@ impl Simulation {
     /// Note: This function will likely go away; it is an artifact of prototyping.
     pub fn calc_avg_wait_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
-        for agent in self.agents.iter() {
-            if agent.consumed.len() == 0 {
-                continue;
-            }
-
+        for agent in self.agents.iter().filter(|a| !a.consumed.is_empty()) {
             let mut sum_of_times: u64 = 0;
             for completed in agent.consumed.iter() {
                 sum_of_times += completed.completed_time.unwrap() - completed.queued_time;
