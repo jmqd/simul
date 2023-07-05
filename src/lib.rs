@@ -159,7 +159,7 @@ impl Simulation {
             );
         }
 
-        return data;
+        data
     }
 
     /// Calculates the statistics of queue lengths.
@@ -171,7 +171,7 @@ impl Simulation {
             data.insert(agent.name.clone(), agent.queue.len());
         }
 
-        return data;
+        data
     }
 
     /// Calculates the length of the consumed messages for each Agent.
@@ -182,7 +182,7 @@ impl Simulation {
             data.insert(agent.name.clone(), agent.consumed.len());
         }
 
-        return data;
+        data
     }
 
     /// Calculates the length of the produced messages for each Agent.
@@ -193,7 +193,7 @@ impl Simulation {
             data.insert(agent.name.clone(), agent.produced.len());
         }
 
-        return data;
+        data
     }
 
     fn emit_completed_simulation_debug_logging(&self) {
