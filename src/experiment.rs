@@ -26,19 +26,6 @@ pub fn experiment_by_annealing_objective(
         simulation.run();
 
         let score = objective_function(&simulation);
-        println!(
-            "period = {:?}, score = {}",
-            simulation
-                .agents
-                .iter()
-                .find(|a| a.name == "consumer")
-                .unwrap()
-                .common_traits
-                .as_ref()
-                .unwrap()
-                .period,
-            score
-        );
         if score > high_score {
             approx_optimal_simulation = Some(simulation.clone());
             high_score = score;
