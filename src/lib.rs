@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use ticket::*;
 
 /// The current state of the simultion.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum SimulationState {
     /// The Simulation has only been constructed.
     Constructed,
