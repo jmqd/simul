@@ -12,6 +12,13 @@ keywords = [
 categories = ["mathematics", "science", "development-tools"]
 description = "A discrete-event simulation library aimed at high-level use-cases to quickly simulate a real-world problem and run simulated experiments."
 
+# homepage, documentation, repository currently all point to the GitHub repo.
+homepage = "https://github.com/jmqd/simul"
+documentation = "https://github.com/jmqd/simul"
+repository = "https://github.com/jmqd/simul"
+readme = "README.org"
+
+
 [lib]
 name = "simul"
 path = "src/lib.rs"
