@@ -47,7 +47,38 @@ pub struct Simulation {
     pub state: SimulationState,
 }
 
+/// The parameters to create a Simulation.
+#[derive(Clone, Debug)]
+pub struct SimulationParameters {
+    /// The agents within the simulation, e.g. adaptive agents.
+    /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
+    pub agents: Vec<Agent>,
+    /// Given the state of the Simulation a function that determines if the Simulation is complete.
+    pub halt_check: fn(&Simulation) -> bool,
+    /// The discrete time at which the simulation should begin.
+    /// For the vast majority of simulations, 0 is the correct default.
+    pub starting_time: u64,
+    /// Whether to record metrics on queue depths at every tick of the simulation.
+    /// Takes time and space.
+    pub enable_queue_depth_telemetry: bool,
+}
+
 impl Simulation {
+    pub fn from_parameters(parameters: SimulationParameters) -> Simulation {
+        Simulation {
+            state: SimulationState::Constructed,
+            queue_depth_metrics: parameters
+                .agents
+                .iter()
+                .map(|a| (a.name.to_owned(), vec![]))
+                .collect(),
+            agents: parameters.agents,
+            halt_check: parameters.halt_check,
+            time: parameters.starting_time,
+            record_queue_depths: parameters.enable_queue_depth_telemetry,
+        }
+    }
+
     pub fn new(
         agents: Vec<Agent>,
         beginning_of_time: u64,
