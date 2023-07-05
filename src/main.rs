@@ -72,15 +72,6 @@ fn run_experiment() {
         replications_limit,
         objective_fn,
     );
-
-    println!(
-        "{:?}",
-        approx_optimal
-            .unwrap()
-            .agents
-            .iter()
-            .map(|a| (&a.name, &a.common_traits))
-    );
 }
 
 /// Given a producer with a fixed period, returns producer-consumer two Agent
