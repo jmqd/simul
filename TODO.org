@@ -51,3 +51,4 @@ Should agents be in charge of which tickets they receive?
 * TODO Add doctests throughout
 * TODO Cleanup and/or separate binary from library
 * TODO Fully-integrate plotters feature into library
+* TODO Consider replacing halt_check with a fn that returns SimulationState enum
