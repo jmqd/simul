@@ -47,7 +47,6 @@ pub struct Simulation {
     pub state: SimulationState,
 }
 
-#[allow(dead_code)]
 impl Simulation {
     pub fn new(
         agents: Vec<Agent>,
