@@ -6,9 +6,8 @@ authors = ["Jordan McQueen <j@jm.dev>"]
 license-file = "LICENSE"
 
 keywords = [
-         "sim", "simulation", "queue theory", "annealing", "experiment",
-         "monte carlo", "M/M/c", "M/M/1", "birth death", "markov chain",
-         "operations research", "modeling"]
+         "sim", "simulation", "annealing", "experiment", "monte", "carlo",
+         "M/M/c", "M/M/1", "markov", "chain", "modeling"]
 categories = ["mathematics", "science", "development-tools"]
 description = """
 A discrete-event simulation library aimed at high-level use-cases to
