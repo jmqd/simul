@@ -46,6 +46,7 @@ Note: Moved to dev-dependencies
 Should agents be in charge of which tickets they receive?
 * TODO Parallelize experiment running.
 * TODO Consider adding Experiment structure for better interface
+* TODO Add Generic data field for Messages
 * TODO Consider allowing Messages w/ no target -- fanout / global broadcast
 * TODO Add doctests throughout
 * TODO Cleanup and/or separate binary from library
