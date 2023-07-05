@@ -1,10 +1,6 @@
 `simul` is a discrete-event simulation library aimed at high-level use-cases to
 quickly simulate real-world problems and run simulated experiments.
 
-Some example use cases might include simulating logistics or operations research
-problems, running experiments to determine optimal parameters, simulating
-queueing systems, distributed systems, performance engineering, and so on.
-
 `simul` is a *discrete-event simulator* using *incremental time progression*,
 with [M/M/c queues](https://en.wikipedia.org/wiki/M/M/c_queue) for interactions
 between agents. It also supports some forms of experimentation and simulated
@@ -18,6 +14,9 @@ Use-cases:
 - [Job-shop scheduling](https://en.wikipedia.org/wiki/Job-shop_scheduling)
 - [Birth-death processes](https://en.wikipedia.org/wiki/Birth%E2%80%93death_process)
 - [Computer experiments](https://en.wikipedia.org/wiki/Computer_experiment)
+- Other: simulating logistics or operations research problems, running
+  experiments to determine optimal parameters, simulating queueing systems,
+  distributed systems, program performance engineering/analysis, and so on.
 
 # Usage
 
