@@ -2,7 +2,7 @@
 
 A discrete simulation library for simulating [[https://authors.library.caltech.edu/60491/1/MGM%20113.pdf][Complex Adaptive Systems]].
 Specifically, =simul= is a /discrete-event simulator/ using /incremental time
-progression/, with [[https://en.wikipedia.org/wiki/M/M/c_queue][=M/M/c= queues]] for interactions between agents.
+progression/, with [[https://en.wikipedia.org/wiki/M/M/c_queue][M/M/c queues]] for interactions between agents.
 
 * Usage
 #+BEGIN_QUOTE
