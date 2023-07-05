@@ -1,4 +1,5 @@
 #![feature(let_chains)]
+use log::info;
 use plotters::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
