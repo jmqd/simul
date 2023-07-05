@@ -126,14 +126,17 @@ impl Simulation {
             }
 
             while !new_messages.is_empty() {
-                let t = new_messages.pop();
+                let t = new_messages
+                    .pop()
+                    .expect("There should definitely have been a message to pop");
+
                 for agent in self.agents.iter_mut() {
-                    if agent.name == t.clone().unwrap().destination {
-                        agent.push_message(t.clone().unwrap());
+                    if agent.name == t.clone().destination {
+                        agent.push_message(t.clone());
                     }
 
-                    if agent.name == t.clone().unwrap().source {
-                        agent.produced.push(t.clone().unwrap());
+                    if agent.name == t.clone().source {
+                        agent.produced.push(t.clone());
                     }
                 }
             }
