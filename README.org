@@ -63,7 +63,7 @@ generator.
 This simulation has a =halt_check= condition of the simulation's time being
 equal to =60*60*12=, representing a full 12-hour day of the cafe being open.
 
-[[./readme-assets/2.png]]
+[[./readme-assets/cafe-example-queued-durations.png]]
 
 This is a code example for generating the above, from =main.rs=:
 
