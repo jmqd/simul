@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Jordan McQueen <j@jm.dev>"]
 license-file = "LICENSE"
+
 keywords = [
          "sim", "simulation", "queue theory", "annealing", "experiment",
-         "monte carlo", "M/M/c", "M/M/1", "birth death", "markov chain"]
+         "monte carlo", "M/M/c", "M/M/1", "birth death", "markov chain",
+         "operations research", "modeling"]
 categories = ["mathematics", "science", "development-tools"]
+description = "A discrete-event simulation library aimed at high-level use-cases to quickly simulate a real-world problem and run simulated experiments."
 
 [lib]
 name = "simul"
