@@ -50,3 +50,4 @@ Should agents be in charge of which tickets they receive?
 * TODO Consider allowing Messages w/ no target -- fanout / global broadcast
 * TODO Add doctests throughout
 * TODO Cleanup and/or separate binary from library
+* TODO Fully-integrate plotters feature into library
