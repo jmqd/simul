@@ -3,6 +3,7 @@ use plotters::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
 use simul::*;
+use simul::experiment::*;
 use std::path::PathBuf;
 
 /// Just a janky `++` operator.
@@ -54,11 +55,11 @@ fn run_experiment() {
                 .unwrap() as i64
     };
 
-    let simulation_limit = 1000;
+    let simulation_limit = 100;
 
     // Run the simulation 1000 different times, randomly varying the agent
     // configuration, and return the one that maximized the objective function.
-    let approx_optimal = experimentally_anneal_objective(
+    let approx_optimal = experiment_by_annealing_objective(
         agent_generator,
         halt_condition,
         simulation_limit,
@@ -90,53 +91,6 @@ fn periodic_agent_generator_fixed_producer(
         let consumer_agent = periodic_consuming_agent("consumer", consumer_period as u64);
         vec![producer_agent, consumer_agent]
     }
-}
-
-/// Given a function that generates various configurations of Agents, continue
-/// running simulations with various different agent configurations (via calling
-/// the generator) to try to determine the simulation that is approximately optimal
-/// by maximizing the provided objective_function.
-///
-/// The simplest and most common objective function is negative simulation time.
-/// An objective function that returns negative simulation time will find the
-/// fastest simulation.
-///
-/// The halt_condition for the simulation is also provided by the user.
-fn experimentally_anneal_objective(
-    agent_generator: impl Fn() -> Vec<Agent>,
-    halt_condition: fn(&Simulation) -> bool,
-    simulation_limit: u32,
-    objective_function: impl Fn(&Simulation) -> i64,
-) -> Option<Simulation> {
-    let mut approx_optimal_simulation: Option<Simulation> = None;
-    let mut high_score = std::i64::MIN;
-
-    for _ in 0..simulation_limit {
-        let agents = agent_generator();
-        let mut simulation = Simulation::new(agents, 0, true, halt_condition);
-        simulation.run();
-
-        let score = objective_function(&simulation);
-        println!(
-            "period = {:?}, score = {}",
-            simulation
-                .agents
-                .iter()
-                .find(|a| a.name == "consumer")
-                .unwrap()
-                .common_traits
-                .as_ref()
-                .unwrap()
-                .period,
-            score
-        );
-        if score > high_score {
-            approx_optimal_simulation = Some(simulation.clone());
-            high_score = score;
-        }
-    }
-
-    approx_optimal_simulation
 }
 
 fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {

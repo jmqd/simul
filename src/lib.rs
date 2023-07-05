@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod experiment;
 pub mod ticket;
 
 use agent::*;
