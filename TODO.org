@@ -31,5 +31,9 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
 ** TODO Remove the "stringly-typed" feel of agents currently.
 Change the API so that agent names are statically determined?
-** TODO Create a SimulationParams struct and pass it into the constructor.
+** TODO Add SimulationParams struct and pass it into the constructor.
 This is to make it more readable etc.
+** TODO Consider adding params struct for construction of Agents too.
+** TODO Rename =Ticket= to =Message= or =Packet= for better readability.
+** TODO Add experiment in experiment.rs to support running same experiment over
+   and over for getting precise confidence interval
