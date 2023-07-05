@@ -82,7 +82,7 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
                 });
             }
 
-            return None;
+            None
         },
         name: name.into(),
         extensions: Some(AgentExtensions {
@@ -136,14 +136,14 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
             if a.produced.last().is_none()
                 || a.produced.last()?.queued_time + a.extensions.as_ref()?.period? >= t
             {
-                return Some(vec![Message {
+                Some(vec![Message {
                     queued_time: t,
                     source: a.name.to_owned(),
                     destination: a.extensions.as_ref()?.target.as_ref()?.clone(),
                     ..Default::default()
-                }]);
+                }])
             } else {
-                return None;
+                None
             }
         },
         name: name.to_owned(),
@@ -175,7 +175,7 @@ pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
                     });
                 }
             }
-            return None;
+            None
         },
         name: name.to_owned(),
         extensions: Some(AgentExtensions {
