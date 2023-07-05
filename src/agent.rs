@@ -61,10 +61,8 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
             // as determined by a poisson distribution function.
             let cooldown_period = a
                 .common_traits
-                .as_ref()
-                .unwrap()
-                .period_poisson_distribution
-                .unwrap()
+                .as_ref()?
+                .period_poisson_distribution?
                 .sample(&mut rand::thread_rng()) as u64;
             a.state = AgentState::AsleepUntil(t + cooldown_period);
 
@@ -99,19 +97,13 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
             // as determined by a poisson distribution function.
             let cooldown_period = a
                 .common_traits
-                .as_ref()
-                .unwrap()
-                .period_poisson_distribution
-                .unwrap()
+                .as_ref()?
+                .period_poisson_distribution?
                 .sample(&mut rand::thread_rng()) as u64;
             a.state = AgentState::AsleepUntil(t + cooldown_period);
 
             // The agent produces some new work to its target now, since it is active.
-            let t = Message::new(
-                t,
-                &a.name,
-                a.common_traits.as_ref().unwrap().target.as_ref().unwrap(),
-            );
+            let t = Message::new(t, &a.name, a.common_traits.as_ref()?.target.as_ref()?);
             a.produced.push(t.clone());
             Some(vec![t])
         },
