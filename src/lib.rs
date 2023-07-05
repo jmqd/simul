@@ -107,7 +107,7 @@ impl Simulation {
 
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
-            let mut new_messages = vec![];
+            let mut message_bus = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
             for mut agent in self.agents.iter_mut() {
                 self.queue_depth_metrics
@@ -117,7 +117,7 @@ impl Simulation {
                 match agent.state {
                     AgentState::Active => match (agent.consumption_fn)(&mut agent, self.time) {
                         Some(messages) => {
-                            new_messages.extend(messages);
+                            message_bus.extend(messages);
                         }
                         None => debug!("No messages produced."),
                     },
@@ -125,21 +125,7 @@ impl Simulation {
                 }
             }
 
-            while !new_messages.is_empty() {
-                let t = new_messages
-                    .pop()
-                    .expect("There should definitely have been a message to pop");
-
-                for agent in self.agents.iter_mut() {
-                    if agent.name == t.clone().destination {
-                        agent.push_message(t.clone());
-                    }
-
-                    if agent.name == t.clone().source {
-                        agent.produced.push(t.clone());
-                    }
-                }
-            }
+            self.disperse_bus_messages_to_agents(message_bus);
 
             debug!("Finished this tick; incrementing time.");
             self.time += 1;
@@ -213,6 +199,21 @@ impl Simulation {
         }
 
         return data;
+    }
+
+    /// Consume a message_bus of messages and disperse those messages to the agents.
+    fn disperse_bus_messages_to_agents(&mut self, mut message_bus: Vec<Message>) {
+        while let Some(message) = message_bus.pop() {
+            for agent in self.agents.iter_mut() {
+                if agent.name == message.clone().destination {
+                    agent.push_message(message.clone());
+                }
+
+                if agent.name == message.clone().source {
+                    agent.produced.push(message.clone());
+                }
+            }
+        }
     }
 
     /// An internal function used to wakeup sleeping Agents due to wake.
