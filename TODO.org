@@ -32,7 +32,8 @@ Change the API so that agent names are statically determined?
 * DONE Add SimulationParams struct and pass it into the constructor.
 This is to make it more readable etc.
 * TODO Consider adding params struct for construction of Agents too.
-* TODO Rename =Ticket= to =Message= or =Packet= for better readability.
+* DONE Rename =Ticket= to =Message= or =Packet= for better readability.
+Also considering "Event"
 * TODO Add experiment in experiment.rs to support running same experiment over
    and over for getting precise confidence interval
 * DONE Remove env_logger dependency
