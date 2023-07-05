@@ -79,22 +79,6 @@ impl Simulation {
         }
     }
 
-    pub fn new(
-        agents: Vec<Agent>,
-        beginning_of_time: u64,
-        record_queue_depths: bool,
-        halt_check: fn(&Simulation) -> bool,
-    ) -> Simulation {
-        Simulation {
-            state: SimulationState::Constructed,
-            queue_depth_metrics: agents.iter().map(|a| (a.name.to_owned(), vec![])).collect(),
-            agents: agents.into_iter().collect(),
-            halt_check,
-            time: beginning_of_time,
-            record_queue_depths,
-        }
-    }
-
     /// Finds an agent in the simulation and return a copy.
     pub fn find_agent(&self, name: &str) -> Option<Agent> {
         self.agents.iter().find(|a| a.name == name).cloned()
