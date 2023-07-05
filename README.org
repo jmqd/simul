@@ -47,7 +47,7 @@ equal to =60*60*12=, representing a full 12-hour day of the cafe being open.
 
 This is a code example for generating the above, from =main.rs=:
 
-,#+BEGIN_SRC rust
+#+BEGIN_SRC rust
 use plotters::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
