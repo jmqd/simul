@@ -1,11 +1,11 @@
 pub mod agent;
 pub mod experiment;
-pub mod ticket;
+pub mod message;
 
 use agent::*;
 use log::{debug, info};
+use message::*;
 use std::collections::HashMap;
-use ticket::*;
 
 /// The current state of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -28,8 +28,8 @@ pub enum SimulationState {
 /// At each moment in time, it asks each Agent whether it has any action to
 /// perform.
 ///
-/// The Simulation engine uses a concept of `Tickets` to communicate between
-/// agents. Agents can receive tickets and send tickets to other Agents.
+/// The Simulation engine uses a concept of `Messages` to communicate between
+/// agents. Agents can receive messages and send messages to other Agents.
 #[derive(Clone, Debug)]
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
@@ -84,14 +84,14 @@ impl Simulation {
         self.agents.iter().find(|a| a.name == name).cloned()
     }
 
-    /// Returns the consumed tickets for a given Agent during the Simulation.
-    pub fn consumed_for_agent(&self, name: &str) -> Option<Vec<Ticket>> {
+    /// Returns the consumed messages for a given Agent during the Simulation.
+    pub fn consumed_for_agent(&self, name: &str) -> Option<Vec<Message>> {
         let agent = self.agents.iter().find(|a| a.name == name)?;
         Some(agent.consumed.clone())
     }
 
-    /// Returns the produced tickets for a given Agent during the Simulation.
-    pub fn produced_for_agent(&self, name: &str) -> Option<Vec<Ticket>> {
+    /// Returns the produced messages for a given Agent during the Simulation.
+    pub fn produced_for_agent(&self, name: &str) -> Option<Vec<Message>> {
         let agent = self.agents.iter().find(|a| a.name == name)?;
         Some(agent.produced.clone())
     }
@@ -107,7 +107,7 @@ impl Simulation {
 
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
-            let mut new_tickets = vec![];
+            let mut new_messages = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
             for mut agent in self.agents.iter_mut() {
                 self.queue_depth_metrics
@@ -116,20 +116,20 @@ impl Simulation {
                     .push(agent.queue.len());
                 match agent.state {
                     AgentState::Active => match (agent.consumption_fn)(&mut agent, self.time) {
-                        Some(tickets) => {
-                            new_tickets.extend(tickets);
+                        Some(messages) => {
+                            new_messages.extend(messages);
                         }
-                        None => debug!("No tickets produced."),
+                        None => debug!("No messages produced."),
                     },
                     AgentState::Dead | AgentState::AsleepUntil(_) => {}
                 }
             }
 
-            while !new_tickets.is_empty() {
-                let t = new_tickets.pop();
+            while !new_messages.is_empty() {
+                let t = new_messages.pop();
                 for agent in self.agents.iter_mut() {
                     if agent.name == t.clone().unwrap().destination {
-                        agent.push_ticket(t.clone().unwrap());
+                        agent.push_message(t.clone().unwrap());
                     }
 
                     if agent.name == t.clone().unwrap().source {
@@ -190,7 +190,7 @@ impl Simulation {
         return data;
     }
 
-    /// Calculates the length of the consumed tickets for each Agent.
+    /// Calculates the length of the consumed messages for each Agent.
     pub fn calc_consumed_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
@@ -201,7 +201,7 @@ impl Simulation {
         return data;
     }
 
-    /// Calculates the length of the produced tickets for each Agent.
+    /// Calculates the length of the produced messages for each Agent.
     pub fn calc_produced_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
@@ -279,17 +279,17 @@ mod tests {
                             }
                         }
 
-                        if let Some(ticket) = a.queue.pop_front() {
-                            if ticket.queued_time + 100 > t {
+                        if let Some(message) = a.queue.pop_front() {
+                            if message.queued_time + 100 > t {
                                 debug!("Still making your coffee, sorry!");
-                                a.queue.push_front(ticket);
+                                a.queue.push_front(message);
                                 return None;
                             }
 
                             debug!("Serviced a customer!");
-                            a.consumed.push(Ticket {
+                            a.consumed.push(Message {
                                 completed_time: Some(t),
-                                ..ticket
+                                ..message
                             });
                         }
                         return None;

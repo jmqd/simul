@@ -1,4 +1,4 @@
-use crate::ticket::*;
+use crate::message::*;
 use rand::prelude::*;
 use rand_distr::Poisson;
 use std::collections::VecDeque;
@@ -34,17 +34,17 @@ pub struct CommonTraits {
 /// * A single-celled organism.
 #[derive(Debug, Clone)]
 pub struct Agent {
-    pub queue: VecDeque<Ticket>,
+    pub queue: VecDeque<Message>,
     pub state: AgentState,
-    pub produced: Vec<Ticket>,
-    pub consumed: Vec<Ticket>,
-    pub consumption_fn: fn(&mut Agent, u64) -> Option<Vec<Ticket>>,
+    pub produced: Vec<Message>,
+    pub consumed: Vec<Message>,
+    pub consumption_fn: fn(&mut Agent, u64) -> Option<Vec<Message>>,
     pub name: String,
     pub common_traits: Option<CommonTraits>,
 }
 
 impl Agent {
-    pub fn push_ticket(&mut self, t: Ticket) {
+    pub fn push_message(&mut self, t: Message) {
         self.queue.push_back(t);
     }
 }
@@ -68,10 +68,10 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
                 .sample(&mut rand::thread_rng()) as u64;
             a.state = AgentState::AsleepUntil(t + cooldown_period);
 
-            if let Some(ticket) = a.queue.pop_front() {
-                a.consumed.push(Ticket {
+            if let Some(message) = a.queue.pop_front() {
+                a.consumed.push(Message {
                     completed_time: Some(t),
-                    ..ticket
+                    ..message
                 });
             }
 
@@ -107,7 +107,7 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
             a.state = AgentState::AsleepUntil(t + cooldown_period);
 
             // The agent produces some new work to its target now, since it is active.
-            let t = Ticket::new(
+            let t = Message::new(
                 t,
                 &a.name,
                 a.common_traits.as_ref().unwrap().target.as_ref().unwrap(),
@@ -124,7 +124,7 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
     }
 }
 
-/// A simple agent that produces tickets on a period, directed to target.
+/// A simple agent that produces messages on a period, directed to target.
 pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent {
     Agent {
         queue: VecDeque::with_capacity(8),
@@ -137,7 +137,7 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
                     + a.common_traits.as_ref().unwrap().period.unwrap()
                     >= t
             {
-                return Some(vec![Ticket {
+                return Some(vec![Message {
                     queued_time: t,
                     source: a.name.to_owned(),
                     destination: a
@@ -163,8 +163,8 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
     }
 }
 
-/// A simple agent that consumes tickets on a period with no side effects.
-/// Period can be thought of the time to cosume 1 ticket.
+/// A simple agent that consumes messages on a period with no side effects.
+/// Period can be thought of the time to cosume 1 message.
 pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
     Agent {
         queue: VecDeque::with_capacity(8),
@@ -178,10 +178,10 @@ pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
                         + a.common_traits.as_ref().unwrap().period.unwrap()
                         <= t)
             {
-                if let Some(ticket) = a.queue.pop_front() {
-                    a.consumed.push(Ticket {
+                if let Some(message) = a.queue.pop_front() {
+                    a.consumed.push(Message {
                         completed_time: Some(t),
-                        ..ticket
+                        ..message
                     });
                 }
             }

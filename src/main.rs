@@ -158,7 +158,7 @@ fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
         halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
     });
     simulation.run();
-    plot_queued_durations_for_processed_tickets(
+    plot_queued_durations_for_processed_messages(
         &simulation,
         &["Barista".into()],
         &"/tmp/cafe-example-queued-durations.png".to_string().into(),
@@ -297,7 +297,7 @@ fn plot_simulation(
     Ok(())
 }
 
-fn plot_queued_durations_for_processed_tickets(
+fn plot_queued_durations_for_processed_messages(
     simulation: &Simulation,
     agents: &[String],
     output: &PathBuf,
