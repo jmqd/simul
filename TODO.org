@@ -41,6 +41,7 @@ Note: Moved to dev-dependencies
 * TODO If possible, move =log= dependency to feature
 * TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
 * TODO Address all uses of =unwrap()=
+* TODO Gracefully degrade Simulations into Failed state in cases of errors
 * TODO Consider allowing Messages w/ no target -- fanout / global broadcast
 * TODO Add doctests throughout
 * TODO Cleanup and/or separate binary from library
