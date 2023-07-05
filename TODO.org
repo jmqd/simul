@@ -44,6 +44,8 @@ Note: Moved to dev-dependencies
 * TODO Gracefully degrade Simulations into Failed state in cases of errors
 * TODO Re-evaluate targeting system architecture for messages -- should agents be passed as a graph?
 Should agents be in charge of which tickets they receive?
+* TODO Parallelize experiment running.
+* TODO Consider adding Experiment structure for better interface
 * TODO Consider allowing Messages w/ no target -- fanout / global broadcast
 * TODO Add doctests throughout
 * TODO Cleanup and/or separate binary from library
