@@ -4,7 +4,7 @@ use rand_distr::Poisson;
 use std::collections::VecDeque;
 
 /// Possible states an Agent can be in.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AgentState {
     /// The Agent is active; if asked to do something, it can.
     Active,
