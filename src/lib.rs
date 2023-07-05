@@ -128,6 +128,7 @@ impl Simulation {
                 }
             }
 
+            // Consume all the new messages in the bus and deliver to agents.
             self.disperse_bus_messages_to_agents(message_bus);
 
             debug!("Finished this tick; incrementing time.");
