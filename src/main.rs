@@ -2,8 +2,8 @@
 use plotters::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
-use simul::*;
 use simul::experiment::*;
+use simul::*;
 use std::path::PathBuf;
 
 /// Just a janky `++` operator.

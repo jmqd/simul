@@ -1,5 +1,5 @@
-use crate::Simulation;
 use crate::Agent;
+use crate::Simulation;
 
 /// Given a function that generates various configurations of Agents, continue
 /// running simulations with various different agent configurations (via calling
