@@ -5,9 +5,7 @@ edition = "2021"
 authors = ["Jordan McQueen <j@jm.dev>"]
 license-file = "LICENSE"
 
-keywords = [
-         "sim", "simulation", "annealing", "experiment", "monte", "carlo",
-         "markov", "chain", "modeling"]
+keywords = ["sim", "simulation", "annealing", "experiment"]
 categories = ["mathematics", "science", "development-tools"]
 description = """
 A discrete-event simulation library aimed at high-level use-cases to
