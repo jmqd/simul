@@ -136,16 +136,7 @@ impl Simulation {
         }
 
         self.state = SimulationState::Completed;
-
-        let queue_len_stats = self.calc_queue_len_statistics();
-        let consumed_len_stats = self.calc_consumed_len_statistics();
-        let avg_wait_stats = self.calc_avg_wait_statistics();
-        let produced_len_stats = self.calc_produced_len_statistics();
-
-        info!("Queues: {:?}", queue_len_stats);
-        info!("Consumed: {:?}", consumed_len_stats);
-        info!("Produced: {:?}", produced_len_stats);
-        info!("Average processing time: {:?}", avg_wait_stats);
+        self.emit_completed_simulation_debug_logging();
     }
 
     /// A helper to calculate the average waiting time to process items.
@@ -203,6 +194,18 @@ impl Simulation {
         }
 
         return data;
+    }
+
+    fn emit_completed_simulation_debug_logging(&self) {
+        let queue_len_stats = self.calc_queue_len_statistics();
+        let consumed_len_stats = self.calc_consumed_len_statistics();
+        let avg_wait_stats = self.calc_avg_wait_statistics();
+        let produced_len_stats = self.calc_produced_len_statistics();
+
+        debug!("Queues: {:?}", queue_len_stats);
+        debug!("Consumed: {:?}", consumed_len_stats);
+        debug!("Produced: {:?}", produced_len_stats);
+        debug!("Average processing time: {:?}", avg_wait_stats);
     }
 
     /// Consume a message_bus of messages and disperse those messages to the agents.
