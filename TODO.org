@@ -55,3 +55,4 @@ Should agents be in charge of which tickets they receive?
 * TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
   ProducedMessage to dodge the unwraps and solve w/ type system
 * TODO create typedef for u64 for discrete time
+* TODO Integrate with criterion
