@@ -110,10 +110,13 @@ impl Simulation {
             let mut message_bus = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
             for mut agent in self.agents.iter_mut() {
-                self.queue_depth_metrics
-                    .get_mut(&agent.name)
-                    .expect("Failed to find agent in metrics")
-                    .push(agent.queue.len());
+                if self.record_queue_depths {
+                    self.queue_depth_metrics
+                        .get_mut(&agent.name)
+                        .expect("Failed to find agent in metrics")
+                        .push(agent.queue.len());
+                }
+
                 match agent.state {
                     AgentState::Active => match (agent.consumption_fn)(&mut agent, self.time) {
                         Some(messages) => {
