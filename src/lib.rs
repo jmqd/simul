@@ -40,7 +40,7 @@ pub struct Simulation {
     /// The current discrete time of the Simulation.
     pub time: u64,
     /// Whether to record metrics on queue depths. Takes space.
-    pub record_queue_depths: bool,
+    pub enable_queue_depth_metrics: bool,
     /// Space to store queue depth metrics. Maps from Agent to a Vec<Time, Depth>
     pub queue_depth_metrics: HashMap<String, Vec<usize>>,
     /// The state of the Simulation.
@@ -75,7 +75,7 @@ impl Simulation {
             agents: parameters.agents,
             halt_check: parameters.halt_check,
             time: parameters.starting_time,
-            record_queue_depths: parameters.enable_queue_depth_telemetry,
+            enable_queue_depth_metrics: parameters.enable_queue_depth_telemetry,
         }
     }
 
@@ -110,7 +110,7 @@ impl Simulation {
             let mut message_bus = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
             for mut agent in self.agents.iter_mut() {
-                if self.record_queue_depths {
+                if self.enable_queue_depth_metrics {
                     self.queue_depth_metrics
                         .get_mut(&agent.name)
                         .expect("Failed to find agent in metrics")
