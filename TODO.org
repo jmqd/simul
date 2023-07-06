@@ -6,6 +6,7 @@
 * Crate cleanup
 ** TODO Cleanup and/or separate binary from library
 ** TODO Fully-integrate plotters feature into library
+** TODO Move Agent creaton helpers into impl proper
 * Architecture / Interface
 ** IDEA Consider replacing halt_check with a fn that returns SimulationState enum
 ** IDEA Consider adding Experiment structure for better interface
