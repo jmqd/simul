@@ -88,10 +88,6 @@ impl Agent {
 /// An agent that consumes on a Poisson-distributed periodicity.
 pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Agent {
     Agent {
-        queue: VecDeque::with_capacity(8),
-        state: AgentState::Active,
-        produced: vec![],
-        consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
@@ -117,6 +113,7 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
             target: None,
             period_poisson_distribution: Some(dist),
         }),
+        ..Default::default()
     }
 }
 
@@ -124,10 +121,6 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
 /// returns an Agent that produces to Target with that frequency.
 pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, target: &str) -> Agent {
     Agent {
-        queue: VecDeque::with_capacity(8),
-        state: AgentState::Active,
-        produced: vec![],
-        consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
@@ -149,16 +142,13 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
             target: Some(target.to_owned()),
             period_poisson_distribution: Some(dist),
         }),
+        ..Default::default()
     }
 }
 
 /// A simple agent that produces messages on a period, directed to target.
 pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent {
     Agent {
-        queue: VecDeque::with_capacity(8),
-        state: AgentState::Active,
-        produced: vec![],
-        consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
             if a.produced.last().is_none()
                 || a.produced.last()?.queued_time + a.extensions.as_ref()?.period? >= t
@@ -179,6 +169,7 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
             target: Some(target.to_owned()),
             period_poisson_distribution: None,
         }),
+        ..Default::default()
     }
 }
 
@@ -186,10 +177,6 @@ pub fn periodic_producing_agent(name: &str, period: u64, target: &str) -> Agent 
 /// Period can be thought of the time to cosume 1 message.
 pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
     Agent {
-        queue: VecDeque::with_capacity(8),
-        state: AgentState::Active,
-        produced: vec![],
-        consumed: vec![],
         consumption_fn: |a: &mut Agent, t: u64| {
             if t >= a.extensions.as_ref()?.period?
                 && (a.consumed.last().is_none()
@@ -210,5 +197,6 @@ pub fn periodic_consuming_agent(name: &str, period: u64) -> Agent {
             target: None,
             period_poisson_distribution: None,
         }),
+        ..Default::default()
     }
 }
