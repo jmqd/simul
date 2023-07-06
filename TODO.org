@@ -25,9 +25,7 @@ Change the API so that agent names are statically determined?
 What's the best practice in Rust? Do people have debug! stmts in libs?
 ** TODO Consistently use =Self {}= over concrete struct names
 * Interface Ergonomics - Low Hanging
-** DONE create typedef for u64 for discrete time
 ** IDEA Check for other places to consider implementing Default.
-** IDEA Consider adding params struct for construction of Agents too.
 ** WAIT Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
 #+BEGIN_SRC rust
 /// An ObjectiveFunction is used in simulated annealing and it is the function
@@ -68,3 +66,4 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 Default doesn't make sense for message in its current form.  e.g. String source,
 String destination, u64 queued_time have no reasonable default value.
 Data structure needs to improve.
+** KILL Consider adding params struct for construction of Agents too.
