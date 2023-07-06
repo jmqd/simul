@@ -14,9 +14,9 @@ Use-cases:
 - [Job-shop scheduling](https://en.wikipedia.org/wiki/Job-shop_scheduling)
 - [Birth-death processes](https://en.wikipedia.org/wiki/Birth%E2%80%93death_process)
 - [Computer experiments](https://en.wikipedia.org/wiki/Computer_experiment)
-- Other: simulating logistics or operations research problems, running
-  experiments to determine optimal parameters, simulating queueing systems,
-  distributed systems, program performance engineering/analysis, and so on.
+- Other: simulating logistics, operations research problems, running experiments
+  to approximate a global optimum, simulating queueing systems, distributed
+  systems, performance engineering/analysis, and so on.
 
 # Usage
 
