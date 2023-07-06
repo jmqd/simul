@@ -25,8 +25,8 @@ Change the API so that agent names are statically determined?
 What's the best practice in Rust? Do people have debug! stmts in libs?
 * Interface Ergonomics - Low Hanging
 ** TODO create typedef for u64 for discrete time
-** TODO Add Default implementation for SimulationParmeters
-** TODO Add Default implementation for Agent?
+** DONE Add Default implementation for SimulationParameters
+** DONE Add Default implementation for Agent?
 ** TODO Add Default implementation for Message?
 ** IDEA Check for other places to consider implementing Default.
 ** IDEA Consider adding params struct for construction of Agents too.
