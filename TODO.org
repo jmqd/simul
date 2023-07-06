@@ -1,5 +1,35 @@
-* DONE Poisson creation helper functions for Agents
-* TODO Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
+* Features
+** TODO Add experiment in experiment.rs to support running same experiment over
+   and over for getting precise confidence interval
+* Performance
+** TODO Parallelize experiment running.
+* Crate cleanup
+** TODO Cleanup and/or separate binary from library
+** TODO Fully-integrate plotters feature into library
+* Architecture / Interface
+** IDEA Consider replacing halt_check with a fn that returns SimulationState enum
+** IDEA Consider adding Experiment structure for better interface
+** IDEA Re-evaluate targeting system architecture for messages
+Should agents be passed as a graph?
+Should agents be in charge of which tickets they receive?
+** TODO Remove the "stringly-typed" feel of agents currently.
+Change the API so that agent names are statically determined?
+** TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
+* Testing
+** TODO Add doctests throughout
+** TODO Integrate with criterion
+* Code Cleanup
+** TODO Gracefully degrade Simulations into Failed state in cases of errors
+** TODO If possible, move =log= dependency to feature or remove
+What's the best practice in Rust? Do people have debug! stmts in libs?
+* Interface Ergonomics - Low Hanging
+** TODO create typedef for u64 for discrete time
+** TODO Add Default implementation for SimulationParmeters
+** TODO Add Default implementation for Agent?
+** TODO Add Default implementation for Message?
+** IDEA Check for other places to consider implementing Default.
+** IDEA Consider adding params struct for construction of Agents too.
+** WAIT Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
 #+BEGIN_SRC rust
 /// An ObjectiveFunction is used in simulated annealing and it is the function
 /// that we try to maximize when running many simulations.
@@ -27,46 +57,8 @@
 /// ```
 pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
-* DONE Add SimulationParams struct and pass it into the constructor.
-* DONE Rename =Ticket= to =Message= or =Packet= for better readability.
-Also considering "Event"
-* DONE Remove env_logger dependency
-Note: Moved to dev-dependencies
-* DONE Address all uses of =unwrap()=
-More or less did a first pass. I have more work to do here, but those are bigger changes.
-* Features
-** TODO Add experiment in experiment.rs to support running same experiment over
-   and over for getting precise confidence interval
-* Performance
-** TODO Parallelize experiment running.
-* Crate cleanup
-** TODO Cleanup and/or separate binary from library
-** TODO Fully-integrate plotters feature into library
-* Architecture / Interface
-** TODO Consider replacing halt_check with a fn that returns SimulationState enum
-** TODO Consider adding Experiment structure for better interface
-** TODO Re-evaluate targeting system architecture for messages
-Should agents be passed as a graph?
-Should agents be in charge of which tickets they receive?
-** TODO Remove the "stringly-typed" feel of agents currently.
-Change the API so that agent names are statically determined?
-** TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
-* Testing
-** TODO Add doctests throughout
-** TODO Integrate with criterion
-* Code Cleanup
-** TODO Gracefully degrade Simulations into Failed state in cases of errors
-** TODO If possible, move =log= dependency to feature or remove
-What's the best practice in Rust? Do people have debug! stmts in libs?
-* Interface Ergonomics - Low Hanging
-** TODO create typedef for u64 for discrete time
-** TODO Add Default implementation for SimulationParmeters
-** TODO Add Default implementation for Agent?
-** TODO Add Default implementation for Message?
-** TODO Check for other places to consider implementing Default.
-** TODO Consider adding params struct for construction of Agents too.
 * Message improvements
 ** TODO Add Generic data field for Messages
-** TODO Consider allowing Messages w/ no target -- fanout / global broadcast
+** IDEA Consider allowing Messages w/ no target -- fanout / global broadcast
 ** TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
   ProducedMessage to dodge the unwraps and solve w/ type system
