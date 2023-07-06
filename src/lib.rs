@@ -61,6 +61,17 @@ pub struct SimulationParameters {
     pub enable_queue_depth_telemetry: bool,
 }
 
+impl Default for SimulationParameters {
+    fn default() -> Self {
+        SimulationParameters {
+            agents: vec![],
+            halt_check: |_| true,
+            starting_time: 0,
+            enable_queue_depth_telemetry: false,
+        }
+    }
+}
+
 impl Simulation {
     pub fn new(parameters: SimulationParameters) -> Simulation {
         Simulation {
