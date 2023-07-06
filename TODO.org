@@ -62,3 +62,5 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 ** IDEA Consider allowing Messages w/ no target -- fanout / global broadcast
 ** TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
   ProducedMessage to dodge the unwraps and solve w/ type system
+** TODO Rename various time stamp fields to align on semantics
+** IDEA Should Messages be an algebraic type, in fact?
