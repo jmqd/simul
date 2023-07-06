@@ -1,4 +1,5 @@
 use crate::message::*;
+use rand::distributions::{Alphanumeric, DistString};
 use rand::prelude::*;
 use rand_distr::Poisson;
 use std::collections::VecDeque;
@@ -52,9 +53,35 @@ pub struct Agent {
     pub extensions: Option<AgentExtensions>,
 }
 
+impl Default for Agent {
+    fn default() -> Self {
+        Self {
+            queue: VecDeque::with_capacity(8),
+            state: AgentState::Active,
+            produced: vec![],
+            consumed: vec![],
+            consumption_fn: (|a: &mut Agent, now: u64| a.pop_process_msg(now)),
+            name: Alphanumeric.sample_string(&mut rand::thread_rng(), 4),
+            extensions: None,
+        }
+    }
+}
+
 impl Agent {
     pub fn push_message(&mut self, t: Message) {
         self.queue.push_back(t);
+    }
+
+    /// The most basic message processing routine: pop -> mark done -> push to consumed.
+    pub fn pop_process_msg(&mut self, now: u64) -> Option<Vec<Message>> {
+        if let Some(msg) = self.queue.pop_front() {
+            self.consumed.push(Message {
+                completed_time: Some(now),
+                ..msg
+            });
+        }
+
+        None
     }
 }
 
