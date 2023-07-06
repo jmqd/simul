@@ -250,7 +250,6 @@ impl Simulation {
 mod tests {
     use super::*;
     use rand_distr::Poisson;
-    use std::collections::VecDeque;
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
