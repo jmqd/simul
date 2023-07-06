@@ -47,17 +47,19 @@ More or less did a first pass. I have more work to do here, but those are bigger
 Should agents be in charge of which tickets they receive?
 * TODO Parallelize experiment running.
 * TODO Consider adding Experiment structure for better interface
-* TODO Add Generic data field for Messages
-* TODO Consider allowing Messages w/ no target -- fanout / global broadcast
 * TODO Add doctests throughout
 * TODO Cleanup and/or separate binary from library
 * TODO Fully-integrate plotters feature into library
 * TODO Consider replacing halt_check with a fn that returns SimulationState enum
-* TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
-  ProducedMessage to dodge the unwraps and solve w/ type system
-* TODO create typedef for u64 for discrete time
 * TODO Integrate with criterion
-* TODO Add Default implementation for SimulationParmeters
-* TODO Add Default implementation for Agent?
-* TODO Add Default implementation for Message?
-* TODO Check for other places to consider implementing Default.
+* Interface Ergonomics - Low Hanging
+** TODO create typedef for u64 for discrete time
+** TODO Add Default implementation for SimulationParmeters
+** TODO Add Default implementation for Agent?
+** TODO Add Default implementation for Message?
+** TODO Check for other places to consider implementing Default.
+* Message improvements
+** TODO Add Generic data field for Messages
+** TODO Consider allowing Messages w/ no target -- fanout / global broadcast
+** TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
+  ProducedMessage to dodge the unwraps and solve w/ type system
