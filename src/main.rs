@@ -32,9 +32,8 @@ fn run_experiment() {
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
         agents: agent_generator(),
-        starting_time: 0,
         halt_check: halt_condition,
-        enable_queue_depth_telemetry: false,
+        ..Default::default()
     };
 
     // This is the objective function which we're trying to approximately
@@ -107,9 +106,9 @@ fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
             periodic_producing_agent("producer", 1, "consumer"),
             periodic_consuming_agent("consumer", 3),
         ],
-        starting_time: 0,
         enable_queue_depth_telemetry: true,
         halt_check: |s: &Simulation| s.time == 10,
+        ..Default::default()
     });
     simulation.run();
     plot_simulation(
@@ -126,9 +125,9 @@ fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
             poisson_distributed_consuming_agent("Barista", Poisson::new(60.0)?),
             poisson_distributed_producing_agent("Customers", Poisson::new(60.0)?, "Barista"),
         ],
-        starting_time: 0,
         enable_queue_depth_telemetry: true,
         halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
+        ..Default::default()
     });
     simulation.run();
     plot_simulation(
@@ -145,9 +144,9 @@ fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
             poisson_distributed_consuming_agent("Barista", Poisson::new(60.0)?),
             poisson_distributed_producing_agent("Customers", Poisson::new(60.0)?, "Barista"),
         ],
-        starting_time: 0,
         enable_queue_depth_telemetry: true,
         halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
+        ..Default::default()
     });
     simulation.run();
     plot_queued_durations_for_processed_messages(

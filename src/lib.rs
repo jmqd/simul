@@ -261,9 +261,8 @@ mod tests {
                 periodic_producing_agent("producer", 1, "consumer"),
                 periodic_consuming_agent("consumer", 1),
             ],
-            starting_time: 0,
-            enable_queue_depth_telemetry: false,
             halt_check: |s: &Simulation| s.time == 5,
+            ..Default::default()
         });
         simulation.run();
         let produced_stats = simulation.calc_produced_len_statistics();
