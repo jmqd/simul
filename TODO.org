@@ -23,6 +23,7 @@ Change the API so that agent names are statically determined?
 ** TODO Gracefully degrade Simulations into Failed state in cases of errors
 ** TODO If possible, move =log= dependency to feature or remove
 What's the best practice in Rust? Do people have debug! stmts in libs?
+** TODO Consistently use =Self {}= over concrete struct names
 * Interface Ergonomics - Low Hanging
 ** TODO create typedef for u64 for discrete time
 ** IDEA Check for other places to consider implementing Default.
