@@ -89,8 +89,8 @@ fn run_experiment() {
 /// The consumer randomly varies between 0 and consumer_max_period. The two
 /// agents are always named "producer" and "consumer".
 fn periodic_agent_generator_fixed_producer(
-    producer_period: u64,
-    consumer_max_period: u64,
+    producer_period: DiscreteTime,
+    consumer_max_period: DiscreteTime,
 ) -> impl Fn() -> Vec<Agent> {
     move || {
         let consumer_period = rand::random::<u32>() % (consumer_max_period + 1) as u32;
