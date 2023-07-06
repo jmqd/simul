@@ -27,37 +27,44 @@
 /// ```
 pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
-* TODO Remove the "stringly-typed" feel of agents currently.
-Change the API so that agent names are statically determined?
 * DONE Add SimulationParams struct and pass it into the constructor.
-This is to make it more readable etc.
-* TODO Consider adding params struct for construction of Agents too.
 * DONE Rename =Ticket= to =Message= or =Packet= for better readability.
 Also considering "Event"
-* TODO Add experiment in experiment.rs to support running same experiment over
-   and over for getting precise confidence interval
 * DONE Remove env_logger dependency
 Note: Moved to dev-dependencies
-* TODO If possible, move =log= dependency to feature
-* TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
 * DONE Address all uses of =unwrap()=
 More or less did a first pass. I have more work to do here, but those are bigger changes.
-* TODO Gracefully degrade Simulations into Failed state in cases of errors
-* TODO Re-evaluate targeting system architecture for messages -- should agents be passed as a graph?
+* Features
+** TODO Add experiment in experiment.rs to support running same experiment over
+   and over for getting precise confidence interval
+* Performance
+** TODO Parallelize experiment running.
+* Crate cleanup
+** TODO Cleanup and/or separate binary from library
+** TODO Fully-integrate plotters feature into library
+* Architecture / Interface
+** TODO Consider replacing halt_check with a fn that returns SimulationState enum
+** TODO Consider adding Experiment structure for better interface
+** TODO Re-evaluate targeting system architecture for messages
+Should agents be passed as a graph?
 Should agents be in charge of which tickets they receive?
-* TODO Parallelize experiment running.
-* TODO Consider adding Experiment structure for better interface
-* TODO Add doctests throughout
-* TODO Cleanup and/or separate binary from library
-* TODO Fully-integrate plotters feature into library
-* TODO Consider replacing halt_check with a fn that returns SimulationState enum
-* TODO Integrate with criterion
+** TODO Remove the "stringly-typed" feel of agents currently.
+Change the API so that agent names are statically determined?
+** TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
+* Testing
+** TODO Add doctests throughout
+** TODO Integrate with criterion
+* Code Cleanup
+** TODO Gracefully degrade Simulations into Failed state in cases of errors
+** TODO If possible, move =log= dependency to feature or remove
+What's the best practice in Rust? Do people have debug! stmts in libs?
 * Interface Ergonomics - Low Hanging
 ** TODO create typedef for u64 for discrete time
 ** TODO Add Default implementation for SimulationParmeters
 ** TODO Add Default implementation for Agent?
 ** TODO Add Default implementation for Message?
 ** TODO Check for other places to consider implementing Default.
+** TODO Consider adding params struct for construction of Agents too.
 * Message improvements
 ** TODO Add Generic data field for Messages
 ** TODO Consider allowing Messages w/ no target -- fanout / global broadcast

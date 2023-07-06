@@ -1,0 +1,9 @@
+#+title: Changelog
+
+* DONE Add SimulationParams struct and pass it into the constructor.
+* DONE Rename =Ticket= to =Message= or =Packet= for better readability.
+Also considering "Event"
+* DONE Remove env_logger dependency
+Note: Moved to dev-dependencies
+* DONE Address all uses of =unwrap()=
+More or less did a first pass. I have more work to do here, but those are bigger changes.
