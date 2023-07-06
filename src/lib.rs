@@ -280,11 +280,7 @@ mod tests {
         let mut simulation = Simulation::new(SimulationParameters {
             agents: vec![
                 Agent {
-                    queue: VecDeque::with_capacity(8),
-                    state: AgentState::Active,
                     name: "Starbucks Clerk".to_owned(),
-                    consumed: vec![],
-                    produced: vec![],
                     consumption_fn: |a: &mut Agent, t: u64| {
                         debug!("{} looking for a customer.", a.name);
                         if let Some(last) = a.consumed.last() {
@@ -309,7 +305,7 @@ mod tests {
                         }
                         return None;
                     },
-                    extensions: None,
+                    ..Default::default()
                 },
                 poisson_distributed_producing_agent(
                     "Starbucks Customers",
