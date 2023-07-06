@@ -20,16 +20,14 @@ pub enum SimulationState {
     Failed,
 }
 
-/// A Simulation struct holds all the state for any given simulation.
+/// A Simulation struct is responsible to hold all the state for a simulation
+/// and coordinates the actions and interactions of the agents.
 ///
-/// A Simulation is an engine that advances through its own discrete definition
-/// of time and has a collection of Agents that live in its domain.
-///
-/// At each moment in time, it asks each Agent whether it has any action to
-/// perform.
-///
-/// The Simulation engine uses a concept of `Messages` to communicate between
-/// agents. Agents can receive messages and send messages to other Agents.
+/// A Simulation has its own concept of time, which is implemented as discrete
+/// ticks of the u64 field `time`. Every tick is modeled as an instantaneous
+/// point in time at which interactions can occur. The Simulation engine uses a
+/// concept of `Messages` to communicate between agents. Agents can receive
+/// messages and send messages to other Agents.
 #[derive(Clone, Debug)]
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
