@@ -24,7 +24,7 @@ Use-cases:
 >
 > Experimental and unstable. Almost all APIs are expected to change.
 
-## Barebones basic example
+## Basic usage
 
 ``` toml
 [dependencies]
