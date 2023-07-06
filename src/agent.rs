@@ -60,7 +60,7 @@ impl Default for Agent {
             state: AgentState::Active,
             produced: vec![],
             consumed: vec![],
-            consumption_fn: (|a: &mut Agent, now: DiscreteTime| a.pop_process_msg(now)),
+            consumption_fn: (|a: &mut Agent, t: DiscreteTime| a.pop_process_msg(t)),
             name: Alphanumeric.sample_string(&mut rand::thread_rng(), 4),
             extensions: None,
         }
@@ -73,10 +73,10 @@ impl Agent {
     }
 
     /// The most basic message processing routine: pop -> mark done -> push to consumed.
-    pub fn pop_process_msg(&mut self, now: DiscreteTime) -> Option<Vec<Message>> {
+    pub fn pop_process_msg(&mut self, t: DiscreteTime) -> Option<Vec<Message>> {
         if let Some(msg) = self.queue.pop_front() {
             self.consumed.push(Message {
-                completed_time: Some(now),
+                completed_time: Some(t),
                 ..msg
             });
         }
@@ -121,7 +121,7 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
 /// returns an Agent that produces to Target with that frequency.
 pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, target: &str) -> Agent {
     Agent {
-        consumption_fn: |a: &mut Agent, now: DiscreteTime| {
+        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
             let cooldown_period = a
@@ -129,10 +129,10 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
                 .as_ref()?
                 .period_poisson_distribution?
                 .sample(&mut rand::thread_rng()) as u64;
-            a.state = AgentState::AsleepUntil(now + cooldown_period);
+            a.state = AgentState::AsleepUntil(t + cooldown_period);
 
-            // The agent produces some new work to its target now, since it is active.
-            let msg = Message::new(now, &a.name, a.extensions.as_ref()?.target.as_ref()?);
+            // The agent produces some new work to its target t, since it is active.
+            let msg = Message::new(t, &a.name, a.extensions.as_ref()?.target.as_ref()?);
             a.produced.push(msg.clone());
             Some(vec![msg])
         },
@@ -149,12 +149,12 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
 /// A simple agent that produces messages on a period, directed to target.
 pub fn periodic_producing_agent(name: &str, period: DiscreteTime, target: &str) -> Agent {
     Agent {
-        consumption_fn: |a: &mut Agent, now: DiscreteTime| {
+        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
             if a.produced.last().is_none()
-                || a.produced.last()?.queued_time + a.extensions.as_ref()?.period? >= now
+                || a.produced.last()?.queued_time + a.extensions.as_ref()?.period? >= t
             {
                 Some(vec![Message {
-                    queued_time: now,
+                    queued_time: t,
                     source: a.name.to_owned(),
                     destination: a.extensions.as_ref()?.target.as_ref()?.clone(),
                     ..Default::default()
