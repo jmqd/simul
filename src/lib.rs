@@ -7,6 +7,9 @@ use log::debug;
 use message::*;
 use std::collections::HashMap;
 
+/// DiscreteTime is a Simulation's internal representation of time.
+type DiscreteTime = u64;
+
 /// The current state of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum SimulationState {
@@ -36,7 +39,7 @@ pub struct Simulation {
     /// A halt check function: given the state of the Simulation determine halt or not.
     pub halt_check: fn(&Simulation) -> bool,
     /// The current discrete time of the Simulation.
-    pub time: u64,
+    pub time: DiscreteTime,
     /// Whether to record metrics on queue depths. Takes space.
     pub enable_queue_depth_metrics: bool,
     /// Space to store queue depth metrics. Maps from Agent to a Vec<Time, Depth>
@@ -55,7 +58,7 @@ pub struct SimulationParameters {
     pub halt_check: fn(&Simulation) -> bool,
     /// The discrete time at which the simulation should begin.
     /// For the vast majority of simulations, 0 is the correct default.
-    pub starting_time: u64,
+    pub starting_time: DiscreteTime,
     /// Whether to record metrics on queue depths at every tick of the simulation.
     /// Takes time and space.
     pub enable_queue_depth_telemetry: bool,
@@ -281,7 +284,7 @@ mod tests {
             agents: vec![
                 Agent {
                     name: "Starbucks Clerk".to_owned(),
-                    consumption_fn: |a: &mut Agent, t: u64| {
+                    consumption_fn: |a: &mut Agent, t: DiscreteTime| {
                         debug!("{} looking for a customer.", a.name);
                         if let Some(last) = a.consumed.last() {
                             if last.completed_time? + 60 > t {
