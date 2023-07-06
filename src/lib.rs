@@ -8,7 +8,7 @@ use message::*;
 use std::collections::HashMap;
 
 /// DiscreteTime is a Simulation's internal representation of time.
-type DiscreteTime = u64;
+pub type DiscreteTime = u64;
 
 /// The current state of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
