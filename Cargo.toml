@@ -33,7 +33,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "simul-bin"
-path = "src/main.rs"
+path = "src/prototyping-binary/main.rs"
 required-features = ["build-binary"]
 
 [dev-dependencies]
