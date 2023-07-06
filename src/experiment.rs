@@ -5,16 +5,18 @@ use crate::SimulationParameters;
 /// objective function. This is used to find approximate global optimazations.
 type ObjectiveScore = i64;
 
-/// Given a function that generates various configurations of Agents, continue
-/// running simulations with various different agent configurations (via calling
-/// the generator) to try to determine the simulation that is approximately optimal
-/// by maximizing the provided objective_function.
+/// Given a function that generates various configurations of
+/// SimulationParameters, run many simulation replications with varying
+/// SimulationParameters. The parameters are varied by calling the generator.
+/// The generator may, for example, randomly vary multiple fields of the
+/// parameters. This function tries to approximate the globally optimal
+/// parameters by running the simulation as many times as you specify
+/// (replications_limit), and finds the Simulation that yielded the highest
+/// score from the provided objective_function.
 ///
-/// The simplest and most common objective function is negative simulation time.
-/// An objective function that returns negative simulation time will find the
-/// fastest simulation.
-///
-/// The halt_condition for the simulation is also provided by the user.
+/// The simplest and most common objective function is to return negative
+/// simulation time. An objective function that returns negative simulation time
+/// will find the Simulation that completed in the least ticks of DiscreteTime.
 pub fn experiment_by_annealing_objective(
     simulation_parameters_generator: impl Fn() -> SimulationParameters,
     replications_limit: u32,
