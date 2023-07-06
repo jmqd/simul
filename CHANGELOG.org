@@ -10,3 +10,4 @@ More or less did a first pass. I have more work to do here, but those are bigger
 * DONE Poisson creation helper functions for Agents
 * DONE Add Default implementation for SimulationParameters
 * DONE Add Default implementation for Agent?
+* DONE create typedef for u64 for discrete time
