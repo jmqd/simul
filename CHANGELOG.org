@@ -7,3 +7,6 @@ Also considering "Event"
 Note: Moved to dev-dependencies
 * DONE Address all uses of =unwrap()=
 More or less did a first pass. I have more work to do here, but those are bigger changes.
+* DONE Poisson creation helper functions for Agents
+* DONE Add Default implementation for SimulationParameters
+* DONE Add Default implementation for Agent?
