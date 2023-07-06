@@ -56,3 +56,7 @@ Should agents be in charge of which tickets they receive?
   ProducedMessage to dodge the unwraps and solve w/ type system
 * TODO create typedef for u64 for discrete time
 * TODO Integrate with criterion
+* TODO Add Default implementation for SimulationParmeters
+* TODO Add Default implementation for Agent?
+* TODO Add Default implementation for Message?
+* TODO Check for other places to consider implementing Default.
