@@ -40,7 +40,8 @@ Also considering "Event"
 Note: Moved to dev-dependencies
 * TODO If possible, move =log= dependency to feature
 * TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
-* TODO Address all uses of =unwrap()=
+* DONE Address all uses of =unwrap()=
+More or less did a first pass. I have more work to do here, but those are bigger changes.
 * TODO Gracefully degrade Simulations into Failed state in cases of errors
 * TODO Re-evaluate targeting system architecture for messages -- should agents be passed as a graph?
 Should agents be in charge of which tickets they receive?
