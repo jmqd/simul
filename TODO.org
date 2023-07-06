@@ -54,6 +54,7 @@ What's the best practice in Rust? Do people have debug! stmts in libs?
 /// ```
 pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
+** IDEA Fix Poisson<f64> business -- f64 is the wrong type, feels weird/leaky
 * Message improvements
 ** TODO Add Generic data field for Messages
 ** IDEA Consider allowing Messages w/ no target -- fanout / global broadcast
