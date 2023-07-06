@@ -19,8 +19,11 @@ pub enum AgentState {
 /// This is hacky and it should be removed/refactored away.
 #[derive(Default, Debug, Clone)]
 pub struct AgentExtensions {
+    /// If the Agent has a periodic component, this stores that value.
     pub period: Option<DiscreteTime>,
+    /// If the Agent is a producer to a specific target, this stores the target.
     pub target: Option<String>,
+    /// If the Agent has a possion-distributed period, this is that distribution.
     pub period_poisson_distribution: Option<Poisson<f64>>,
 }
 
