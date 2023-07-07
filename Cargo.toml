@@ -1,6 +1,6 @@
 [package]
 name = "simul"
-version = "0.2.2"
+version = "0.2.3"
 rust-version = "1.70"
 edition = "2021"
 authors = ["Jordan McQueen <j@jm.dev>"]
