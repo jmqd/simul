@@ -62,6 +62,8 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
   ProducedMessage to dodge the unwraps and solve w/ type system
 ** TODO Rename various time stamp fields to align on semantics
 ** IDEA Should Messages be an algebraic type, in fact?
+* Bug
+** TODO Fix Agent Debug derive for stable rust (nightly only, apparently)
 * Killed
 ** KILL Add Default implementation for Message?
 Default doesn't make sense for message in its current form.  e.g. String source,
