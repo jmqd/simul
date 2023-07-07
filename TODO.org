@@ -63,19 +63,6 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 ** TODO Rename various time stamp fields to align on semantics
 ** IDEA Should Messages be an algebraic type, in fact?
 * Bug
-** DONE Fix Agent Debug derive for stable rust (nightly only, apparently)
-This wasn't a nightly issue, this was a rust version issue.
-
-This reproduced the issue:
-
-#+BEGIN_SRC shell
-cargo +1.69.0 build
-#+END_SRC
-
-But 1.70.0 is fine.
-
-Fixed by adding rust-version to cargo.toml.
-
 * Killed
 ** KILL Add Default implementation for Message?
 Default doesn't make sense for message in its current form.  e.g. String source,
