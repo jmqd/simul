@@ -40,9 +40,14 @@ required-features = ["build-binary"]
 [dev-dependencies]
 env_logger = "0.10"
 
+[[bench]]
+name = "benchmarks"
+harness = false
+
 [dependencies]
 rand = {version = "0", features = ["alloc"]}
 rand_distr = "0.4"
 ringbuffer = "0.14"
 log = "0.4"
 plotters = {version = "0.3.3", optional = true}
+criterion = "0.5.1"
