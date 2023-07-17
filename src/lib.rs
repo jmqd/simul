@@ -42,10 +42,10 @@ pub struct Simulation {
     pub time: DiscreteTime,
     /// Whether to record metrics on queue depths. Takes space.
     pub enable_queue_depth_metrics: bool,
-    /// Space to store queue depth metrics. Maps from Agent to a Vec<Time, Depth>
-    pub queue_depth_metrics: HashMap<String, Vec<usize>>,
     /// The state of the Simulation.
     pub state: SimulationState,
+    /// Maps from Agent.name => a handle for indexing the Agent in the vec.
+    agent_metadata_hash_table: HashMap<String, AgentMetadata>,
 }
 
 /// The parameters to create a Simulation.
@@ -75,14 +75,29 @@ impl Default for SimulationParameters {
     }
 }
 
+#[derive(Clone, Debug)]
+struct AgentMetadata {
+    handle: usize,
+    queue_depth_metrics: Vec<usize>,
+}
+
 impl Simulation {
     pub fn new(parameters: SimulationParameters) -> Simulation {
         Simulation {
             state: SimulationState::Constructed,
-            queue_depth_metrics: parameters
+            agent_metadata_hash_table: parameters
                 .agents
                 .iter()
-                .map(|a| (a.name.to_owned(), vec![]))
+                .enumerate()
+                .map(|(i, a)| {
+                    (
+                        a.name.to_owned(),
+                        AgentMetadata {
+                            handle: i,
+                            queue_depth_metrics: vec![],
+                        },
+                    )
+                })
                 .collect(),
             agents: parameters.agents,
             halt_check: parameters.halt_check,
@@ -110,7 +125,14 @@ impl Simulation {
 
     /// Returns the queue depth timeseries for a given Agent during the Simulation.
     pub fn queue_depth_metrics(&self, agent_name: &str) -> Option<Vec<usize>> {
-        self.queue_depth_metrics.get(agent_name).cloned()
+        // TODO(?): Return non option here.
+        Some(
+            self.agent_metadata_hash_table
+                .get(agent_name)
+                .expect("retrieve agent from hash table")
+                .queue_depth_metrics
+                .clone(),
+        )
     }
 
     /// Runs the simulation. This should only be called after adding all the beginning state.
@@ -121,11 +143,13 @@ impl Simulation {
             debug!("Running next tick of simulation at time {}", self.time);
             let mut message_bus = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
+
             for agent in self.agents.iter_mut() {
                 if self.enable_queue_depth_metrics {
-                    self.queue_depth_metrics
+                    self.agent_metadata_hash_table
                         .get_mut(&agent.name)
                         .expect("Failed to find agent in metrics")
+                        .queue_depth_metrics
                         .push(agent.queue.len());
                 }
 
