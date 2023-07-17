@@ -4,7 +4,7 @@ extern crate criterion;
 use criterion::criterion_group;
 use criterion::Criterion;
 use simul::agent::*;
-use simul::message::*;
+
 use simul::*;
 
 fn simple_periodic_bench(c: &mut Criterion) {
