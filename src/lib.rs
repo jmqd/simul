@@ -258,13 +258,10 @@ impl Simulation {
     /// An internal function used to wakeup sleeping Agents due to wake.
     fn wakeup_agents_scheduled_to_wakeup_now(&mut self) {
         for agent in self.agents.iter_mut() {
-            match agent.state {
-                AgentState::AsleepUntil(scheduled_wakeup) => {
-                    if self.time >= scheduled_wakeup {
-                        agent.state = AgentState::Active;
-                    }
+            if let AgentState::AsleepUntil(scheduled_wakeup) = agent.state {
+                if self.time >= scheduled_wakeup {
+                    agent.state = AgentState::Active;
                 }
-                _ => (),
             }
         }
     }
