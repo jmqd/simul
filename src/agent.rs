@@ -2,6 +2,7 @@ use crate::{message::*, DiscreteTime};
 use rand::distributions::{Alphanumeric, DistString};
 use rand::prelude::*;
 use rand_distr::Poisson;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 
 /// Possible states an Agent can be in.
@@ -25,6 +26,9 @@ pub struct AgentExtensions {
     pub target: Option<String>,
     /// If the Agent has a possion-distributed period, this is that distribution.
     pub period_poisson_distribution: Option<Poisson<f64>>,
+
+    pub score: u8,
+    pub winning_threshold: u8,
 }
 
 /// The bread and butter of the Simulation -- the Agent.
@@ -54,11 +58,14 @@ pub struct Agent {
     /// A bag of common extensions to Agent behavior.
     /// Note: This field is a wart in the abstraction. Ideally it is replaced with a better design.
     pub extensions: Option<AgentExtensions>,
+
+    pub lucky_pct: f32,
 }
 
 impl Default for Agent {
     fn default() -> Self {
         Self {
+            lucky_pct: 0.0,
             queue: VecDeque::with_capacity(8),
             state: AgentState::Active,
             produced: vec![],
@@ -115,6 +122,7 @@ pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Ag
             period: None,
             target: None,
             period_poisson_distribution: Some(dist),
+            ..Default::default()
         }),
         ..Default::default()
     }
@@ -144,6 +152,7 @@ pub fn poisson_distributed_producing_agent(name: &str, dist: Poisson<f64>, targe
             period: None,
             target: Some(target.to_owned()),
             period_poisson_distribution: Some(dist),
+            ..Default::default()
         }),
         ..Default::default()
     }
@@ -171,6 +180,7 @@ pub fn periodic_producing_agent(name: &str, period: DiscreteTime, target: &str) 
             period: Some(period),
             target: Some(target.to_owned()),
             period_poisson_distribution: None,
+            ..Default::default()
         }),
         ..Default::default()
     }
@@ -199,6 +209,7 @@ pub fn periodic_consuming_agent(name: &str, period: DiscreteTime) -> Agent {
             period: Some(period),
             target: None,
             period_poisson_distribution: None,
+            ..Default::default()
         }),
         ..Default::default()
     }

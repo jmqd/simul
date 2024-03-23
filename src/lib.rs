@@ -46,6 +46,8 @@ pub struct Simulation {
     pub state: SimulationState,
     /// Maps from Agent.name => a handle for indexing the Agent in the vec.
     agent_metadata_hash_table: HashMap<String, AgentMetadata>,
+
+    pub current_ball: u8,
 }
 
 /// The parameters to create a Simulation.
@@ -103,6 +105,7 @@ impl Simulation {
             halt_check: parameters.halt_check,
             time: parameters.starting_time,
             enable_queue_depth_metrics: parameters.enable_queue_depth_telemetry,
+            current_ball: 1,
         }
     }
 

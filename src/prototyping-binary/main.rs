@@ -1,9 +1,13 @@
 use log::info;
-use plotters::prelude::*;
+use rand::distributions::WeightedIndex;
+use rand::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
 use simul::experiment::*;
+use simul::message::Message;
 use simul::*;
+use std::collections::HashMap;
+use std::default;
 use std::path::PathBuf;
 
 /// Just a janky `++` operator.
@@ -72,7 +76,7 @@ fn run_experiment() {
         objective_fn,
     );
 
-    info!(
+    println!(
         "{:?}",
         approx_optimal
             .unwrap()
@@ -80,6 +84,228 @@ fn run_experiment() {
             .iter()
             .map(|a| (&a.name, &a.extensions))
     );
+}
+
+fn normal_9_ball_simulation(lucky_pct: f32) -> String {
+    let halt_condition = |s: &Simulation| {
+        for a in s.agents.iter() {
+            let ext = a.extensions.as_ref().unwrap();
+            if ext.score >= ext.winning_threshold {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    let mut ext = AgentExtensions::default();
+    ext.winning_threshold = 6;
+
+    let jordan = Agent {
+        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
+            if let Some(message) = a.queue.pop_front() {
+                let ext = a.extensions.as_mut()?;
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+                let weights = [1, 5, 9, 11, 8, 4, 2, 2, 2, 1, 1];
+                let dist = WeightedIndex::new(&weights).unwrap();
+                let mut rng = thread_rng();
+
+                let mut balls_to_run = choices[dist.sample(&mut rng)];
+
+                let mut ball = message.current_ball;
+
+                while balls_to_run > 0 {
+                    balls_to_run -= 1;
+
+                    if ball == 9 {
+                        ext.score += 1;
+                        ball = 1;
+                    } else {
+                        ball += 1;
+                    }
+                }
+
+                Some(vec![Message {
+                    queued_time: t,
+                    completed_time: None,
+                    source: "opp".to_string(),
+                    destination: "opp".to_string(),
+                    current_ball: ball,
+                }])
+            } else {
+                None
+            }
+        },
+        name: "jordan".to_string(),
+        extensions: Some(ext.clone()),
+        queue: vec![Message::default()].into(),
+        ..Default::default()
+    };
+
+    let opp = Agent {
+        lucky_pct: lucky_pct,
+        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
+            if let Some(message) = a.queue.pop_front() {
+                let ext = a.extensions.as_mut()?;
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+                let weights = [1, 4, 9, 11, 6, 4, 1, 1, 1, 1, 0];
+                let dist = WeightedIndex::new(&weights).unwrap();
+                let mut rng = thread_rng();
+
+                let mut balls_to_run = choices[dist.sample(&mut rng)];
+
+                let mut ball = message.current_ball;
+
+                while balls_to_run > 0 {
+                    balls_to_run -= 1;
+
+                    if ball == 9 {
+                        ext.score += 1;
+                        ball = 1;
+                    } else {
+                        ball += 1;
+                    }
+                }
+
+                let lucky_chance = rng.gen_range(0.0..1.0);
+
+                let next_turn = if lucky_chance > (1.0 - a.lucky_pct) {
+                    "opp".to_owned()
+                } else {
+                    "jordan".to_owned()
+                };
+
+                Some(vec![Message {
+                    queued_time: t,
+                    completed_time: None,
+                    source: "opp".to_string(),
+                    destination: next_turn,
+                    current_ball: ball,
+                }])
+            } else {
+                None
+            }
+        },
+        name: "opp".to_string(),
+        extensions: Some(ext.clone()),
+        ..Default::default()
+    };
+
+    // SimulationParameters generator that holds all else static except for agents.
+    let simulation_parameters_generator = move || SimulationParameters {
+        agents: vec![jordan, opp],
+        halt_check: halt_condition,
+        ..Default::default()
+    };
+
+    let mut sim = Simulation::new(simulation_parameters_generator());
+    sim.run();
+
+    sim.agents
+        .iter()
+        .find(|a| {
+            a.extensions.as_ref().unwrap().score >= a.extensions.as_ref().unwrap().winning_threshold
+        })
+        .map(|a| a.name.clone())
+        .unwrap()
+}
+
+fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
+    let halt_condition = |s: &Simulation| {
+        for a in s.agents.iter() {
+            let ext = a.extensions.as_ref().unwrap();
+            if ext.score >= ext.winning_threshold {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    let mut ext = AgentExtensions::default();
+    ext.winning_threshold = 55;
+
+    let jordan = Agent {
+        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
+            if let Some(message) = a.queue.pop_front() {
+                let ext = a.extensions.as_mut()?;
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+                let weights = [1, 5, 9, 11, 8, 4, 2, 2, 2, 1, 1];
+                let dist = WeightedIndex::new(&weights).unwrap();
+                let mut rng = thread_rng();
+                ext.score += choices[dist.sample(&mut rng)];
+
+                Some(vec![Message {
+                    queued_time: t,
+                    completed_time: None,
+                    source: "jordan".to_string(),
+                    destination: "opp".to_string(),
+                    ..Default::default()
+                }])
+            } else {
+                None
+            }
+        },
+        name: "jordan".to_string(),
+        extensions: Some(ext.clone()),
+        queue: vec![Message::default()].into(),
+        ..Default::default()
+    };
+
+    let opp = Agent {
+        lucky_pct,
+        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
+            if let Some(message) = a.queue.pop_front() {
+                let ext = a.extensions.as_mut()?;
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+                let weights = [1, 4, 9, 11, 6, 4, 1, 1, 1, 1, 0];
+                let dist = WeightedIndex::new(&weights).unwrap();
+                let mut rng = thread_rng();
+
+                ext.score += choices[dist.sample(&mut rng)];
+
+                let lucky_chance = rng.gen_range(0.0..1.0);
+
+                // We model luck as
+                let next_turn = if lucky_chance > (1.0 - a.lucky_pct) {
+                    "opp".to_owned()
+                } else {
+                    "jordan".to_owned()
+                };
+
+                Some(vec![Message {
+                    queued_time: t,
+                    completed_time: None,
+                    source: "opp".to_string(),
+                    destination: next_turn,
+                    ..Default::default()
+                }])
+            } else {
+                None
+            }
+        },
+        name: "opp".to_string(),
+        extensions: Some(ext.clone()),
+        ..Default::default()
+    };
+
+    // SimulationParameters generator that holds all else static except for agents.
+    let simulation_parameters_generator = move || SimulationParameters {
+        agents: vec![jordan, opp],
+        halt_check: halt_condition,
+        ..Default::default()
+    };
+
+    let mut sim = Simulation::new(simulation_parameters_generator());
+    sim.run();
+
+    sim.agents
+        .iter()
+        .find(|a| {
+            a.extensions.as_ref().unwrap().score >= a.extensions.as_ref().unwrap().winning_threshold
+        })
+        .map(|a| a.name.clone())
+        .unwrap()
 }
 
 /// Given a producer with a fixed period, returns producer-consumer two Agent
@@ -99,265 +325,33 @@ fn periodic_agent_generator_fixed_producer(
     }
 }
 
-fn test_plotting() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agents: vec![
-            periodic_producing_agent("producer", 1, "consumer"),
-            periodic_consuming_agent("consumer", 3),
-        ],
-        enable_queue_depth_telemetry: true,
-        halt_check: |s: &Simulation| s.time == 10,
-        ..Default::default()
-    });
-    simulation.run();
-    plot_simulation(
-        &simulation,
-        &["producer".into(), "consumer".into()],
-        &"/tmp/0.png".to_string().into(),
-    )?;
-    Ok(())
-}
-
-fn test_plotting_2() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agents: vec![
-            poisson_distributed_consuming_agent("Barista", Poisson::new(60.0)?),
-            poisson_distributed_producing_agent("Customers", Poisson::new(60.0)?, "Barista"),
-        ],
-        enable_queue_depth_telemetry: true,
-        halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
-        ..Default::default()
-    });
-    simulation.run();
-    plot_simulation(
-        &simulation,
-        &["Customers".into(), "Barista".into()],
-        &"/tmp/cafe-example.png".to_string().into(),
-    )?;
-    Ok(())
-}
-
-fn test_plotting_3() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agents: vec![
-            poisson_distributed_consuming_agent("Barista", Poisson::new(60.0)?),
-            poisson_distributed_producing_agent("Customers", Poisson::new(60.0)?, "Barista"),
-        ],
-        enable_queue_depth_telemetry: true,
-        halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
-        ..Default::default()
-    });
-    simulation.run();
-    plot_queued_durations_for_processed_messages(
-        &simulation,
-        &["Barista".into()],
-        &"/tmp/cafe-example-queued-durations.png".to_string().into(),
-    )
-}
-
-fn plot_simulation(
-    simulation: &Simulation,
-    agents: &[String],
-    output: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut produced_series: Vec<Vec<(u64, u64)>> = vec![];
-    let mut consumed_series: Vec<Vec<(u64, u64)>> = vec![];
-    let mut queue_depth_series: Vec<Vec<(u64, u64)>> = vec![];
-
-    for a in agents.iter() {
-        if let Some(produced) = simulation.produced_for_agent(a) {
-            produced_series.push(produced.into_iter().map(|e| (e.queued_time, 1)).collect());
-        }
-
-        if let Some(consumed) = simulation.consumed_for_agent(a) {
-            consumed_series.push(
-                consumed
-                    .into_iter()
-                    .map(|e| (e.completed_time.unwrap(), 1))
-                    .collect(),
-            );
-        }
-
-        if let Some(queue_depths) = simulation.queue_depth_metrics(a) {
-            queue_depth_series.push(
-                queue_depths
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, e)| (i as u64, e as u64))
-                    .collect(),
-            );
-        }
-    }
-
-    info!("Agents {:?}", &agents);
-    info!("Produced {:?}", &produced_series);
-    info!("Consumed {:?}", &consumed_series);
-    info!("Queue depth {:?}", &queue_depth_series);
-
-    let max_y = produced_series
-        .iter()
-        .chain(consumed_series.iter())
-        .chain(queue_depth_series.iter())
-        .flatten()
-        .map(|n| n.1)
-        .max()
-        .unwrap() as u64;
-
-    let root = BitMapBackend::new(output, (2560, 1920)).into_drawing_area();
-    root.fill(&WHITE)?;
-    let mut chart = ChartBuilder::on(&root)
-        .caption("producer vs consumer", ("sans-serif", 50).into_font())
-        .margin(5)
-        .set_all_label_area_size(64)
-        .build_cartesian_2d(0u64..simulation.time + 1, 0u64..max_y + 1)?;
-
-    chart
-        .configure_mesh()
-        .x_desc("Simulation Epoch (u64)")
-        .y_desc("Count")
-        .label_style(("sans-serif", 32, &BLACK))
-        .draw()?;
-
-    let mut series_idx = 0;
-    for (i, agent) in agents.iter().enumerate() {
-        let consumed = consumed_series
-            .get(i)
-            .expect("Failed to get consumed")
-            .clone();
-        let produced = produced_series
-            .get(i)
-            .expect("Failed to get consumed")
-            .clone();
-        let queue_depth = queue_depth_series
-            .get(i)
-            .expect("Failed to get consumed")
-            .clone();
-
-        if !consumed.is_empty() {
-            let consumed_color = Palette99::pick(inc(&mut series_idx)).filled();
-            chart
-                .draw_series(
-                    consumed
-                        .iter()
-                        .map(|(x, y)| Circle::new((*x, *y), 4, consumed_color.filled())),
-                )?
-                .label(format!("{} consumed", agent))
-                .legend(move |(x, y)| {
-                    Rectangle::new([(x - 16, y + 16), (x + 16, y - 16)], consumed_color)
-                });
-        }
-
-        if !produced.is_empty() {
-            let produced_color = Palette99::pick(inc(&mut series_idx)).filled();
-            chart
-                .draw_series(
-                    produced
-                        .iter()
-                        .map(|(x, y)| Circle::new((*x, *y), 4, produced_color.filled())),
-                )?
-                .label(format!("{} produced", agent))
-                .legend(move |(x, y)| {
-                    Rectangle::new([(x - 16, y + 16), (x + 16, y - 16)], produced_color)
-                });
-        }
-
-        if !queue_depth.is_empty() && !queue_depth.iter().all(|a| a.1 == 0u64) {
-            let queue_depth_color = Palette99::pick(inc(&mut series_idx)).filled();
-            chart
-                .draw_series(
-                    queue_depth
-                        .iter()
-                        .map(|(x, y)| Circle::new((*x, *y), 4, queue_depth_color.filled())),
-                )?
-                .label(format!("{} queue_depth", agent))
-                .legend(move |(x, y)| {
-                    Rectangle::new([(x - 16, y + 16), (x + 16, y - 16)], queue_depth_color)
-                });
-        }
-    }
-
-    chart
-        .configure_series_labels()
-        .background_style(&WHITE.mix(0.8))
-        .border_style(&BLACK)
-        .label_font(("sans-serif", 32))
-        .draw()?;
-
-    root.present().expect("Presenting failed.");
-    Ok(())
-}
-
-fn plot_queued_durations_for_processed_messages(
-    simulation: &Simulation,
-    agents: &[String],
-    output: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut processing_latency: Vec<Vec<(u64, u64)>> = vec![];
-    for a in agents.iter() {
-        if let Some(consumed) = simulation.consumed_for_agent(a) {
-            processing_latency.push(
-                consumed
-                    .into_iter()
-                    .map(|e| {
-                        (
-                            e.completed_time.unwrap(),
-                            e.completed_time.unwrap() - e.queued_time,
-                        )
-                    })
-                    .collect(),
-            );
-        }
-    }
-
-    info!("Processing latency {:?}", &processing_latency);
-
-    let max_y = processing_latency
-        .iter()
-        .flatten()
-        .map(|n| n.1)
-        .max()
-        .unwrap() as u64;
-
-    let root = BitMapBackend::new(output, (2560, 1920)).into_drawing_area();
-    root.fill(&WHITE)?;
-    let mut chart = ChartBuilder::on(&root)
-        .caption("queued time", ("sans-serif", 50).into_font())
-        .margin(5)
-        .set_all_label_area_size(64)
-        .build_cartesian_2d(0u64..simulation.time + 1, 0u64..max_y + 1)?;
-
-    let mut series_idx = 0;
-    for processing_latency_series in processing_latency {
-        if !processing_latency_series.is_empty() {
-            let color = Palette99::pick(series_idx).filled();
-            chart
-                .draw_series(
-                    processing_latency_series
-                        .iter()
-                        .map(|(x, y)| Circle::new((*x, *y), 4, color.filled())),
-                )?
-                .label(format!(
-                    "{} processing_time",
-                    agents.get(series_idx).unwrap()
-                ))
-                .legend(move |(x, y)| Rectangle::new([(x - 16, y + 16), (x + 16, y - 16)], color));
-        }
-        series_idx += 1;
-    }
-
-    chart
-        .configure_mesh()
-        .x_desc("Processing Epoch (u64)")
-        .y_desc("Processing Latency")
-        .label_style(("sans-serif", 32, &BLACK))
-        .draw()?;
-    Ok(())
-}
-
 /// Note, this main.rs binary file is just for library prototyping at the moment.
 fn main() {
-    test_plotting().expect("Plotting failed.");
-    test_plotting_2().expect("Plotting 2 failed.");
-    test_plotting_3().expect("Plotting 3 failed.");
-    run_experiment();
+    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
+        let mut count: HashMap<String, u32> = HashMap::new();
+        for _ in 0..1024 {
+            *count
+                .entry(nine_ball_apa_rules_simulation(pct))
+                .or_default() += 1;
+        }
+
+        println!(
+            "(APA match skill 7 vs 7) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
+            pct * 100.0,
+            count["jordan"] as f32 / (count["jordan"] + count["opp"]) as f32
+        );
+    }
+
+    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
+        let mut count: HashMap<String, u32> = HashMap::new();
+        for _ in 0..1024 {
+            *count.entry(normal_9_ball_simulation(pct)).or_default() += 1;
+        }
+
+        println!(
+            "(set match race to 6) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
+            pct * 100.0,
+            count["jordan"] as f32 / (count["jordan"] + count["opp"]) as f32
+        );
+    }
 }

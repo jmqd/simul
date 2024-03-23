@@ -25,8 +25,8 @@ readme = "README.md"
 
 [features]
 default = []
-plotters = ["dep:plotters"]
-build-binary = ["plotters"]
+plotters = []
+build-binary = []
 
 [lib]
 name = "simul"
@@ -50,4 +50,4 @@ rand = {version = "0", features = ["alloc"]}
 rand_distr = "0.4"
 ringbuffer = "0.14"
 log = "0.4"
-plotters = {version = "0.3.3", optional = true}
+derivative = "2.2.0"

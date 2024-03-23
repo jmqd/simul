@@ -11,6 +11,8 @@ pub struct Message {
     pub source: String,
     /// The name of the Agent that received this Message.
     pub destination: String,
+
+    pub current_ball: u8,
 }
 
 impl Message {
@@ -23,6 +25,7 @@ impl Message {
             completed_time: None,
             source: src.into(),
             destination: dst.into(),
+            ..Default::default()
         }
     }
 }
