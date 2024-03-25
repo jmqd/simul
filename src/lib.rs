@@ -3,7 +3,7 @@ pub mod experiment;
 pub mod message;
 
 use agent::*;
-use log::debug;
+use log::{debug, info};
 use message::*;
 use std::collections::HashMap;
 
@@ -27,8 +27,8 @@ pub enum SimulationMode {
 /// TODO: This may later just become the `Simulation` itself passed about.
 #[derive(Clone, Debug)]
 pub struct SimulationState {
-    time: DiscreteTime,
-    mode: SimulationMode,
+    pub time: DiscreteTime,
+    pub mode: SimulationMode,
 }
 
 /// A Simulation struct is responsible to hold all the state for a simulation
@@ -42,17 +42,18 @@ pub struct SimulationState {
 #[derive(Clone, Debug)]
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
-    /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
-    pub agents: Vec<dyn Agent>,
+    pub agents: Vec<Box<dyn Agent>>,
     /// A halt check function: given the state of the Simulation determine halt or not.
     pub halt_check: fn(&Simulation) -> bool,
     /// The current discrete time of the Simulation.
     pub time: DiscreteTime,
     /// Whether to record metrics on queue depths. Takes space.
     pub enable_queue_depth_metrics: bool,
-    /// The state of the Simulation.
-    pub state: SimulationMode,
-    /// Maps from Agent.name => a handle for indexing the Agent in the vec.
+    /// Records a metric on the number of cycles an agent was asleep for.
+    pub enable_agent_asleep_cycles_metric: bool,
+    /// The mode of the Simulation.
+    pub mode: SimulationMode,
+    /// Maps from agent.state().id => a handle for indexing the Agent in the vec.
     agent_metadata_hash_table: HashMap<String, AgentMetadata>,
 
     pub current_ball: u8,
@@ -63,15 +64,16 @@ pub struct Simulation {
 pub struct SimulationParameters {
     /// The agents within the simulation, e.g. adaptive agents.
     /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
-    pub agents: Vec<Agent>,
+    pub agents: Vec<Box<dyn Agent>>,
     /// Given the state of the Simulation a function that determines if the Simulation is complete.
-    pub halt_check: fn(&Simulation) -> bool,
+    pub halt_check: Box<FnMut(&Simulation) -> bool>,
     /// The discrete time at which the simulation should begin.
     /// For the vast majority of simulations, 0 is the correct default.
     pub starting_time: DiscreteTime,
     /// Whether to record metrics on queue depths at every tick of the simulation.
-    /// Takes time and space.
-    pub enable_queue_depth_telemetry: bool,
+    pub enable_queue_depth_metrics: bool,
+    /// Records a metric on the number of cycles an agent was asleep for.
+    pub enable_agent_asleep_cycles_metric: bool,
 }
 
 impl Default for SimulationParameters {
@@ -80,7 +82,8 @@ impl Default for SimulationParameters {
             agents: vec![],
             halt_check: |_| true,
             starting_time: 0,
-            enable_queue_depth_telemetry: false,
+            enable_queue_depth_metrics: false,
+            enable_agent_asleep_cycles_metric: false,
         }
     }
 }
@@ -89,22 +92,24 @@ impl Default for SimulationParameters {
 struct AgentMetadata {
     handle: usize,
     queue_depth_metrics: Vec<usize>,
+    asleep_cycle_count: DiscreteTime,
 }
 
 impl Simulation {
     pub fn new(parameters: SimulationParameters) -> Simulation {
         Simulation {
-            state: SimulationMode::Constructed,
+            mode: SimulationMode::Constructed,
             agent_metadata_hash_table: parameters
                 .agents
                 .iter()
                 .enumerate()
                 .map(|(i, a)| {
                     (
-                        a.name.to_owned(),
+                        a.state().id.to_owned(),
                         AgentMetadata {
                             handle: i,
                             queue_depth_metrics: vec![],
+                            asleep_cycle_count: 0,
                         },
                     )
                 })
@@ -112,77 +117,106 @@ impl Simulation {
             agents: parameters.agents,
             halt_check: parameters.halt_check,
             time: parameters.starting_time,
-            enable_queue_depth_metrics: parameters.enable_queue_depth_telemetry,
+            enable_queue_depth_metrics: parameters.enable_queue_depth_metrics,
+            enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
             current_ball: 1,
         }
     }
 
-    /// Finds an agent in the simulation and return a copy.
-    pub fn find_agent(&self, name: &str) -> Option<Agent> {
-        self.agents.iter().find(|a| a.name == name).cloned()
-    }
-
     /// Returns the consumed messages for a given Agent during the Simulation.
     pub fn consumed_for_agent(&self, name: &str) -> Option<Vec<Message>> {
-        let agent = self.agents.iter().find(|a| a.name == name)?;
-        Some(agent.consumed.clone())
+        let agent = self.agents.iter().find(|a| a.state().id == name)?;
+        Some(agent.state().consumed.clone())
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
     pub fn produced_for_agent(&self, name: &str) -> Option<Vec<Message>> {
-        let agent = self.agents.iter().find(|a| a.name == name)?;
-        Some(agent.produced.clone())
+        let agent = self.agents.iter().find(|a| a.state().id == name)?;
+        Some(agent.state().produced.clone())
     }
 
     /// Returns the queue depth timeseries for a given Agent during the Simulation.
-    pub fn queue_depth_metrics(&self, agent_name: &str) -> Option<Vec<usize>> {
+    pub fn queue_depth_metrics(&self, id: &str) -> Option<Vec<usize>> {
         // TODO(?): Return non option here.
         Some(
             self.agent_metadata_hash_table
-                .get(agent_name)
-                .expect("retrieve agent from hash table")
+                .get(id)?
                 .queue_depth_metrics
                 .clone(),
         )
     }
 
+    /// Returns the asleep cycle count for a given Agent during the Simulation.
+    pub fn asleep_cycle_count(&self, id: &str) -> Option<DiscreteTime> {
+        // TODO(?): Return non option here.
+        Some(self.agent_metadata_hash_table.get(id)?.asleep_cycle_count)
+    }
+
     /// Runs the simulation. This should only be called after adding all the beginning state.
     pub fn run(&mut self) {
-        self.state = SimulationMode::Running;
+        self.mode = SimulationMode::Running;
 
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
             let mut message_bus = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
 
+            let tick_message = Message::new(self.time, "SIM_SRC".to_string(), "ANY".to_string());
+            let simulation_state = SimulationState {
+                time: self.time,
+                mode: self.mode.clone(),
+            };
+
             for agent in self.agents.iter_mut() {
                 if self.enable_queue_depth_metrics {
                     self.agent_metadata_hash_table
-                        .get_mut(&agent.name)
+                        .get_mut(&agent.state().id)
                         .expect("Failed to find agent in metrics")
                         .queue_depth_metrics
-                        .push(agent.queue.len());
+                        .push(agent.state().queue.len());
                 }
 
-                match agent.state {
-                    AgentState::Active => match (agent.consumption_fn)(agent, self.time) {
-                        Some(messages) => {
+                let queued_msg = agent.state_mut().queue.pop_front();
+
+                match agent.state().mode {
+                    AgentMode::Proactive => {
+                        if let Some(messages) = agent.as_mut().process(
+                            simulation_state.clone(),
+                            queued_msg.as_ref().unwrap_or(&tick_message),
+                        ) {
                             message_bus.extend(messages);
                         }
-                        None => debug!("No messages produced."),
-                    },
-                    AgentState::Dead | AgentState::AsleepUntil(_) => {}
+                    }
+                    AgentMode::Reactive => {
+                        if queued_msg.is_some() {
+                            if let Some(new_msgs) = agent
+                                .as_mut()
+                                .process(simulation_state.clone(), &queued_msg.unwrap())
+                            {
+                                message_bus.extend(new_msgs);
+                            }
+                        }
+                    }
+                    AgentMode::AsleepUntil(_) => {
+                        if self.enable_agent_asleep_cycles_metric {
+                            self.agent_metadata_hash_table
+                                .get_mut(&agent.state().id)
+                                .expect("Failed to find agent in metrics")
+                                .asleep_cycle_count += 1
+                        }
+                    }
+                    AgentMode::Dead => {}
                 }
             }
 
             // Consume all the new messages in the bus and deliver to agents.
-            self.disperse_bus_messages_to_agents(message_bus);
+            self.process_message_bus(message_bus);
 
             debug!("Finished this tick; incrementing time.");
             self.time += 1;
         }
 
-        self.state = SimulationMode::Completed;
+        self.mode = SimulationMode::Completed;
         self.emit_completed_simulation_debug_logging();
     }
 
@@ -190,15 +224,19 @@ impl Simulation {
     /// Note: This function will likely go away; it is an artifact of prototyping.
     pub fn calc_avg_wait_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
-        for agent in self.agents.iter().filter(|a| !a.consumed.is_empty()) {
+        for agent in self
+            .agents
+            .iter()
+            .filter(|a| !a.state().consumed.is_empty())
+        {
             let mut sum_of_times: u64 = 0;
-            for completed in agent.consumed.iter() {
+            for completed in agent.state().consumed.iter() {
                 sum_of_times += completed.completed_time.unwrap() - completed.queued_time;
             }
 
             data.insert(
-                agent.name.clone(),
-                sum_of_times as usize / agent.consumed.len(),
+                agent.state().id.clone(),
+                sum_of_times as usize / agent.state().consumed.len(),
             );
         }
 
@@ -211,7 +249,7 @@ impl Simulation {
         let mut data = HashMap::new();
 
         for agent in self.agents.iter() {
-            data.insert(agent.name.clone(), agent.queue.len());
+            data.insert(agent.state().id.clone(), agent.state().queue.len());
         }
 
         data
@@ -222,7 +260,7 @@ impl Simulation {
         let mut data = HashMap::new();
 
         for agent in self.agents.iter() {
-            data.insert(agent.name.clone(), agent.consumed.len());
+            data.insert(agent.state().id.clone(), agent.state().consumed.len());
         }
 
         data
@@ -233,7 +271,7 @@ impl Simulation {
         let mut data = HashMap::new();
 
         for agent in self.agents.iter() {
-            data.insert(agent.name.clone(), agent.produced.len());
+            data.insert(agent.state().id.clone(), agent.state().produced.len());
         }
 
         data
@@ -252,16 +290,22 @@ impl Simulation {
     }
 
     /// Consume a message_bus of messages and disperse those messages to the agents.
-    fn disperse_bus_messages_to_agents(&mut self, mut message_bus: Vec<Message>) {
+    /// If there are any interrupts, process those immediately.
+    fn process_message_bus(&mut self, mut message_bus: Vec<Message>) {
         while let Some(message) = message_bus.pop() {
             for agent in self.agents.iter_mut() {
-                if agent.name == message.clone().destination {
+                if agent.state().id == message.clone().destination {
                     agent.push_message(message.clone());
                 }
 
-                if agent.name == message.clone().source {
-                    agent.produced.push(message.clone());
+                if agent.state().id == message.clone().source {
+                    agent.state_mut().produced.push(message.clone());
                 }
+            }
+
+            if let Some(Interrupt::HaltSimulation(reason)) = message.interrupt {
+                info!("Received a halt interrupt: {:?}", reason);
+                self.mode = SimulationMode::Completed;
             }
         }
     }
@@ -269,9 +313,9 @@ impl Simulation {
     /// An internal function used to wakeup sleeping Agents due to wake.
     fn wakeup_agents_scheduled_to_wakeup_now(&mut self) {
         for agent in self.agents.iter_mut() {
-            if let AgentState::AsleepUntil(scheduled_wakeup) = agent.state {
-                if self.time >= scheduled_wakeup {
-                    agent.state = AgentState::Active;
+            if let AgentMode::AsleepUntil(wakeup_at) = agent.state().mode {
+                if self.time >= wakeup_at {
+                    agent.state_mut().mode = agent.state().wake_mode;
                 }
             }
         }
@@ -316,8 +360,8 @@ mod tests {
                 Agent {
                     name: "Starbucks Clerk".to_owned(),
                     consumption_fn: |a: &mut Agent, t: DiscreteTime| {
-                        debug!("{} looking for a customer.", a.name);
-                        if let Some(last) = a.consumed.last() {
+                        debug!("{} looking for a customer.", a.state().id);
+                        if let Some(last) = a.state().consumed.last() {
                             if last.completed_time? + 60 > t {
                                 debug!("Sorry, we're still serving the last customer.");
                                 return None;
@@ -327,12 +371,12 @@ mod tests {
                         if let Some(message) = a.queue.pop_front() {
                             if message.queued_time + 100 > t {
                                 debug!("Still making your coffee, sorry!");
-                                a.queue.push_front(message);
+                                a.state_mut().queue.push_front(message);
                                 return None;
                             }
 
                             debug!("Serviced a customer!");
-                            a.consumed.push(Message {
+                            a.state_mut().consumed.push(Message {
                                 completed_time: Some(t),
                                 ..message
                             });

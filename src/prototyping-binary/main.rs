@@ -4,6 +4,7 @@ use rand::prelude::*;
 use rand_distr::Poisson;
 use simul::agent::*;
 use simul::experiment::*;
+use simul::message::Interrupt;
 use simul::message::Message;
 use simul::*;
 use std::collections::HashMap;
@@ -21,8 +22,9 @@ fn run_experiment() {
     let halt_condition = |s: &Simulation| {
         s.agents
             .iter()
-            .find(|a| a.name == "consumer")
+            .find(|a| a.state().id == "consumer")
             .expect("No consumer agent?")
+            .state()
             .consumed
             .len()
             > 10
@@ -36,6 +38,7 @@ fn run_experiment() {
     let simulation_parameters_generator = move || SimulationParameters {
         agents: agent_generator(),
         halt_check: halt_condition,
+        enable_agent_asleep_cycles_metric: true,
         ..Default::default()
     };
 
@@ -50,21 +53,11 @@ fn run_experiment() {
     // producer is fixed at a period of 2, a consumer with period 0 or 1 can
     // sufficiently keep up with that producer.
     //
-    // By subtracting the period of the consumer from the simulation time, we're
-    // looking to get the fastest simulation time without wasting any resources.
-    let objective_fn = |s: &Simulation| {
-        -(s.time as i64)
-            + s.agents
-                .iter()
-                .find(|a| a.name == "consumer")
-                .as_ref()
-                .unwrap()
-                .extensions
-                .as_ref()
-                .unwrap()
-                .period
-                .unwrap() as i64
-    };
+    // By subtracting the asleep cycles of the consumer from the simulation
+    // time, we're looking to get the fastest simulation time whiling maximizing
+    // sleep time / minimizing resource usage.
+    let objective_fn =
+        |s: &Simulation| -(s.time as i64) - s.asleep_cycle_count("consumer").unwrap() as i64;
 
     let replications_limit = 100;
 
@@ -76,125 +69,181 @@ fn run_experiment() {
         objective_fn,
     );
 
-    println!(
-        "{:?}",
-        approx_optimal
-            .unwrap()
-            .agents
-            .iter()
-            .map(|a| (&a.name, &a.extensions))
-    );
+    println!("{:?}", approx_optimal.unwrap().agents.iter());
 }
 
-fn normal_9_ball_simulation(lucky_pct: f32) -> String {
-    let halt_condition = |s: &Simulation| {
-        for a in s.agents.iter() {
-            let ext = a.extensions.as_ref().unwrap();
-            if ext.score >= ext.winning_threshold {
-                return true;
+#[derive(Debug, Clone)]
+struct NineBallPlayer<const N: usize> {
+    luck_chance: f32,
+    run_out_choices: [usize; N],
+    run_out_weights: [usize; N],
+    winning_threshold: u8,
+    score: u8,
+    state: AgentState,
+    opponent_name: String,
+}
+
+impl<const N: usize> Agent for NineBallPlayer<{ N }> {
+    fn process(
+        &mut self,
+        simulation_state: SimulationState,
+        msg: &Message,
+    ) -> Option<Vec<Message>> {
+        let mut rng = thread_rng();
+        let dist = WeightedIndex::new(&self.run_out_weights).unwrap();
+        let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
+        let mut ball = msg.current_ball;
+
+        while balls_to_run > 0 {
+            balls_to_run -= 1;
+
+            if ball == 9 {
+                self.score += 1;
+                ball = 1;
+            } else {
+                ball += 1;
             }
         }
 
-        return false;
+        if self.score >= self.winning_threshold {
+            return Some(vec![Message {
+                source: self.state().id.clone(),
+                interrupt: Some(Interrupt::HaltSimulation("won".to_string())),
+                ..Default::default()
+            }]);
+        }
+
+        // If the opponent gets lucky, they get another turn.
+        let next_turn = if rng.gen_range(0.0..1.0) > (1.0 - self.luck_chance) {
+            self.state().id.clone()
+        } else {
+            self.opponent_name.clone()
+        };
+
+        Some(vec![Message {
+            queued_time: simulation_state.time,
+            completed_time: None,
+            source: self.state().id.to_string(),
+            destination: next_turn,
+            current_ball: ball,
+            ..Default::default()
+        }])
+    }
+
+    fn state(&self) -> &AgentState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut AgentState {
+        &mut self.state
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ApaNineBallPlayer<const N: usize> {
+    luck_chance: f32,
+    run_out_choices: [usize; N],
+    run_out_weights: [usize; N],
+    winning_threshold: u8,
+    score: u8,
+    state: AgentState,
+    opponent_name: String,
+}
+
+impl<const N: usize> Agent for ApaNineBallPlayer<{ N }> {
+    fn process(
+        &mut self,
+        simulation_state: SimulationState,
+        msg: &Message,
+    ) -> Option<Vec<Message>> {
+        let mut rng = thread_rng();
+        let dist = WeightedIndex::new(&self.run_out_weights).unwrap();
+        let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
+        let mut ball = msg.current_ball;
+
+        while balls_to_run > 0 {
+            balls_to_run -= 1;
+
+            if ball == 9 {
+                self.score += 2;
+                ball = 1;
+            } else {
+                ball += 1;
+                self.score += 1;
+            }
+        }
+
+        if self.score >= self.winning_threshold {
+            return Some(vec![Message {
+                source: self.state().id.clone(),
+                interrupt: Some(Interrupt::HaltSimulation("won".to_string())),
+                ..Default::default()
+            }]);
+        }
+
+        // If the player gets lucky, they get another turn.
+        let next_turn = if rng.gen_range(0.0..1.0) > (1.0 - self.luck_chance) {
+            self.state().id.clone()
+        } else {
+            self.opponent_name.clone()
+        };
+
+        Some(vec![Message {
+            queued_time: simulation_state.time,
+            completed_time: None,
+            source: self.state().id.to_string(),
+            destination: next_turn,
+            current_ball: ball,
+            ..Default::default()
+        }])
+    }
+
+    fn state(&self) -> &AgentState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut AgentState {
+        &mut self.state
+    }
+}
+
+fn normal_9_ball_simulation(luck_chance: f32) -> String {
+    let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
+
+    let alice = NineBallPlayer {
+        luck_chance: 0.0,
+        score: 0,
+        winning_threshold: 5,
+        run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        run_out_weights: [5, 10, 20, 20, 18, 12, 5, 4, 3, 2],
+        state: AgentState {
+            mode: AgentMode::Reactive,
+            wake_mode: AgentMode::Reactive,
+            id: "alice".to_owned(),
+            queue: vec![Message::default()].into(),
+            ..Default::default()
+        },
+        opponent_name: "john".to_string(),
     };
 
-    let mut ext = AgentExtensions::default();
-    ext.winning_threshold = 5;
-
-    let alice = Agent {
-        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
-            if let Some(message) = a.queue.pop_front() {
-                let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-                let weights = [5, 10, 20, 20, 18, 12, 5, 4, 3, 2];
-                let dist = WeightedIndex::new(&weights).unwrap();
-                let mut rng = thread_rng();
-
-                let mut balls_to_run = choices[dist.sample(&mut rng)];
-
-                let mut ball = message.current_ball;
-
-                while balls_to_run > 0 {
-                    balls_to_run -= 1;
-
-                    if ball == 9 {
-                        ext.score += 1;
-                        ball = 1;
-                    } else {
-                        ball += 1;
-                    }
-                }
-
-                Some(vec![Message {
-                    queued_time: t,
-                    completed_time: None,
-                    source: "alice".to_string(),
-                    destination: "john".to_string(),
-                    current_ball: ball,
-                }])
-            } else {
-                None
-            }
+    let john = NineBallPlayer {
+        luck_chance,
+        score: 0,
+        winning_threshold: 5,
+        run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        run_out_weights: [6, 11, 18, 18, 15, 9, 3, 2, 2, 1],
+        state: AgentState {
+            mode: AgentMode::Reactive,
+            wake_mode: AgentMode::Reactive,
+            id: "alice".to_owned(),
+            ..Default::default()
         },
-        name: "alice".to_string(),
-        extensions: Some(ext.clone()),
-        queue: vec![Message::default()].into(),
-        ..Default::default()
-    };
-
-    let john = Agent {
-        lucky_pct: lucky_pct,
-        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
-            if let Some(message) = a.queue.pop_front() {
-                let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-                let weights = [6, 11, 18, 18, 15, 9, 3, 2, 2, 1];
-
-                let dist = WeightedIndex::new(&weights).unwrap();
-                let mut rng = thread_rng();
-
-                let mut balls_to_run = choices[dist.sample(&mut rng)];
-
-                let mut ball = message.current_ball;
-
-                while balls_to_run > 0 {
-                    balls_to_run -= 1;
-
-                    if ball == 9 {
-                        ext.score += 1;
-                        ball = 1;
-                    } else {
-                        ball += 1;
-                    }
-                }
-
-                let lucky_chance = rng.gen_range(0.0..1.0);
-
-                let next_turn = if lucky_chance > (1.0 - a.lucky_pct) {
-                    "john".to_owned()
-                } else {
-                    "alice".to_owned()
-                };
-
-                Some(vec![Message {
-                    queued_time: t,
-                    completed_time: None,
-                    source: "alice".to_string(),
-                    destination: next_turn,
-                    current_ball: ball,
-                }])
-            } else {
-                None
-            }
-        },
-        name: "john".to_string(),
-        extensions: Some(ext.clone()),
-        ..Default::default()
+        opponent_name: "alice".to_string(),
     };
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents: vec![alice, john],
+        agents: vec![Box::new(alice), Box::new(john)],
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -205,95 +254,53 @@ fn normal_9_ball_simulation(lucky_pct: f32) -> String {
     sim.agents
         .iter()
         .find(|a| {
-            a.extensions.as_ref().unwrap().score >= a.extensions.as_ref().unwrap().winning_threshold
+            a.state()
+                .produced
+                .last()
+                .is_some_and(|m| m.interrupt.is_some())
         })
-        .map(|a| a.name.clone())
+        .map(|a| a.state().id.clone())
         .unwrap()
 }
 
-fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
-    let halt_condition = |s: &Simulation| {
-        for a in s.agents.iter() {
-            let ext = a.extensions.as_ref().unwrap();
-            if ext.score >= ext.winning_threshold {
-                return true;
-            }
-        }
+fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
+    let mut empty_count = 0;
+    let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
 
-        return false;
+    let alice = ApaNineBallPlayer {
+        luck_chance: 0.0,
+        score: 0,
+        winning_threshold: 55,
+        run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        run_out_weights: [5, 10, 20, 20, 18, 12, 5, 4, 3, 2],
+        state: AgentState {
+            mode: AgentMode::Reactive,
+            wake_mode: AgentMode::Reactive,
+            id: "alice".to_owned(),
+            queue: vec![Message::default()].into(),
+            ..Default::default()
+        },
+        opponent_name: "john".to_string(),
     };
 
-    let mut ext = AgentExtensions::default();
-    ext.winning_threshold = 55;
-
-    let alice = Agent {
-        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
-            if let Some(message) = a.queue.pop_front() {
-                let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-                let weights = [5, 10, 20, 20, 18, 12, 5, 4, 3, 2];
-
-                let dist = WeightedIndex::new(&weights).unwrap();
-                let mut rng = thread_rng();
-                ext.score += choices[dist.sample(&mut rng)];
-
-                Some(vec![Message {
-                    queued_time: t,
-                    completed_time: None,
-                    source: "alice".to_string(),
-                    destination: "john".to_string(),
-                    ..Default::default()
-                }])
-            } else {
-                None
-            }
+    let john = ApaNineBallPlayer {
+        luck_chance,
+        score: 0,
+        winning_threshold: 55,
+        run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        run_out_weights: [6, 11, 18, 18, 15, 9, 3, 2, 2, 1],
+        state: AgentState {
+            mode: AgentMode::Reactive,
+            wake_mode: AgentMode::Reactive,
+            id: "alice".to_owned(),
+            ..Default::default()
         },
-        name: "alice".to_string(),
-        extensions: Some(ext.clone()),
-        queue: vec![Message::default()].into(),
-        ..Default::default()
-    };
-
-    let john = Agent {
-        lucky_pct,
-        consumption_fn: |a: &mut Agent, t: DiscreteTime| {
-            if let Some(message) = a.queue.pop_front() {
-                let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-                let weights = [6, 11, 18, 18, 15, 9, 3, 2, 2, 1];
-
-                let dist = WeightedIndex::new(&weights).unwrap();
-                let mut rng = thread_rng();
-
-                ext.score += choices[dist.sample(&mut rng)];
-
-                let lucky_chance = rng.gen_range(0.0..1.0);
-
-                let next_turn = if lucky_chance > (1.0 - a.lucky_pct) {
-                    "john".to_owned()
-                } else {
-                    "alice".to_owned()
-                };
-
-                Some(vec![Message {
-                    queued_time: t,
-                    completed_time: None,
-                    source: "john".to_string(),
-                    destination: next_turn,
-                    ..Default::default()
-                }])
-            } else {
-                None
-            }
-        },
-        name: "john".to_string(),
-        extensions: Some(ext.clone()),
-        ..Default::default()
+        opponent_name: "alice".to_string(),
     };
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents: vec![alice, john],
+        agents: vec![Box::new(alice), Box::new(john)],
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -301,12 +308,17 @@ fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
     let mut sim = Simulation::new(simulation_parameters_generator());
     sim.run();
 
+    println!("{:#?}", sim);
+
     sim.agents
         .iter()
         .find(|a| {
-            a.extensions.as_ref().unwrap().score >= a.extensions.as_ref().unwrap().winning_threshold
+            a.state()
+                .produced
+                .last()
+                .is_some_and(|m| m.interrupt.is_some())
         })
-        .map(|a| a.name.clone())
+        .map(|a| a.state().id.clone())
         .unwrap()
 }
 
@@ -318,12 +330,17 @@ fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
 fn periodic_agent_generator_fixed_producer(
     producer_period: DiscreteTime,
     consumer_max_period: DiscreteTime,
-) -> impl Fn() -> Vec<Agent> {
+) -> impl Fn() -> Vec<Box<dyn Agent>> {
     move || {
         let consumer_period = rand::random::<u32>() % (consumer_max_period + 1) as u32;
-        let producer_agent = periodic_producing_agent("producer", producer_period, "consumer");
-        let consumer_agent = periodic_consuming_agent("consumer", consumer_period as u64);
-        vec![producer_agent, consumer_agent]
+        let producer_agent = periodic_producing_agent(
+            "producer".to_string(),
+            producer_period,
+            "consumer".to_string(),
+        );
+        let consumer_agent =
+            periodic_consuming_agent("consumer".to_string(), consumer_period as u64);
+        vec![Box::new(producer_agent), Box::new(consumer_agent)]
     }
 }
 
