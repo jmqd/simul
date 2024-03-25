@@ -22,11 +22,6 @@ homepage = "https://github.com/jmqd/simul"
 repository = "https://github.com/jmqd/simul"
 readme = "README.md"
 
-[features]
-default = []
-plotters = []
-build-binary = []
-
 [lib]
 name = "simul"
 path = "src/lib.rs"
