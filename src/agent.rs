@@ -119,7 +119,7 @@ pub fn poisson_distributed_producing_agent(
     id: String,
     dist: Poisson<f64>,
     target: String,
-) -> impl Agent {
+) -> Box<dyn Agent> {
     #[derive(Debug, Clone)]
     struct PoissonAgent {
         period: Poisson<f64>,
@@ -155,7 +155,7 @@ pub fn poisson_distributed_producing_agent(
         }
     }
 
-    PoissonAgent {
+    Box::new(PoissonAgent {
         period: dist,
         state: AgentState {
             id,
@@ -164,11 +164,15 @@ pub fn poisson_distributed_producing_agent(
             ..Default::default()
         },
         target,
-    }
+    })
 }
 
 /// A simple agent that produces messages on a period, directed to target.
-pub fn periodic_producing_agent(id: String, period: DiscreteTime, target: String) -> impl Agent {
+pub fn periodic_producing_agent(
+    id: String,
+    period: DiscreteTime,
+    target: String,
+) -> Box<dyn Agent> {
     #[derive(Debug, Clone)]
     struct PeriodicProducer {
         period: DiscreteTime,
@@ -201,7 +205,7 @@ pub fn periodic_producing_agent(id: String, period: DiscreteTime, target: String
         }
     }
 
-    PeriodicProducer {
+    Box::new(PeriodicProducer {
         period,
         target,
         state: AgentState {
@@ -210,12 +214,12 @@ pub fn periodic_producing_agent(id: String, period: DiscreteTime, target: String
             id,
             ..Default::default()
         },
-    }
+    })
 }
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
-pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> impl Agent {
+pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> Box<dyn Agent> {
     #[derive(Debug, Clone)]
     struct PeriodicConsumer {
         period: DiscreteTime,
@@ -241,7 +245,7 @@ pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> impl Agent 
         }
     }
 
-    PeriodicConsumer {
+    Box::new(PeriodicConsumer {
         period,
         state: AgentState {
             mode: AgentMode::AsleepUntil(period),
@@ -249,5 +253,5 @@ pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> impl Agent 
             id,
             ..Default::default()
         },
-    }
+    })
 }
