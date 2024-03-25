@@ -66,7 +66,7 @@ pub struct SimulationParameters {
     /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
     pub agents: Vec<Box<dyn Agent>>,
     /// Given the state of the Simulation a function that determines if the Simulation is complete.
-    pub halt_check: Box<FnMut(&Simulation) -> bool>,
+    pub halt_check: fn(&Simulation) -> bool,
     /// The discrete time at which the simulation should begin.
     /// For the vast majority of simulations, 0 is the correct default.
     pub starting_time: DiscreteTime,
