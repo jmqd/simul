@@ -1,4 +1,4 @@
-use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
+use simul::agent::{periodic_consuming_agent, periodic_producing_agent, Agent};
 use simul::experiment::experiment_by_annealing_objective;
 use simul::*;
 
@@ -20,7 +20,7 @@ fn periodic_agent_generator_fixed_producer(
         );
         let consumer_agent =
             periodic_consuming_agent("consumer".to_string(), consumer_period as u64);
-        vec![Box::new(producer_agent), Box::new(consumer_agent)]
+        vec![producer_agent, consumer_agent]
     }
 }
 
