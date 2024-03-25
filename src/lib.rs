@@ -48,7 +48,7 @@ pub struct Simulation {
     /// The current discrete time of the Simulation.
     pub time: DiscreteTime,
     /// Whether to record metrics on queue depths. Takes space.
-    pub enable_queue_depth_metrics: bool,
+    pub enable_queue_depth_metric: bool,
     /// Records a metric on the number of cycles an agent was asleep for.
     pub enable_agent_asleep_cycles_metric: bool,
     /// The mode of the Simulation.
@@ -112,7 +112,7 @@ impl Simulation {
             agents: parameters.agents,
             halt_check: parameters.halt_check,
             time: parameters.starting_time,
-            enable_queue_depth_metrics: parameters.enable_queue_depth_metrics,
+            enable_queue_depth_metric: parameters.enable_queue_depth_metrics,
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
         }
     }
@@ -162,7 +162,7 @@ impl Simulation {
             };
 
             for agent in self.agents.iter_mut() {
-                if self.enable_queue_depth_metrics {
+                if self.enable_queue_depth_metric {
                     self.agent_metadata_hash_table
                         .get_mut(&agent.state().id)
                         .expect("Failed to find agent in metrics")
