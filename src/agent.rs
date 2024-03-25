@@ -79,7 +79,10 @@ pub trait Agent: std::fmt::Debug + DynClone {
 dyn_clone::clone_trait_object!(Agent);
 
 /// An agent that processes on a Poisson-distributed periodicity.
-pub fn poisson_distributed_consuming_agent(id: &str, dist: Poisson<f64>) -> impl Agent {
+pub fn poisson_distributed_consuming_agent<T>(id: T, dist: Poisson<f64>) -> impl Agent
+where
+    T: Into<String>,
+{
     #[derive(Debug, Clone)]
     struct PoissonAgent {
         period: Poisson<f64>,
@@ -113,7 +116,7 @@ pub fn poisson_distributed_consuming_agent(id: &str, dist: Poisson<f64>) -> impl
         state: AgentState {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
-            id: id.to_string(),
+            id: id.into(),
             ..Default::default()
         },
     }
@@ -121,11 +124,14 @@ pub fn poisson_distributed_consuming_agent(id: &str, dist: Poisson<f64>) -> impl
 
 /// Given a poisson distribution for the production period,
 /// returns an Agent that produces to Target with that frequency.
-pub fn poisson_distributed_producing_agent(
-    id: String,
+pub fn poisson_distributed_producing_agent<T>(
+    id: T,
     dist: Poisson<f64>,
-    target: String,
-) -> Box<dyn Agent> {
+    target: T,
+) -> Box<dyn Agent>
+where
+    T: Into<String>,
+{
     #[derive(Debug, Clone)]
     struct PoissonAgent {
         period: Poisson<f64>,
@@ -163,22 +169,21 @@ pub fn poisson_distributed_producing_agent(
 
     Box::new(PoissonAgent {
         period: dist,
+        target: target.into(),
         state: AgentState {
-            id,
+            id: id.into(),
             mode: AgentMode::Proactive,
             wake_mode: AgentMode::Proactive,
             ..Default::default()
         },
-        target,
     })
 }
 
 /// A simple agent that produces messages on a period, directed to target.
-pub fn periodic_producing_agent(
-    id: String,
-    period: DiscreteTime,
-    target: String,
-) -> Box<dyn Agent> {
+pub fn periodic_producing_agent<T>(id: T, period: DiscreteTime, target: T) -> Box<dyn Agent>
+where
+    T: Into<String>,
+{
     #[derive(Debug, Clone)]
     struct PeriodicProducer {
         period: DiscreteTime,
@@ -217,11 +222,11 @@ pub fn periodic_producing_agent(
 
     Box::new(PeriodicProducer {
         period,
-        target,
+        target: target.into(),
         state: AgentState {
             mode: AgentMode::Proactive,
             wake_mode: AgentMode::Proactive,
-            id,
+            id: id.into(),
             ..Default::default()
         },
     })
@@ -229,7 +234,10 @@ pub fn periodic_producing_agent(
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
-pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> Box<dyn Agent> {
+pub fn periodic_consuming_agent<T>(id: T, period: DiscreteTime) -> Box<dyn Agent>
+where
+    T: Into<String>,
+{
     #[derive(Debug, Clone)]
     struct PeriodicConsumer {
         period: DiscreteTime,
@@ -270,7 +278,7 @@ pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> Box<dyn Age
         state: AgentState {
             mode: AgentMode::AsleepUntil(period),
             wake_mode: AgentMode::Reactive,
-            id,
+            id: id.into(),
             ..Default::default()
         },
     })
