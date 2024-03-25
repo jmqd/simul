@@ -5,7 +5,6 @@ rust-version = "1.77"
 edition = "2021"
 authors = ["Jordan McQueen <j@jm.dev>"]
 license = "MIT"
-license-file = "LICENSE"
 
 keywords = ["sim", "simulation", "annealing", "experiment"]
 categories = ["mathematics", "science", "development-tools"]
@@ -25,17 +24,12 @@ readme = "README.md"
 
 [features]
 default = []
-plotters = ["dep:plotters"]
-build-binary = ["plotters"]
+plotters = []
+build-binary = []
 
 [lib]
 name = "simul"
 path = "src/lib.rs"
-
-[[bin]]
-name = "simul-bin"
-path = "src/prototyping-binary/main.rs"
-required-features = ["build-binary"]
 
 [dev-dependencies]
 env_logger = "0.10"
@@ -50,4 +44,5 @@ rand = {version = "0", features = ["alloc"]}
 rand_distr = "0.4"
 ringbuffer = "0.14"
 log = "0.4"
-plotters = {version = "0.3.3", optional = true}
+derivative = "2.2.0"
+dyn-clone = "1.0.17"

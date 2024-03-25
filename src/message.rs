@@ -1,5 +1,11 @@
 use crate::DiscreteTime;
 
+#[derive(Clone, Debug)]
+pub enum Interrupt {
+    /// Immediately halt the simulation (with some reason why).
+    HaltSimulation(String),
+}
+
 /// A Message represents an interaction between Agents.
 #[derive(Default, Debug, Clone)]
 pub struct Message {
@@ -11,6 +17,9 @@ pub struct Message {
     pub source: String,
     /// The name of the Agent that received this Message.
     pub destination: String,
+    pub custom_payload: Option<Vec<u8>>,
+    /// A control interrupt to bubble up to the Simulation engine.
+    pub interrupt: Option<Interrupt>,
 }
 
 impl Message {
@@ -23,6 +32,7 @@ impl Message {
             completed_time: None,
             source: src.into(),
             destination: dst.into(),
+            ..Default::default()
         }
     }
 }
