@@ -1,4 +1,4 @@
-use crate::{message::*, DiscreteTime};
+use crate::{message::*, DiscreteTime, SimulationState};
 use rand::distributions::{Alphanumeric, DistString};
 use rand::prelude::*;
 use rand_distr::Poisson;
@@ -16,21 +16,6 @@ pub enum AgentState {
     Dead,
 }
 
-/// Sort of like extension-properties for an Agent that are sometimes used.
-/// This is hacky and it should be removed/refactored away.
-#[derive(Default, Debug, Clone)]
-pub struct AgentExtensions {
-    /// If the Agent has a periodic component, this stores that value.
-    pub period: Option<DiscreteTime>,
-    /// If the Agent is a producer to a specific target, this stores the target.
-    pub target: Option<String>,
-    /// If the Agent has a possion-distributed period, this is that distribution.
-    pub period_poisson_distribution: Option<Poisson<f64>>,
-
-    pub score: u8,
-    pub winning_threshold: u8,
-}
-
 /// The bread and butter of the Simulation -- the Agent.
 /// In a Complex Adaptive System (CAS), an Adaptive Agent does things and
 /// interacts with the Simulation, itself, and other Agents.
@@ -40,8 +25,13 @@ pub struct AgentExtensions {
 /// * Stoplight.
 /// * Driver in traffic.
 /// * A single-celled organism.
+/// * A player in a game.
 #[derive(Debug, Clone)]
-pub struct Agent {
+pub trait Agent {
+    fn process(&mut self, simulation_state: SimulationState, msg: Message) -> Option<Vec<Message>>;
+
+    fn id(&self) -> String;
+
     /// The queue of incoming Messages for the Agent.
     pub queue: VecDeque<Message>,
     /// The current state of the Agent.
@@ -50,31 +40,6 @@ pub struct Agent {
     pub produced: Vec<Message>,
     /// Mesages this agent consumed.
     pub consumed: Vec<Message>,
-    /// This function is called upon Messages when popped from the incoming queue.
-    pub consumption_fn: fn(&mut Agent, DiscreteTime) -> Option<Vec<Message>>,
-    /// The name of the Agent. Should be unique.
-    /// Note: This field is a wart in the abstraction. Ideally it is replaced with a better design.
-    pub name: String,
-    /// A bag of common extensions to Agent behavior.
-    /// Note: This field is a wart in the abstraction. Ideally it is replaced with a better design.
-    pub extensions: Option<AgentExtensions>,
-
-    pub lucky_pct: f32,
-}
-
-impl Default for Agent {
-    fn default() -> Self {
-        Self {
-            lucky_pct: 0.0,
-            queue: VecDeque::with_capacity(8),
-            state: AgentState::Active,
-            produced: vec![],
-            consumed: vec![],
-            consumption_fn: (|a: &mut Agent, t: DiscreteTime| a.pop_process_msg(t)),
-            name: Alphanumeric.sample_string(&mut rand::thread_rng(), 4),
-            extensions: None,
-        }
-    }
 }
 
 impl Agent {
@@ -96,7 +61,7 @@ impl Agent {
 }
 
 /// An agent that consumes on a Poisson-distributed periodicity.
-pub fn poisson_distributed_consuming_agent(name: &str, dist: Poisson<f64>) -> Agent {
+pub fn poisson_distributed_consuming_agent(id: &str, dist: Poisson<f64>) -> impl Agent {
     Agent {
         consumption_fn: |a: &mut Agent, t: DiscreteTime| {
             // This agent will go to sleep for a "cooldown period",

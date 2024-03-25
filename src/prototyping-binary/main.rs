@@ -99,14 +99,14 @@ fn normal_9_ball_simulation(lucky_pct: f32) -> String {
     };
 
     let mut ext = AgentExtensions::default();
-    ext.winning_threshold = 6;
+    ext.winning_threshold = 5;
 
-    let jordan = Agent {
+    let alice = Agent {
         consumption_fn: |a: &mut Agent, t: DiscreteTime| {
             if let Some(message) = a.queue.pop_front() {
                 let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-                let weights = [1, 5, 9, 11, 8, 4, 2, 2, 2, 1, 1];
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+                let weights = [5, 10, 20, 20, 18, 12, 5, 4, 3, 2];
                 let dist = WeightedIndex::new(&weights).unwrap();
                 let mut rng = thread_rng();
 
@@ -128,27 +128,28 @@ fn normal_9_ball_simulation(lucky_pct: f32) -> String {
                 Some(vec![Message {
                     queued_time: t,
                     completed_time: None,
-                    source: "opp".to_string(),
-                    destination: "opp".to_string(),
+                    source: "alice".to_string(),
+                    destination: "john".to_string(),
                     current_ball: ball,
                 }])
             } else {
                 None
             }
         },
-        name: "jordan".to_string(),
+        name: "alice".to_string(),
         extensions: Some(ext.clone()),
         queue: vec![Message::default()].into(),
         ..Default::default()
     };
 
-    let opp = Agent {
+    let john = Agent {
         lucky_pct: lucky_pct,
         consumption_fn: |a: &mut Agent, t: DiscreteTime| {
             if let Some(message) = a.queue.pop_front() {
                 let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-                let weights = [1, 4, 9, 11, 6, 4, 1, 1, 1, 1, 0];
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+                let weights = [6, 11, 18, 18, 15, 9, 3, 2, 2, 1];
+
                 let dist = WeightedIndex::new(&weights).unwrap();
                 let mut rng = thread_rng();
 
@@ -170,15 +171,15 @@ fn normal_9_ball_simulation(lucky_pct: f32) -> String {
                 let lucky_chance = rng.gen_range(0.0..1.0);
 
                 let next_turn = if lucky_chance > (1.0 - a.lucky_pct) {
-                    "opp".to_owned()
+                    "john".to_owned()
                 } else {
-                    "jordan".to_owned()
+                    "alice".to_owned()
                 };
 
                 Some(vec![Message {
                     queued_time: t,
                     completed_time: None,
-                    source: "opp".to_string(),
+                    source: "alice".to_string(),
                     destination: next_turn,
                     current_ball: ball,
                 }])
@@ -186,14 +187,14 @@ fn normal_9_ball_simulation(lucky_pct: f32) -> String {
                 None
             }
         },
-        name: "opp".to_string(),
+        name: "john".to_string(),
         extensions: Some(ext.clone()),
         ..Default::default()
     };
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents: vec![jordan, opp],
+        agents: vec![alice, john],
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -225,12 +226,13 @@ fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
     let mut ext = AgentExtensions::default();
     ext.winning_threshold = 55;
 
-    let jordan = Agent {
+    let alice = Agent {
         consumption_fn: |a: &mut Agent, t: DiscreteTime| {
             if let Some(message) = a.queue.pop_front() {
                 let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-                let weights = [1, 5, 9, 11, 8, 4, 2, 2, 2, 1, 1];
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+                let weights = [5, 10, 20, 20, 18, 12, 5, 4, 3, 2];
+
                 let dist = WeightedIndex::new(&weights).unwrap();
                 let mut rng = thread_rng();
                 ext.score += choices[dist.sample(&mut rng)];
@@ -238,27 +240,28 @@ fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
                 Some(vec![Message {
                     queued_time: t,
                     completed_time: None,
-                    source: "jordan".to_string(),
-                    destination: "opp".to_string(),
+                    source: "alice".to_string(),
+                    destination: "john".to_string(),
                     ..Default::default()
                 }])
             } else {
                 None
             }
         },
-        name: "jordan".to_string(),
+        name: "alice".to_string(),
         extensions: Some(ext.clone()),
         queue: vec![Message::default()].into(),
         ..Default::default()
     };
 
-    let opp = Agent {
+    let john = Agent {
         lucky_pct,
         consumption_fn: |a: &mut Agent, t: DiscreteTime| {
             if let Some(message) = a.queue.pop_front() {
                 let ext = a.extensions.as_mut()?;
-                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-                let weights = [1, 4, 9, 11, 6, 4, 1, 1, 1, 1, 0];
+                let choices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+                let weights = [6, 11, 18, 18, 15, 9, 3, 2, 2, 1];
+
                 let dist = WeightedIndex::new(&weights).unwrap();
                 let mut rng = thread_rng();
 
@@ -266,17 +269,16 @@ fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
 
                 let lucky_chance = rng.gen_range(0.0..1.0);
 
-                // We model luck as
                 let next_turn = if lucky_chance > (1.0 - a.lucky_pct) {
-                    "opp".to_owned()
+                    "john".to_owned()
                 } else {
-                    "jordan".to_owned()
+                    "alice".to_owned()
                 };
 
                 Some(vec![Message {
                     queued_time: t,
                     completed_time: None,
-                    source: "opp".to_string(),
+                    source: "john".to_string(),
                     destination: next_turn,
                     ..Default::default()
                 }])
@@ -284,14 +286,14 @@ fn nine_ball_apa_rules_simulation(lucky_pct: f32) -> String {
                 None
             }
         },
-        name: "opp".to_string(),
+        name: "john".to_string(),
         extensions: Some(ext.clone()),
         ..Default::default()
     };
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents: vec![jordan, opp],
+        agents: vec![alice, john],
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -327,9 +329,9 @@ fn periodic_agent_generator_fixed_producer(
 
 /// Note, this main.rs binary file is just for library prototyping at the moment.
 fn main() {
-    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
+    for pct in [0.00, 0.20, 0.40, 0.50, 0.60].into_iter() {
         let mut count: HashMap<String, u32> = HashMap::new();
-        for _ in 0..1024 {
+        for _ in 0..32768 {
             *count
                 .entry(nine_ball_apa_rules_simulation(pct))
                 .or_default() += 1;
@@ -338,20 +340,20 @@ fn main() {
         println!(
             "(APA match skill 7 vs 7) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
             pct * 100.0,
-            count["jordan"] as f32 / (count["jordan"] + count["opp"]) as f32
+            count["alice"] as f32 / (count["alice"] + count["john"]) as f32
         );
     }
 
-    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
+    for pct in [0.00, 0.20, 0.40, 0.50, 0.60].into_iter() {
         let mut count: HashMap<String, u32> = HashMap::new();
-        for _ in 0..1024 {
+        for _ in 0..32768 {
             *count.entry(normal_9_ball_simulation(pct)).or_default() += 1;
         }
 
         println!(
             "(set match race to 6) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
             pct * 100.0,
-            count["jordan"] as f32 / (count["jordan"] + count["opp"]) as f32
+            count["alice"] as f32 / (count["alice"] + count["john"]) as f32
         );
     }
 }

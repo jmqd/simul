@@ -10,9 +10,9 @@ use std::collections::HashMap;
 /// DiscreteTime is a Simulation's internal representation of time.
 pub type DiscreteTime = u64;
 
-/// The current state of a Simulation.
+/// The current mode of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub enum SimulationState {
+pub enum SimulationMode {
     /// The Simulation has only been constructed.
     Constructed,
     /// The Simulation is actively simulating.
@@ -21,6 +21,14 @@ pub enum SimulationState {
     Completed,
     /// The Simulation catastrophically crashed.
     Failed,
+}
+
+/// State about the simulation that agents are aware of.
+/// TODO: This may later just become the `Simulation` itself passed about.
+#[derive(Clone, Debug)]
+pub struct SimulationState {
+    time: DiscreteTime,
+    mode: SimulationMode,
 }
 
 /// A Simulation struct is responsible to hold all the state for a simulation
@@ -35,7 +43,7 @@ pub enum SimulationState {
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
     /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
-    pub agents: Vec<Agent>,
+    pub agents: Vec<dyn Agent>,
     /// A halt check function: given the state of the Simulation determine halt or not.
     pub halt_check: fn(&Simulation) -> bool,
     /// The current discrete time of the Simulation.
@@ -43,7 +51,7 @@ pub struct Simulation {
     /// Whether to record metrics on queue depths. Takes space.
     pub enable_queue_depth_metrics: bool,
     /// The state of the Simulation.
-    pub state: SimulationState,
+    pub state: SimulationMode,
     /// Maps from Agent.name => a handle for indexing the Agent in the vec.
     agent_metadata_hash_table: HashMap<String, AgentMetadata>,
 
@@ -86,7 +94,7 @@ struct AgentMetadata {
 impl Simulation {
     pub fn new(parameters: SimulationParameters) -> Simulation {
         Simulation {
-            state: SimulationState::Constructed,
+            state: SimulationMode::Constructed,
             agent_metadata_hash_table: parameters
                 .agents
                 .iter()
@@ -140,7 +148,7 @@ impl Simulation {
 
     /// Runs the simulation. This should only be called after adding all the beginning state.
     pub fn run(&mut self) {
-        self.state = SimulationState::Running;
+        self.state = SimulationMode::Running;
 
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
@@ -174,7 +182,7 @@ impl Simulation {
             self.time += 1;
         }
 
-        self.state = SimulationState::Completed;
+        self.state = SimulationMode::Completed;
         self.emit_completed_simulation_debug_logging();
     }
 
