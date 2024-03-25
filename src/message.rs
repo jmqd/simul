@@ -17,7 +17,7 @@ pub struct Message {
     pub source: String,
     /// The name of the Agent that received this Message.
     pub destination: String,
-    pub current_ball: u8,
+    pub custom_payload: Option<Vec<u8>>,
     /// A control interrupt to bubble up to the Simulation engine.
     pub interrupt: Option<Interrupt>,
 }

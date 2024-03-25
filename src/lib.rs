@@ -55,8 +55,6 @@ pub struct Simulation {
     pub mode: SimulationMode,
     /// Maps from agent.state().id => a handle for indexing the Agent in the vec.
     agent_metadata_hash_table: HashMap<String, AgentMetadata>,
-
-    pub current_ball: u8,
 }
 
 /// The parameters to create a Simulation.
@@ -116,7 +114,6 @@ impl Simulation {
             time: parameters.starting_time,
             enable_queue_depth_metrics: parameters.enable_queue_depth_metrics,
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
-            current_ball: 1,
         }
     }
 
@@ -333,8 +330,8 @@ mod tests {
         init();
         let mut simulation = Simulation::new(SimulationParameters {
             agents: vec![
-                periodic_producing_agent("producer", 1, "consumer"),
-                periodic_consuming_agent("consumer", 1),
+                periodic_producing_agent("producer".to_string(), 1, "consumer".to_string()),
+                periodic_consuming_agent("consumer".to_string(), 1),
             ],
             halt_check: |s: &Simulation| s.time == 5,
             ..Default::default()
@@ -352,46 +349,73 @@ mod tests {
     #[test]
     fn starbucks_clerk() {
         init();
-        let mut simulation = Simulation::new(SimulationParameters {
-            agents: vec![
-                Agent {
-                    name: "Starbucks Clerk".to_owned(),
-                    consumption_fn: |a: &mut Agent, t: DiscreteTime| {
-                        debug!("{} looking for a customer.", a.state().id);
-                        if let Some(last) = a.state().consumed.last() {
-                            if last.completed_time? + 60 > t {
-                                debug!("Sorry, we're still serving the last customer.");
-                                return None;
-                            }
-                        }
 
-                        if let Some(message) = a.queue.pop_front() {
-                            if message.queued_time + 100 > t {
-                                debug!("Still making your coffee, sorry!");
-                                a.state_mut().queue.push_front(message);
-                                return None;
-                            }
+        #[derive(Debug, Clone)]
+        struct Clerk {
+            state: AgentState,
+        }
 
-                            debug!("Serviced a customer!");
-                            a.state_mut().consumed.push(Message {
-                                completed_time: Some(t),
-                                ..message
-                            });
-                        }
+        impl Agent for Clerk {
+            fn state(&self) -> &AgentState {
+                &self.state
+            }
+
+            fn state_mut(&mut self) -> &mut AgentState {
+                &mut self.state
+            }
+
+            fn process(
+                &mut self,
+                simulation_state: SimulationState,
+                msg: &Message,
+            ) -> Option<Vec<Message>> {
+                debug!("{} looking for a customer.", self.state().id);
+                if let Some(last) = self.state().consumed.last() {
+                    if last.completed_time? + 60 > simulation_state.time {
+                        debug!("Sorry, we're still serving the last customer.");
                         return None;
-                    },
-                    ..Default::default()
-                },
-                poisson_distributed_producing_agent(
-                    "Starbucks Customers",
-                    Poisson::new(80.0).unwrap(),
-                    "Starbucks Clerk",
-                ),
-            ],
+                    }
+                }
+
+                if let Some(message) = self.state_mut().queue.pop_front() {
+                    if msg.queued_time + 100 > simulation_state.time {
+                        debug!("Still making your coffee, sorry!");
+                        self.state_mut().queue.push_front(message);
+                        return None;
+                    }
+
+                    debug!("Serviced a customer!");
+                    self.state_mut().consumed.push(Message {
+                        completed_time: Some(simulation_state.time),
+                        ..message
+                    });
+                }
+                return None;
+            }
+        }
+
+        let mut simulation = Simulation::new(SimulationParameters {
             starting_time: 1,
-            enable_queue_depth_telemetry: false,
+            enable_queue_depth_metrics: false,
+            enable_agent_asleep_cycles_metric: false,
             halt_check: |s: &Simulation| s.time > 500,
+            agents: vec![
+                poisson_distributed_producing_agent(
+                    "Starbucks Customers".to_string(),
+                    Poisson::new(80.0).unwrap(),
+                    "Starbucks Clerk".to_string(),
+                ),
+                Box::new(Clerk {
+                    state: AgentState {
+                        mode: AgentMode::Reactive,
+                        wake_mode: AgentMode::Reactive,
+                        id: "Starbucks Clerk".to_string(),
+                        ..Default::default()
+                    },
+                }),
+            ],
         });
+
         simulation.run();
         assert_eq!(Some(simulation).is_some(), true);
     }

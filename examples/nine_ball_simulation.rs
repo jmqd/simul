@@ -26,7 +26,8 @@ impl<const N: usize> Agent for NineBallPlayer<{ N }> {
         let mut rng = thread_rng();
         let dist = WeightedIndex::new(&self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
-        let mut ball = msg.current_ball;
+
+        let mut ball = u8::from_le_bytes(msg.custom_payload.clone().unwrap().try_into().unwrap());
 
         while balls_to_run > 0 {
             balls_to_run -= 1;
@@ -59,7 +60,7 @@ impl<const N: usize> Agent for NineBallPlayer<{ N }> {
             completed_time: None,
             source: self.state().id.to_string(),
             destination: next_turn,
-            current_ball: ball,
+            custom_payload: Some(ball.to_le_bytes().to_vec()),
             ..Default::default()
         }])
     }
@@ -93,7 +94,7 @@ impl<const N: usize> Agent for ApaNineBallPlayer<{ N }> {
         let mut rng = thread_rng();
         let dist = WeightedIndex::new(&self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
-        let mut ball = msg.current_ball;
+        let mut ball = u8::from_le_bytes(msg.custom_payload.clone().unwrap().try_into().unwrap());
 
         while balls_to_run > 0 {
             balls_to_run -= 1;
@@ -127,7 +128,7 @@ impl<const N: usize> Agent for ApaNineBallPlayer<{ N }> {
             completed_time: None,
             source: self.state().id.to_string(),
             destination: next_turn,
-            current_ball: ball,
+            custom_payload: Some(ball.to_le_bytes().to_vec()),
             ..Default::default()
         }])
     }
@@ -169,7 +170,11 @@ fn normal_9_ball_simulation(luck_chance: f32) -> String {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
             id: "john".to_owned(),
-            queue: vec![Message::default()].into(),
+            queue: vec![Message {
+                custom_payload: Some((1u8).to_le_bytes().to_vec()),
+                ..Default::default()
+            }]
+            .into(),
             ..Default::default()
         },
         opponent_name: "alice".to_string(),
@@ -198,7 +203,6 @@ fn normal_9_ball_simulation(luck_chance: f32) -> String {
 }
 
 fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
-    let mut empty_count = 0;
     let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
 
     let alice = ApaNineBallPlayer {
@@ -226,7 +230,11 @@ fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
             id: "john".to_owned(),
-            queue: vec![Message::default()].into(),
+            queue: vec![Message {
+                custom_payload: Some((1u8).to_le_bytes().to_vec()),
+                ..Default::default()
+            }]
+            .into(),
             ..Default::default()
         },
         opponent_name: "alice".to_string(),
