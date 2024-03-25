@@ -32,11 +32,6 @@ build-binary = []
 name = "simul"
 path = "src/lib.rs"
 
-[[bin]]
-name = "simul-bin"
-path = "src/prototyping-binary/main.rs"
-required-features = ["build-binary"]
-
 [dev-dependencies]
 env_logger = "0.10"
 criterion = "0.5.1"
