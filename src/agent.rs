@@ -1,6 +1,5 @@
 use crate::{message::*, DiscreteTime, SimulationState};
 use dyn_clone::DynClone;
-use rand::distributions::{Alphanumeric, DistString};
 use rand::prelude::*;
 use rand_distr::Poisson;
 use std::collections::VecDeque;
@@ -93,7 +92,7 @@ pub fn poisson_distributed_consuming_agent(id: &str, dist: Poisson<f64>) -> impl
         fn process(
             &mut self,
             simulation_state: SimulationState,
-            msg: &Message,
+            _msg: &Message,
         ) -> Option<Vec<Message>> {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
@@ -140,7 +139,7 @@ pub fn poisson_distributed_producing_agent(
         fn process(
             &mut self,
             simulation_state: SimulationState,
-            msg: &Message,
+            _msg: &Message,
         ) -> Option<Vec<Message>> {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
@@ -189,7 +188,7 @@ pub fn periodic_producing_agent(id: String, period: DiscreteTime, target: String
         fn process(
             &mut self,
             simulation_state: SimulationState,
-            msg: &Message,
+            _msg: &Message,
         ) -> Option<Vec<Message>> {
             self.state.mode = AgentMode::AsleepUntil(simulation_state.time + self.period);
 
@@ -235,7 +234,7 @@ pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> impl Agent 
         fn process(
             &mut self,
             simulation_state: SimulationState,
-            msg: &Message,
+            _msg: &Message,
         ) -> Option<Vec<Message>> {
             self.state.mode = AgentMode::AsleepUntil(simulation_state.time + self.period);
             None
