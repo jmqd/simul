@@ -390,7 +390,8 @@ mod tests {
                         ..message
                     });
                 }
-                return None;
+
+                None
             }
         }
 
@@ -417,6 +418,6 @@ mod tests {
         });
 
         simulation.run();
-        assert_eq!(Some(simulation).is_some(), true);
+        assert!(Some(simulation).is_some());
     }
 }
