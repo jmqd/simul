@@ -28,7 +28,7 @@ Use-cases:
 
 ``` toml
 [dependencies]
-simul = "0.2"
+simul = "0.3.1"
 ```
 
 ``` rust
@@ -44,14 +44,16 @@ let mut simulation = Simulation::new(
     //   one that produces -> consumer every tick
     //   one that simply consumes w/ no side effects every third tick
     agents: vec![
-        periodic_producing_agent("producer", 1, "consumer"),
-        periodic_consuming_agent("consumer", 3),
+        periodic_producing_agent("producer".to_string(), 1, "consumer".to_string()),
+        periodic_consuming_agent("consumer".to_string(), 3),
     ],
     // You can set the starting epoch for the simulation. 0 is normal.
     starting_time: 0,
     // Whether to collect telemetry on queue depths at every tick.
     // Useful if you're interested in backlogs, bottlenecks, etc. Costs performance.
-    enable_queue_depth_telemetry: true,
+    enable_queue_depth_metric: true,
+    /// Records a metric on the number of cycles agents were asleep for.
+    enable_agent_asleep_cycles_metric: true,
     // We pass in a halt condition so the simulation knows when it is finished.
     // In this case, it is "when the simulation is 10 ticks old, we're done."
     halt_check: |s: &Simulation| s.time == 10,
@@ -81,7 +83,7 @@ being open.
 
 ![](./readme-assets/cafe-example-queued-durations.png)
 
-This is a code example for generating the above, from `main.rs`:
+This is a code example for generating the above.
 
 ``` rust
 use plotters::prelude::*;
@@ -97,15 +99,15 @@ fn main() {
 fn run_example_cafe_simulation() -> Result<(), Box<dyn std::error::Error>> {
     let mut simulation = Simulation::new(SimulationParameters {
         agents: vec![
-            poisson_distributed_consuming_agent("Barista", Poisson::new(60.0).unwrap()),
+            poisson_distributed_consuming_agent("Barista".to_string(), Poisson::new(60.0).unwrap()),
             poisson_distributed_producing_agent(
-                "Customers",
+                "Customers".to_string(),
                 Poisson::new(60.0).unwrap(),
-                "Barista",
+                "Barista".to_string(),
             ),
         ],
         starting_time: 0,
-        enable_queue_depth_telemetry: true,
+        enable_queue_depth_metric: true,
         halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
     });
 
