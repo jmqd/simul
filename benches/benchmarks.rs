@@ -14,8 +14,8 @@ fn simple_periodic_bench(c: &mut Criterion) {
         b.iter(|| {
             let mut simulation = Simulation::new(SimulationParameters {
                 agents: vec![
-                    periodic_producing_agent("producer", 1, "consumer"),
-                    periodic_consuming_agent("consumer", 1),
+                    periodic_producing_agent("producer".to_string(), 1, "consumer".to_string()),
+                    periodic_consuming_agent("consumer".to_string(), 1),
                 ],
                 halt_check: |s: &Simulation| s.time == 1000,
                 ..Default::default()
