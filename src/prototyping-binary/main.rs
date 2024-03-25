@@ -220,7 +220,6 @@ fn normal_9_ball_simulation(luck_chance: f32) -> String {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
             id: "alice".to_owned(),
-            queue: vec![Message::default()].into(),
             ..Default::default()
         },
         opponent_name: "john".to_string(),
@@ -235,7 +234,8 @@ fn normal_9_ball_simulation(luck_chance: f32) -> String {
         state: AgentState {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
-            id: "alice".to_owned(),
+            id: "john".to_owned(),
+            queue: vec![Message::default()].into(),
             ..Default::default()
         },
         opponent_name: "alice".to_string(),
@@ -277,7 +277,6 @@ fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
             id: "alice".to_owned(),
-            queue: vec![Message::default()].into(),
             ..Default::default()
         },
         opponent_name: "john".to_string(),
@@ -292,7 +291,8 @@ fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
         state: AgentState {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
-            id: "alice".to_owned(),
+            id: "john".to_owned(),
+            queue: vec![Message::default()].into(),
             ..Default::default()
         },
         opponent_name: "alice".to_string(),
@@ -307,8 +307,6 @@ fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
 
     let mut sim = Simulation::new(simulation_parameters_generator());
     sim.run();
-
-    println!("{:#?}", sim);
 
     sim.agents
         .iter()
