@@ -54,19 +54,24 @@ fn run_experiment() {
     // the simulation that completed the Simulation in the least time and
     // doesn't "overuse" consumer period.
     //
-    // In this specific example, negative simulation time means that we're
+    // In this specific example, by substracting simulation time, we're
     // optimizing for the simulation that completes the fastest. If this were
     // the only parameter, there would be two solutions: 0 and 1. Because the
     // producer is fixed at a period of 2, a consumer with period 0 or 1 can
     // sufficiently keep up with that producer.
     //
-    // By subtracting the asleep cycles of the consumer from the simulation
-    // time, we're looking to get the fastest simulation time whiling maximizing
-    // sleep time / minimizing resource usage.
-    let objective_fn =
-        |s: &Simulation| -(s.time as i64) - s.asleep_cycle_count("consumer").unwrap() as i64;
+    // By also including the cost of the agent, we also optimize to not waste
+    // resources with an over-eager consumer.
+    let objective_fn = |s: &Simulation| {
+        -(s.time as i64)
+            - s.agents
+                .iter()
+                .find(|a| a.state().id == "consumer")
+                .unwrap()
+                .cost()
+    };
 
-    let replications_limit = 100;
+    let replications_limit = 1000;
 
     // Run the simulation 100 different times, randomly varying the agent
     // configuration, and return the one that maximized the objective function.
@@ -76,7 +81,7 @@ fn run_experiment() {
         objective_fn,
     );
 
-    println!("{:?}", approx_optimal.unwrap().agents.iter());
+    println!("{:#?}", approx_optimal.unwrap().agents.iter());
 }
 
 fn main() {

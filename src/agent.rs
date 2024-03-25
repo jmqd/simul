@@ -68,6 +68,12 @@ pub trait Agent: std::fmt::Debug + DynClone {
     fn push_message(&mut self, msg: Message) {
         self.state_mut().queue.push_back(msg);
     }
+
+    /// For annealing experiments, you may implement a cost function for the agent.
+    /// For example, a periodic consuming agent has cost implented equal to its period.
+    fn cost(&self) -> i64 {
+        0
+    }
 }
 
 dyn_clone::clone_trait_object!(Agent);
@@ -189,6 +195,10 @@ pub fn periodic_producing_agent(
             &mut self.state
         }
 
+        fn cost(&self) -> i64 {
+            -(self.period as i64)
+        }
+
         fn process(
             &mut self,
             simulation_state: SimulationState,
@@ -235,12 +245,22 @@ pub fn periodic_consuming_agent(id: String, period: DiscreteTime) -> Box<dyn Age
             &mut self.state
         }
 
+        fn cost(&self) -> i64 {
+            -(self.period as i64)
+        }
+
         fn process(
             &mut self,
             simulation_state: SimulationState,
-            _msg: &Message,
+            msg: &Message,
         ) -> Option<Vec<Message>> {
             self.state.mode = AgentMode::AsleepUntil(simulation_state.time + self.period);
+
+            self.state.consumed.push(Message {
+                completed_time: Some(simulation_state.time),
+                ..msg.clone()
+            });
+
             None
         }
     }
