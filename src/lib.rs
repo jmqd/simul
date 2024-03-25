@@ -90,7 +90,6 @@ impl Default for SimulationParameters {
 
 #[derive(Clone, Debug)]
 struct AgentMetadata {
-    handle: usize,
     queue_depth_metrics: Vec<usize>,
     asleep_cycle_count: DiscreteTime,
 }
@@ -102,12 +101,10 @@ impl Simulation {
             agent_metadata_hash_table: parameters
                 .agents
                 .iter()
-                .enumerate()
-                .map(|(i, a)| {
+                .map(|a| {
                     (
                         a.state().id.to_owned(),
                         AgentMetadata {
-                            handle: i,
                             queue_depth_metrics: vec![],
                             asleep_cycle_count: 0,
                         },
