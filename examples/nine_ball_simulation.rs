@@ -142,7 +142,7 @@ impl<const N: usize> Agent for ApaNineBallPlayer<{ N }> {
     }
 }
 
-fn normal_9_ball_simulation(luck_chance: f32) -> String {
+fn normal_9_ball_simulation(luck_chance: f32, starting_player: usize) -> String {
     let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
 
     let alice = NineBallPlayer {
@@ -170,19 +170,21 @@ fn normal_9_ball_simulation(luck_chance: f32) -> String {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
             id: "john".to_owned(),
-            queue: vec![Message {
-                custom_payload: Some((1u8).to_le_bytes().to_vec()),
-                ..Default::default()
-            }]
-            .into(),
             ..Default::default()
         },
         opponent_name: "alice".to_string(),
     };
 
+    let mut agents: Vec<Box<dyn Agent>> = vec![Box::new(alice), Box::new(john)];
+    agents.get_mut(starting_player).unwrap().state_mut().queue = vec![Message {
+        custom_payload: Some((1u8).to_le_bytes().to_vec()),
+        ..Default::default()
+    }]
+    .into();
+
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents: vec![Box::new(alice), Box::new(john)],
+        agents,
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -202,7 +204,7 @@ fn normal_9_ball_simulation(luck_chance: f32) -> String {
         .unwrap()
 }
 
-fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
+fn nine_ball_apa_rules_simulation(luck_chance: f32, starting_player: usize) -> String {
     let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
 
     let alice = ApaNineBallPlayer {
@@ -240,9 +242,16 @@ fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
         opponent_name: "alice".to_string(),
     };
 
+    let mut agents: Vec<Box<dyn Agent>> = vec![Box::new(alice), Box::new(john)];
+    agents.get_mut(starting_player).unwrap().state_mut().queue = vec![Message {
+        custom_payload: Some((1u8).to_le_bytes().to_vec()),
+        ..Default::default()
+    }]
+    .into();
+
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents: vec![Box::new(alice), Box::new(john)],
+        agents,
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -263,12 +272,17 @@ fn nine_ball_apa_rules_simulation(luck_chance: f32) -> String {
 }
 
 fn main() {
-    for pct in [0.00, 0.20, 0.40, 0.50, 0.60].into_iter() {
+    // To vary who "breaks" first, we pass in a starting player, 0 or 1.
+    let mut starting_player: usize = 0;
+
+    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
         let mut count: HashMap<String, u32> = HashMap::new();
         for _ in 0..32768 {
             *count
-                .entry(nine_ball_apa_rules_simulation(pct))
+                .entry(nine_ball_apa_rules_simulation(pct, starting_player))
                 .or_default() += 1;
+
+            starting_player ^= 1;
         }
 
         println!(
@@ -278,10 +292,15 @@ fn main() {
         );
     }
 
-    for pct in [0.00, 0.20, 0.40, 0.50, 0.60].into_iter() {
+    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
         let mut count: HashMap<String, u32> = HashMap::new();
+        let mut starting_player = 0;
         for _ in 0..32768 {
-            *count.entry(normal_9_ball_simulation(pct)).or_default() += 1;
+            *count
+                .entry(normal_9_ball_simulation(pct, starting_player))
+                .or_default() += 1;
+
+            starting_player ^= 1;
         }
 
         println!(
