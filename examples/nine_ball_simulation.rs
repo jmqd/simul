@@ -278,6 +278,9 @@ fn main() {
     // To vary who "breaks" first, we pass in a starting player, 0 or 1.
     let mut starting_player: usize = 0;
 
+    eprintln!("Normal 9-ball");
+    println!("luck_chance\tbetter_player_win_percent");
+
     for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
         let mut count: HashMap<String, u32> = HashMap::new();
         for _ in 0..32768 {
@@ -291,12 +294,15 @@ fn main() {
             starting_player ^= 1;
         }
 
-        eprintln!(
-            "(APA match skill 7 vs 7) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
+        println!(
+            "{}\t{}",
             pct * 100.0,
-            count["alice"] as f32 / (count["alice"] + count["john"]) as f32
+            (count["alice"] as f32 / (count["alice"] + count["john"]) as f32) * 100.0
         );
     }
+
+    eprintln!("Normal 9-ball");
+    println!("luck_chance\tbetter_player_win_percent");
 
     for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
         let mut count: HashMap<String, u32> = HashMap::new();
@@ -312,10 +318,10 @@ fn main() {
             starting_player ^= 1;
         }
 
-        eprintln!(
-            "(set match race to 6) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
+        println!(
+            "{}\t{}",
             pct * 100.0,
-            count["alice"] as f32 / (count["alice"] + count["john"]) as f32
+            (count["alice"] as f32 / (count["alice"] + count["john"]) as f32) * 100.0
         );
     }
 }
