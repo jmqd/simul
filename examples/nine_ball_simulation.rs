@@ -142,7 +142,7 @@ impl<const N: usize> Agent for ApaNineBallPlayer<{ N }> {
     }
 }
 
-fn normal_9_ball_simulation(luck_chance: f32, starting_player: usize) -> String {
+fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: usize) -> String {
     let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
 
     let alice = NineBallPlayer {
@@ -204,7 +204,10 @@ fn normal_9_ball_simulation(luck_chance: f32, starting_player: usize) -> String 
         .unwrap()
 }
 
-fn nine_ball_apa_rules_simulation(luck_chance: f32, starting_player: usize) -> String {
+fn nine_ball_apa_rules_simulation_alice_vs_john(
+    luck_chance: f32,
+    starting_player: usize,
+) -> String {
     let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
 
     let alice = ApaNineBallPlayer {
@@ -279,7 +282,10 @@ fn main() {
         let mut count: HashMap<String, u32> = HashMap::new();
         for _ in 0..32768 {
             *count
-                .entry(nine_ball_apa_rules_simulation(pct, starting_player))
+                .entry(nine_ball_apa_rules_simulation_alice_vs_john(
+                    pct,
+                    starting_player,
+                ))
                 .or_default() += 1;
 
             starting_player ^= 1;
@@ -297,7 +303,10 @@ fn main() {
         let mut starting_player = 0;
         for _ in 0..32768 {
             *count
-                .entry(normal_9_ball_simulation(pct, starting_player))
+                .entry(normal_nine_ball_simulation_alice_vs_john(
+                    pct,
+                    starting_player,
+                ))
                 .or_default() += 1;
 
             starting_player ^= 1;
