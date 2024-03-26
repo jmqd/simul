@@ -285,7 +285,7 @@ fn main() {
             starting_player ^= 1;
         }
 
-        println!(
+        eprintln!(
             "(APA match skill 7 vs 7) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
             pct * 100.0,
             count["alice"] as f32 / (count["alice"] + count["john"]) as f32
@@ -303,7 +303,7 @@ fn main() {
             starting_player ^= 1;
         }
 
-        println!(
+        eprintln!(
             "(set match race to 6) Better player win percentage, {:.2}% luck factor for opponent: {:.2}",
             pct * 100.0,
             count["alice"] as f32 / (count["alice"] + count["john"]) as f32
