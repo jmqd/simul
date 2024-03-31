@@ -2,6 +2,15 @@
 name = "simul-macro"
 version = "0.1.0"
 edition = "2021"
+authors = ["Jordan McQueen <j@jm.dev>"]
+license = "MIT"
+
+description = """
+An internal macros crate for the simul macro.
+"""
+homepage = "https://github.com/jmqd/simul"
+repository = "https://github.com/jmqd/simul"
+readme = "README.md"
 
 [lib]
 proc-macro = true
