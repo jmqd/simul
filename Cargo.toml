@@ -1,7 +1,7 @@
 workspace = { members = ["simul-macro"] }
 [package]
 name = "simul"
-version = "0.3.3"
+version = "0.4.0"
 rust-version = "1.56"
 edition = "2021"
 authors = ["Jordan McQueen <j@jm.dev>"]
