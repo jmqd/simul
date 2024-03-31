@@ -2,6 +2,7 @@ use crate::{message::*, DiscreteTime, SimulationState};
 use dyn_clone::DynClone;
 use rand::prelude::*;
 use rand_distr::Poisson;
+use simul_macro::agent;
 use std::collections::VecDeque;
 
 /// Possible states an Agent can be in.
@@ -44,6 +45,19 @@ impl Default for AgentState {
     }
 }
 
+/// Internal simulation impl for an agent; this implementation is expected to
+/// be the same for most Agents.
+pub trait AgentCommon {
+    /// The state of the agent.
+    fn state(&self) -> &AgentState;
+
+    fn state_mut(&mut self) -> &mut AgentState;
+
+    fn push_message(&mut self, msg: Message) {
+        self.state_mut().queue.push_back(msg);
+    }
+}
+
 /// The bread and butter of the Simulation -- the Agent.
 /// In a Complex Adaptive System (CAS), an Adaptive Agent does things and
 /// interacts with the Simulation, itself, and other Agents.
@@ -54,20 +68,11 @@ impl Default for AgentState {
 /// * Driver in traffic.
 /// * A single-celled organism.
 /// * A player in a game.
-pub trait Agent: std::fmt::Debug + DynClone {
+pub trait Agent: std::fmt::Debug + DynClone + AgentCommon {
     /// The main action an agent performs; it processes message that come in to it.
     /// An agent can affect other agents by returning messages here.
     fn process(&mut self, simulation_state: SimulationState, msg: &Message)
         -> Option<Vec<Message>>;
-
-    /// The state of the agent.
-    fn state(&self) -> &AgentState;
-
-    fn state_mut(&mut self) -> &mut AgentState;
-
-    fn push_message(&mut self, msg: Message) {
-        self.state_mut().queue.push_back(msg);
-    }
 
     /// For annealing experiments, you may implement a cost function for the agent.
     /// For example, a periodic consuming agent has cost implented equal to its period.
@@ -83,21 +88,12 @@ pub fn poisson_distributed_consuming_agent<T>(id: T, dist: Poisson<f64>) -> impl
 where
     T: Into<String>,
 {
-    #[derive(Debug, Clone)]
+    #[agent]
     struct PoissonAgent {
         period: Poisson<f64>,
-        state: AgentState,
     }
 
     impl Agent for PoissonAgent {
-        fn state(&self) -> &AgentState {
-            &self.state
-        }
-
-        fn state_mut(&mut self) -> &mut AgentState {
-            &mut self.state
-        }
-
         fn process(
             &mut self,
             simulation_state: SimulationState,
@@ -132,22 +128,13 @@ pub fn poisson_distributed_producing_agent<T>(
 where
     T: Into<String>,
 {
-    #[derive(Debug, Clone)]
+    #[agent]
     struct PoissonAgent {
         period: Poisson<f64>,
-        state: AgentState,
         target: String,
     }
 
     impl Agent for PoissonAgent {
-        fn state(&self) -> &AgentState {
-            &self.state
-        }
-
-        fn state_mut(&mut self) -> &mut AgentState {
-            &mut self.state
-        }
-
         fn process(
             &mut self,
             simulation_state: SimulationState,
@@ -184,22 +171,13 @@ pub fn periodic_producing_agent<T>(id: T, period: DiscreteTime, target: T) -> Bo
 where
     T: Into<String>,
 {
-    #[derive(Debug, Clone)]
+    #[agent]
     struct PeriodicProducer {
         period: DiscreteTime,
         target: String,
-        state: AgentState,
     }
 
     impl Agent for PeriodicProducer {
-        fn state(&self) -> &AgentState {
-            &self.state
-        }
-
-        fn state_mut(&mut self) -> &mut AgentState {
-            &mut self.state
-        }
-
         fn cost(&self) -> i64 {
             -(self.period as i64)
         }
@@ -238,21 +216,12 @@ pub fn periodic_consuming_agent<T>(id: T, period: DiscreteTime) -> Box<dyn Agent
 where
     T: Into<String>,
 {
-    #[derive(Debug, Clone)]
+    #[agent]
     struct PeriodicConsumer {
         period: DiscreteTime,
-        state: AgentState,
     }
 
     impl Agent for PeriodicConsumer {
-        fn state(&self) -> &AgentState {
-            &self.state
-        }
-
-        fn state_mut(&mut self) -> &mut AgentState {
-            &mut self.state
-        }
-
         fn cost(&self) -> i64 {
             -(self.period as i64)
         }

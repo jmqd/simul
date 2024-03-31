@@ -1,10 +1,13 @@
+extern crate self as simul;
 pub mod agent;
 pub mod experiment;
 pub mod message;
 
-use agent::*;
+pub use agent::*;
+pub use message::*;
+pub use simul_macro;
+
 use log::{debug, info};
-use message::*;
 use std::collections::HashMap;
 
 /// DiscreteTime is a Simulation's internal representation of time.
@@ -320,6 +323,7 @@ impl Simulation {
 mod tests {
     use super::*;
     use rand_distr::Poisson;
+    use simul_macro::agent;
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -350,20 +354,10 @@ mod tests {
     fn starbucks_clerk() {
         init();
 
-        #[derive(Debug, Clone)]
-        struct Clerk {
-            state: AgentState,
-        }
+        #[agent]
+        struct Clerk {}
 
         impl Agent for Clerk {
-            fn state(&self) -> &AgentState {
-                &self.state
-            }
-
-            fn state_mut(&mut self) -> &mut AgentState {
-                &mut self.state
-            }
-
             fn process(
                 &mut self,
                 simulation_state: SimulationState,

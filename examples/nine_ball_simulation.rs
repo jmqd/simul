@@ -6,18 +6,17 @@ use simul::message::Message;
 use simul::*;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
-struct NineBallPlayer<const N: usize> {
+#[simul_macro::agent]
+struct NineBallPlayer {
     luck_chance: f32,
-    run_out_choices: [usize; N],
-    run_out_weights: [usize; N],
+    run_out_choices: [usize; 10],
+    run_out_weights: [usize; 10],
     winning_threshold: u8,
     score: u8,
-    state: AgentState,
     opponent_name: String,
 }
 
-impl<const N: usize> Agent for NineBallPlayer<{ N }> {
+impl Agent for NineBallPlayer {
     fn process(
         &mut self,
         simulation_state: SimulationState,
@@ -64,28 +63,19 @@ impl<const N: usize> Agent for NineBallPlayer<{ N }> {
             ..Default::default()
         }])
     }
-
-    fn state(&self) -> &AgentState {
-        &self.state
-    }
-
-    fn state_mut(&mut self) -> &mut AgentState {
-        &mut self.state
-    }
 }
 
-#[derive(Debug, Clone)]
-struct ApaNineBallPlayer<const N: usize> {
+#[simul_macro::agent]
+struct ApaNineBallPlayer {
     luck_chance: f32,
-    run_out_choices: [usize; N],
-    run_out_weights: [usize; N],
+    run_out_choices: [usize; 10],
+    run_out_weights: [usize; 10],
     winning_threshold: u8,
     score: u8,
-    state: AgentState,
     opponent_name: String,
 }
 
-impl<const N: usize> Agent for ApaNineBallPlayer<{ N }> {
+impl Agent for ApaNineBallPlayer {
     fn process(
         &mut self,
         simulation_state: SimulationState,
@@ -131,14 +121,6 @@ impl<const N: usize> Agent for ApaNineBallPlayer<{ N }> {
             custom_payload: Some(ball.to_le_bytes().to_vec()),
             ..Default::default()
         }])
-    }
-
-    fn state(&self) -> &AgentState {
-        &self.state
-    }
-
-    fn state_mut(&mut self) -> &mut AgentState {
-        &mut self.state
     }
 }
 
