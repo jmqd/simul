@@ -10,10 +10,12 @@ Simulation: {
 Simulation Logical Flow: {
   shape: sequence_diagram
 
-  Simulation -> halt_check(): if halt_check returns true, stop
+  Simulation -> halt_check: "if halt_check() == true, stop"
   Simulation -> agents: call process() on every active Agent
   agents -> Simulation: new Messages
   Simulation -> agents: distribute all new Messages
 
   Simulation -> time: increment
+
+  Simulation -> Simulation: "while (true)"
 }
