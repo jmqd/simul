@@ -1,0 +1,19 @@
+Simulation: {
+  shape: class
+
+  halt_check
+  agents
+  time
+  mode
+}
+
+Simulation Logical Flow: {
+  shape: sequence_diagram
+
+  Simulation -> halt_check(): if halt_check returns true, stop
+  Simulation -> agents: call process() on every active Agent
+  agents -> Simulation: new Messages
+  Simulation -> agents: distribute all new Messages
+
+  Simulation -> time: increment
+}

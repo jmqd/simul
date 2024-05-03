@@ -66,6 +66,12 @@ let mut simulation = Simulation::new(SimulationParameters {
 simulation.run();
 ```
 
+## Simulation Concepts / Abstraction
+
+![Diagram showing Agent trait](./diagrams/simulation_agents.png)
+
+![Diagram showing Simulation sequence diagram](./diagrams/simulation_control_flow.png)
+
 ## Poisson-distributed example w/ Plotting
 
 Here's an example of an outputted graph from a simulation run. In this

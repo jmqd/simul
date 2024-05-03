@@ -1,0 +1,11 @@
+Agent: {
+  shape: class
+
+  +process(\&mut self, SimulationState, \&Message): Option\<Vec\<Message\>\>
+  +cost(\&self) \[optional\]: i64
+  +state(\&self) \[impl provided\]: &AgentState
+  +state_mut(\&mut self) \[impl provided\]: &mut AgentState
+  +push_message(\&mut self, Message) \[impl provided\]
+}
+Simulation -> Vec\<Agents\>: has
+Vec\<Agents\> -> Agent: impl
