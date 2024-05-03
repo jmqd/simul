@@ -24,11 +24,16 @@ Use-cases:
 >
 > Experimental and unstable. Almost all APIs are expected to change.
 
+- For some examples, see the `examples` subdirectory.
+- For use cases where your agents need their own custom state, define a struct
+  and use the `#[simul_macro::agent]` macro and pass those agents to the
+  `Simulation`.
+
 ## Basic usage
 
 ``` toml
 [dependencies]
-simul = "0.3.1"
+simul = "0.4.1"
 ```
 
 ``` rust
