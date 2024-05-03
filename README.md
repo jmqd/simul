@@ -68,7 +68,20 @@ simulation.run();
 
 ## Simulation Concepts / Abstraction
 
+A simulation is a collection of `Agents` that interact with each other via
+`Messages`. The simulation keeps a discrete time (u64) which is incremented on
+each tick of the Simulation. What an `Agent` does at each tick of the simulation
+is provided by you in its `process()` method. `process()` means an `Agent`
+processes one of the messages in its queue. Each `Agent` must have a unique
+string id. If an `Agent` wants to interact with another `Agent`, it can return a
+`Message` from `process` with that other agent as a `target`.
+
 ![Diagram showing Agent trait](./diagrams/simulation_agents.png)
+
+The simulation runs all the logic of calling `process()`, distributing messages,
+tracking metrics, incrementing time, and when to halt. A `Simulation` is
+finished when the provided `halt_check` function returns `true`, or if an
+`Agent` responds with a special `Interrupt` to halt the `Simulation`.
 
 ![Diagram showing Simulation sequence diagram](./diagrams/simulation_control_flow.png)
 
