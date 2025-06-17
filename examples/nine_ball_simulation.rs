@@ -23,7 +23,7 @@ impl Agent for NineBallPlayer {
         msg: &Message,
     ) -> Option<Vec<Message>> {
         let mut rng = thread_rng();
-        let dist = WeightedIndex::new(&self.run_out_weights).unwrap();
+        let dist = WeightedIndex::new(self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
 
         let mut ball = u8::from_le_bytes(msg.custom_payload.clone().unwrap().try_into().unwrap());
@@ -82,7 +82,7 @@ impl Agent for ApaNineBallPlayer {
         msg: &Message,
     ) -> Option<Vec<Message>> {
         let mut rng = thread_rng();
-        let dist = WeightedIndex::new(&self.run_out_weights).unwrap();
+        let dist = WeightedIndex::new(self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
         let mut ball = u8::from_le_bytes(msg.custom_payload.clone().unwrap().try_into().unwrap());
 

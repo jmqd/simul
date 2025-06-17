@@ -11,7 +11,7 @@ pub enum AgentMode {
     /// The Agent is active; process() is called on every tick of the simulation.
     Proactive,
 
-    /// The Agent is active; process() is called when this agent has a message.
+    /// The Agent is reactive; process() is called when this agent has a message.
     Reactive,
 
     /// The Agent is sleeping (or on cooldown) until a scheduled wakeup.
