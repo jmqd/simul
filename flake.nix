@@ -10,10 +10,29 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
+
         pkgs = import nixpkgs { inherit system overlays; };
+
         rustToolchain =
           pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
+        };
+
+        simul = rustPlatform.buildRustPackage {
+          pname = "simul";
+          version = "0.4.1";
+          src = ./.;
+          cargoLock = { lockFile = ./Cargo.lock; };
+          nativeBuildInputs = [ ];
+          buildInputs = [ ];
+        };
       in {
+        packages.default = simul;
+        apps.default = flake-utils.lib.mkApp { drv = simul; };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             rustToolchain
