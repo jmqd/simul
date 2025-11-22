@@ -58,6 +58,8 @@ pub struct Simulation {
     pub mode: SimulationMode,
     /// Maps from agent.state().id => a handle for indexing the Agent in the vec.
     agent_metadata_hash_table: HashMap<String, AgentMetadata>,
+    /// Maps from an Agent's String id to its index.
+    pub agent_id_index_map: HashMap<String, usize>,
 }
 
 /// The parameters to create a Simulation.
@@ -97,6 +99,13 @@ struct AgentMetadata {
 
 impl Simulation {
     pub fn new(parameters: SimulationParameters) -> Simulation {
+        let agent_id_index_map: HashMap<String, usize> = parameters
+            .agents
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.state().id.clone(), i))
+            .collect();
+
         Simulation {
             mode: SimulationMode::Constructed,
             agent_metadata_hash_table: parameters
@@ -117,6 +126,7 @@ impl Simulation {
             time: parameters.starting_time,
             enable_queue_depth_metric: parameters.enable_queue_depth_metrics,
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
+            agent_id_index_map,
         }
     }
 
@@ -289,16 +299,17 @@ impl Simulation {
     /// If there are any interrupts, process those immediately.
     fn process_message_bus(&mut self, mut message_bus: Vec<Message>) {
         while let Some(message) = message_bus.pop() {
-            for agent in self.agents.iter_mut() {
-                if agent.state().id == message.clone().destination {
+            if let Some(&index) = self.agent_id_index_map.get(&message.destination) {
+                if let Some(agent) = self.agents.get_mut(index) {
                     agent.push_message(message.clone());
-                }
-
-                if agent.state().id == message.clone().source {
-                    agent.state_mut().produced.push(message.clone());
                 }
             }
 
+            if let Some(&index) = self.agent_id_index_map.get(&message.source) {
+                if let Some(agent) = self.agents.get_mut(index) {
+                    agent.state_mut().produced.push(message.clone());
+                }
+            }
             if let Some(Interrupt::HaltSimulation(reason)) = message.interrupt {
                 info!("Received a halt interrupt: {:?}", reason);
                 self.mode = SimulationMode::Completed;
