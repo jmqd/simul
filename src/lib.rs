@@ -185,10 +185,9 @@ impl Simulation {
                         }
                     }
                     AgentMode::Reactive => {
-                        if queued_msg.is_some() {
-                            if let Some(new_msgs) = agent
-                                .as_mut()
-                                .process(simulation_state.clone(), &queued_msg.unwrap())
+                        if let Some(msg) = queued_msg {
+                            if let Some(new_msgs) =
+                                agent.as_mut().process(simulation_state.clone(), &msg)
                             {
                                 message_bus.extend(new_msgs);
                             }
