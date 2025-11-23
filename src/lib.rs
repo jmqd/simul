@@ -249,22 +249,22 @@ impl Simulation {
     /// A helper to calculate the average waiting time to process items.
     /// Note: This function will likely go away; it is an artifact of prototyping.
     #[must_use]
-    pub fn calc_avg_wait_statistics(&self) -> HashMap<String, f32> {
+    pub fn calc_avg_wait_statistics(&self) -> HashMap<String, f64> {
         let mut data = HashMap::new();
         for agent in self
             .agents
             .iter()
             .filter(|agent| !agent.state.consumed.is_empty())
         {
-            let mut sum_of_times: f32 = 0f32;
+            let mut sum_of_times: f64 = 0f64;
             for completed in &agent.state.consumed {
-                sum_of_times +=
-                    completed.completed_time.unwrap() as f32 - completed.queued_time as f32;
+                sum_of_times += completed.completed_time.unwrap_or(completed.queued_time) as f64
+                    - completed.queued_time as f64;
             }
 
             data.insert(
                 agent.name.clone(),
-                sum_of_times / agent.state.consumed.len() as f32,
+                sum_of_times / agent.state.consumed.len() as f64,
             );
         }
 
@@ -313,6 +313,7 @@ impl Simulation {
         unsafe { self.agents.get_unchecked_mut(handle) }
     }
 
+    /// Emits debug logging w/ analytical stats.
     fn emit_completed_simulation_debug_logging(&self) {
         let queue_len_stats = self.calc_queue_len_statistics();
         let consumed_len_stats = self.calc_consumed_len_statistics();

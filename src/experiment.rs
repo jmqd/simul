@@ -87,12 +87,12 @@ pub fn simulated_annealing_experiment(
         // of how good it looks, and how much chaotic flux we have left. If we
         // have a lot of chaotic flux, we may choose to step into a worse world.
         let delta_goodness: f64 = current_score - new_score;
-        let explore_parallel_world = if delta_goodness < 0.0 {
+        let explore_parallel_world = if delta_goodness < 0.0_f64 {
             true
         } else {
             // If the new world is worse, there's still a chance we want to explore it.
             let acceptance_probability = (-delta_goodness / chaotic_flux).exp();
-            rand::rng().random_range(0.0..1.0) < acceptance_probability
+            rand::rng().random_range(0.0..1.0_f64) < acceptance_probability
         };
 
         if explore_parallel_world {
