@@ -36,10 +36,10 @@ pub enum SimulationMode {
 #[derive(Clone, Debug)]
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
-    pub(crate) agents: Vec<SimulationAgent>,
+    agents: Vec<SimulationAgent>,
 
     /// The current discrete time of the Simulation.
-    pub time: DiscreteTime,
+    time: DiscreteTime,
 
     /// A halt check function: given the state of the Simulation determine halt or not.
     halt_check: fn(&Simulation) -> bool,
@@ -376,6 +376,11 @@ impl Simulation {
     /// Returns a slice of the Agents in the Simulation.
     pub fn agents(&self) -> &[SimulationAgent] {
         self.agents.iter().as_slice()
+    }
+
+    /// Returns the current DiscreteTime tick for the Simulation.
+    pub fn time(&self) -> DiscreteTime {
+        self.time
     }
 }
 

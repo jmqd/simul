@@ -19,7 +19,7 @@ fn main() {
 
         // We pass in a halt condition so the simulation knows when it is finished.
         // In this case, it is "when the simulation is 10 ticks old, we're done."
-        halt_check: |s: &Simulation| s.time == 10,
+        halt_check: |s: &Simulation| s.time() == 10,
 
         ..Default::default()
     });

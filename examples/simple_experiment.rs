@@ -55,7 +55,7 @@ fn run_experiment() {
     // By also including the cost of the agent, we also optimize to not waste
     // resources with an over-eager consumer.
     let objective_fn = |s: &Simulation| {
-        -(s.time as f64) - s.find_agent(|a| a.name == "consumer").unwrap().agent.cost()
+        -(s.time() as f64) - s.find_agent(|a| a.name == "consumer").unwrap().agent.cost()
     };
 
     let replications_limit = 1000;

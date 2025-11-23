@@ -17,7 +17,7 @@ fn simple_periodic_bench(c: &mut Criterion) {
                     periodic_producing_agent("producer".to_string(), 1, "consumer".to_string()),
                     periodic_consuming_agent("consumer".to_string(), 1),
                 ],
-                halt_check: |s: &Simulation| s.time == 1000,
+                halt_check: |s: &Simulation| s.time() == 1000,
                 ..Default::default()
             });
             simulation.run();
