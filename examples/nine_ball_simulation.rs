@@ -17,11 +17,11 @@ struct NineBallPlayer {
 }
 
 impl Agent for NineBallPlayer {
-    fn process(
-        &mut self,
-        simulation_state: SimulationState,
-        msg: &Message,
-    ) -> Option<Vec<Message>> {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
         let mut rng = thread_rng();
         let dist = WeightedIndex::new(self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
@@ -40,47 +40,38 @@ impl Agent for NineBallPlayer {
         }
 
         if self.score >= self.winning_threshold {
-            return Some(vec![Message {
-                source: self.state().id.clone(),
-                interrupt: Some(Interrupt::HaltSimulation("won".to_string())),
-                ..Default::default()
-            }]);
+            ctx.send_halt_interrupt("won");
         }
 
         // If the opponent gets lucky, they get another turn.
         let next_turn = if rng.gen_range(0.0..1.0) > (1.0 - self.luck_chance) {
-            self.state().id.clone()
+            self.id.clone()
         } else {
             self.opponent_name.clone()
         };
 
-        Some(vec![Message {
-            queued_time: simulation_state.time,
-            completed_time: None,
-            source: self.state().id.to_string(),
-            destination: next_turn,
-            custom_payload: Some(ball.to_le_bytes().to_vec()),
-            ..Default::default()
-        }])
+        ctx.send(&next_turn, Some(ball.to_le_bytes().to_vec()));
     }
 }
 
 #[simul_macro::agent]
 struct ApaNineBallPlayer {
+    id: String,
     luck_chance: f32,
     run_out_choices: [usize; 10],
     run_out_weights: [usize; 10],
     winning_threshold: u8,
     score: u8,
     opponent_name: String,
+    state: AgentState,
 }
 
 impl Agent for ApaNineBallPlayer {
-    fn process(
-        &mut self,
-        simulation_state: SimulationState,
-        msg: &Message,
-    ) -> Option<Vec<Message>> {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
         let mut rng = thread_rng();
         let dist = WeightedIndex::new(self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
@@ -99,66 +90,59 @@ impl Agent for ApaNineBallPlayer {
         }
 
         if self.score >= self.winning_threshold {
-            return Some(vec![Message {
-                source: self.state().id.clone(),
-                interrupt: Some(Interrupt::HaltSimulation("won".to_string())),
-                ..Default::default()
-            }]);
+            ctx.send_halt_interrupt("won");
         }
 
         // If the player gets lucky, they get another turn.
         let next_turn = if rng.gen_range(0.0..1.0) > (1.0 - self.luck_chance) {
-            self.state().id.clone()
+            self.id().clone()
         } else {
             self.opponent_name.clone()
         };
 
-        Some(vec![Message {
-            queued_time: simulation_state.time,
-            completed_time: None,
-            source: self.state().id.to_string(),
-            destination: next_turn,
-            custom_payload: Some(ball.to_le_bytes().to_vec()),
-            ..Default::default()
-        }])
+        ctx.send(&next_turn, Some(ball.to_le_bytes().to_vec()));
     }
 }
 
 fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: usize) -> String {
-    let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
+    let halt_condition = |s: &Simulation| s.agent_states.iter().all(|a| a.queue.is_empty());
 
     let alice = NineBallPlayer {
+        id: "alice".to_owned(),
         luck_chance: 0.0,
         score: 0,
         winning_threshold: 5,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_weights: [5, 10, 20, 20, 18, 12, 5, 4, 3, 2],
-        state: AgentState {
-            mode: AgentMode::Reactive,
-            wake_mode: AgentMode::Reactive,
-            id: "alice".to_owned(),
-            ..Default::default()
-        },
         opponent_name: "john".to_string(),
     };
 
     let john = NineBallPlayer {
+        id: "john".to_owned(),
         luck_chance,
         score: 0,
         winning_threshold: 5,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_weights: [6, 11, 18, 18, 15, 9, 3, 2, 2, 1],
-        state: AgentState {
-            mode: AgentMode::Reactive,
-            wake_mode: AgentMode::Reactive,
-            id: "john".to_owned(),
-            ..Default::default()
-        },
         opponent_name: "alice".to_string(),
     };
 
-    let mut agents: Vec<Box<dyn Agent>> = vec![Box::new(alice), Box::new(john)];
-    agents.get_mut(starting_player).unwrap().state_mut().queue = vec![Message {
+    let mut agent_initializers: Vec<AgentInitializer> = vec![
+        AgentInitializer {
+            agent: Box::new(alice),
+            options: AgentOptions::default(),
+        },
+        AgentInitializer {
+            agent: Box::new(john),
+            options: AgentOptions::default(),
+        },
+    ];
+
+    agent_initializers
+        .get_mut(starting_player)
+        .unwrap()
+        .options
+        .initial_queue = vec![Message {
         custom_payload: Some((1u8).to_le_bytes().to_vec()),
         ..Default::default()
     }]
@@ -166,7 +150,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents,
+        agent_initializers,
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -177,12 +161,13 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
     sim.agents
         .iter()
         .find(|a| {
-            a.state()
+            sim.agent_state(&a.id())
+                .unwrap()
                 .produced
                 .last()
                 .is_some_and(|m| m.interrupt.is_some())
         })
-        .map(|a| a.state().id.clone())
+        .map(|a| a.id())
         .unwrap()
 }
 
@@ -190,9 +175,10 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
     luck_chance: f32,
     starting_player: usize,
 ) -> String {
-    let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state().queue.is_empty());
+    let halt_condition = |s: &Simulation| s.agent_states.iter().all(|a| a.queue.is_empty());
 
     let alice = ApaNineBallPlayer {
+        id: "alice".to_owned(),
         luck_chance: 0.0,
         score: 0,
         winning_threshold: 55,
@@ -201,13 +187,13 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         state: AgentState {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
-            id: "alice".to_owned(),
             ..Default::default()
         },
         opponent_name: "john".to_string(),
     };
 
     let john = ApaNineBallPlayer {
+        id: "john".to_owned(),
         luck_chance,
         score: 0,
         winning_threshold: 55,
@@ -216,7 +202,6 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         state: AgentState {
             mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
-            id: "john".to_owned(),
             queue: vec![Message {
                 custom_payload: Some((1u8).to_le_bytes().to_vec()),
                 ..Default::default()
@@ -227,8 +212,22 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         opponent_name: "alice".to_string(),
     };
 
-    let mut agents: Vec<Box<dyn Agent>> = vec![Box::new(alice), Box::new(john)];
-    agents.get_mut(starting_player).unwrap().state_mut().queue = vec![Message {
+    let mut agent_initializers = vec![
+        AgentInitializer {
+            agent: Box::new(alice),
+            options: AgentOptions::default(),
+        },
+        AgentInitializer {
+            agent: Box::new(john),
+            options: AgentOptions::default(),
+        },
+    ];
+
+    agent_initializers
+        .get_mut(starting_player)
+        .unwrap()
+        .options
+        .initial_queue = vec![Message {
         custom_payload: Some((1u8).to_le_bytes().to_vec()),
         ..Default::default()
     }]
@@ -236,7 +235,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents,
+        agent_initializers: agent_initializers,
         halt_check: halt_condition,
         ..Default::default()
     };
@@ -247,12 +246,13 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
     sim.agents
         .iter()
         .find(|a| {
-            a.state()
+            sim.agent_state(&a.id())
+                .unwrap()
                 .produced
                 .last()
                 .is_some_and(|m| m.interrupt.is_some())
         })
-        .map(|a| a.state().id.clone())
+        .map(|a| a.id().clone())
         .unwrap()
 }
 

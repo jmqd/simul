@@ -647,22 +647,12 @@ dependencies = [
  "log",
  "rand",
  "rand_distr",
- "simul-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "simul-macro",
 ]
 
 [[package]]
 name = "simul-macro"
 version = "0.1.0"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
-name = "simul-macro"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "729fcbc7a7b3198844064d472e127a52ad1027ec6f3aac03e196db5393f7f3c4"
 dependencies = [
  "quote",
  "syn",

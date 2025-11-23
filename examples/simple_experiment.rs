@@ -10,7 +10,7 @@ use simul::*;
 fn periodic_agent_generator_fixed_producer(
     producer_period: DiscreteTime,
     consumer_max_period: DiscreteTime,
-) -> impl Fn() -> Vec<Box<dyn Agent>> {
+) -> impl Fn() -> Vec<AgentInitializer> {
     move || {
         let consumer_period = rand::random::<u32>() % (consumer_max_period + 1) as u32;
         let producer_agent = periodic_producing_agent(
@@ -26,16 +26,7 @@ fn periodic_agent_generator_fixed_producer(
 
 /// Sandbox for running a simulated annealing experiment.
 fn run_experiment() {
-    let halt_condition = |s: &Simulation| {
-        s.agents
-            .iter()
-            .find(|a| a.state().id == "consumer")
-            .expect("No consumer agent?")
-            .state()
-            .consumed
-            .len()
-            > 10
-    };
+    let halt_condition = |s: &Simulation| s.agent_state("consumer").unwrap().consumed.len() > 10;
 
     // Creates an agent generator w/ a fixed producer at interval 2 and a
     // consumer whose period randomly varies between [0, 10]
@@ -43,7 +34,7 @@ fn run_experiment() {
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agents: agent_generator(),
+        agent_initializers: agent_generator(),
         halt_check: halt_condition,
         enable_agent_asleep_cycles_metric: true,
         ..Default::default()
@@ -66,7 +57,7 @@ fn run_experiment() {
         -(s.time as i64)
             - s.agents
                 .iter()
-                .find(|a| a.state().id == "consumer")
+                .find(|a| a.id() == "consumer")
                 .unwrap()
                 .cost()
     };

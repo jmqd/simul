@@ -1,4 +1,4 @@
-use crate::{message::*, DiscreteTime, SimulationState};
+use crate::{message::*, DiscreteTime};
 use dyn_clone::DynClone;
 use rand::prelude::*;
 use rand_distr::Poisson;
@@ -6,12 +6,13 @@ use simul_macro::agent;
 use std::collections::VecDeque;
 
 /// Possible states an Agent can be in.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
 pub enum AgentMode {
     /// The Agent is active; process() is called on every tick of the simulation.
     Proactive,
 
     /// The Agent is reactive; process() is called when this agent has a message.
+    #[default]
     Reactive,
 
     /// The Agent is sleeping (or on cooldown) until a scheduled wakeup.
@@ -23,12 +24,19 @@ pub enum AgentMode {
 
 #[derive(Debug, Clone)]
 pub struct AgentState {
+    /// The mode that the agent is in.
     pub mode: AgentMode,
+
+    /// The mode that the agent wakes up into.
     pub wake_mode: AgentMode,
-    pub id: String,
+
     /// The queue of incoming Messages for the Agent.
     pub queue: VecDeque<Message>,
+
+    /// The queue of messages already consumed by the agent.
     pub consumed: Vec<Message>,
+
+    /// The queue of messages produced by the agent.
     pub produced: Vec<Message>,
 }
 
@@ -37,7 +45,6 @@ impl Default for AgentState {
         Self {
             mode: AgentMode::Dead,
             wake_mode: AgentMode::Dead,
-            id: "".to_string(),
             queue: VecDeque::new(),
             consumed: vec![],
             produced: vec![],
@@ -45,17 +52,84 @@ impl Default for AgentState {
     }
 }
 
-/// Internal simulation impl for an agent; this implementation is expected to
-/// be the same for most Agents.
-pub trait AgentCommon {
-    /// The state of the agent.
-    fn state(&self) -> &AgentState;
+pub struct AgentCommand {
+    pub ty: AgentCommandType,
+    pub agent_handle: usize,
+}
 
-    fn state_mut(&mut self) -> &mut AgentState;
+/// Actions the Agent can perform.
+pub enum AgentCommandType {
+    /// Send a message to another agent
+    SendMessage(Message),
+    /// Sleep for a relative number of ticks
+    Sleep(DiscreteTime),
+    /// Stop the simulation
+    HaltSimulation(String),
+}
 
-    fn push_message(&mut self, msg: Message) {
-        self.state_mut().queue.push_back(msg);
+pub enum MessageProcessingStatus {
+    Initialized,
+    Completed,
+    InProgress,
+    Failed,
+}
+
+// The Context holds the capability for Agents to act on the world
+pub struct AgentContext<'a> {
+    /// The id of the Agent.
+    pub id: &'a str,
+
+    /// The current simulation time.
+    pub time: DiscreteTime,
+
+    /// Internal buffer for commands (messages, sleep requests, etc.)
+    pub(crate) commands: &'a mut Vec<AgentCommandType>,
+
+    pub state: &'a AgentState,
+
+    pub message_processing_status: MessageProcessingStatus,
+}
+
+impl<'a> AgentContext<'a> {
+    pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
+        self.commands.push(AgentCommandType::SendMessage(Message {
+            source: self.id.to_string(),
+            destination: target.to_string(),
+            queued_time: self.time,
+            custom_payload: payload,
+            ..Default::default()
+        }));
     }
+
+    /// Sends an interrupt to HALT the simulation.
+    pub fn send_halt_interrupt(&mut self, reason: &str) {
+        self.commands
+            .push(AgentCommandType::HaltSimulation(reason.to_string()));
+    }
+
+    /// Sleeps the Agent for a relative amount of time.
+    pub fn sleep_for(&mut self, ticks: DiscreteTime) {
+        self.commands.push(AgentCommandType::Sleep(ticks));
+    }
+
+    pub fn set_processing_status(&mut self, status: MessageProcessingStatus) {
+        self.message_processing_status = status;
+    }
+}
+
+/// Configuration for how an agent should start the simulation.
+#[derive(Debug, Clone, Default)]
+pub struct AgentOptions {
+    pub initial_mode: AgentMode,
+    pub wake_mode: AgentMode,
+    pub initial_queue: VecDeque<Message>,
+}
+
+/// An initializer for an agent.
+#[derive(Debug, Clone)]
+pub struct AgentInitializer {
+    pub agent: Box<dyn Agent>,
+    pub options: AgentOptions,
 }
 
 /// The bread and butter of the Simulation -- the Agent.
@@ -68,11 +142,16 @@ pub trait AgentCommon {
 /// * Driver in traffic.
 /// * A single-celled organism.
 /// * A player in a game.
-pub trait Agent: std::fmt::Debug + DynClone + AgentCommon {
-    /// The main action an agent performs; it processes message that come in to it.
-    /// An agent can affect other agents by returning messages here.
-    fn process(&mut self, simulation_state: SimulationState, msg: &Message)
-        -> Option<Vec<Message>>;
+pub trait Agent: std::fmt::Debug + DynClone {
+    // Returns the id of the Agent.
+    fn id(&self) -> String;
+
+    /// The main action an agent performs, processing messages that come in to it.
+    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message);
+
+    /// Some Agents do things all the time, they are `Proactive`.
+    #[allow(unused_variables)]
+    fn on_tick(&mut self, ctx: &mut AgentContext) {}
 
     /// For annealing experiments, you may implement a cost function for the agent.
     /// For example, a periodic consuming agent has cost implented equal to its period.
@@ -94,27 +173,21 @@ where
     }
 
     impl Agent for PoissonAgent {
-        fn process(
-            &mut self,
-            simulation_state: SimulationState,
-            _msg: &Message,
-        ) -> Option<Vec<Message>> {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+
+        fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
             let cooldown_period = self.period.sample(&mut rand::thread_rng()) as u64;
-            self.state.mode = AgentMode::AsleepUntil(simulation_state.time + cooldown_period);
-            None
+            ctx.sleep_for(cooldown_period);
         }
     }
 
     PoissonAgent {
         period: dist,
-        state: AgentState {
-            mode: AgentMode::Reactive,
-            wake_mode: AgentMode::Reactive,
-            id: id.into(),
-            ..Default::default()
-        },
+        id: id.into(),
     }
 }
 
@@ -124,7 +197,7 @@ pub fn poisson_distributed_producing_agent<T>(
     id: T,
     dist: Poisson<f64>,
     target: T,
-) -> Box<dyn Agent>
+) -> AgentInitializer
 where
     T: Into<String>,
 {
@@ -135,39 +208,31 @@ where
     }
 
     impl Agent for PoissonAgent {
-        fn process(
-            &mut self,
-            simulation_state: SimulationState,
-            _msg: &Message,
-        ) -> Option<Vec<Message>> {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+
+        fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
             let cooldown_period = self.period.sample(&mut rand::thread_rng()) as u64;
-
-            self.state.mode = AgentMode::AsleepUntil(simulation_state.time + cooldown_period);
-
-            Some(vec![Message::new(
-                simulation_state.time,
-                self.state.id.clone(),
-                self.target.clone(),
-            )])
+            ctx.sleep_for(cooldown_period);
+            ctx.send(&self.target.clone(), None);
         }
     }
 
-    Box::new(PoissonAgent {
-        period: dist,
-        target: target.into(),
-        state: AgentState {
+    AgentInitializer {
+        agent: Box::new(PoissonAgent {
             id: id.into(),
-            mode: AgentMode::Proactive,
-            wake_mode: AgentMode::Proactive,
-            ..Default::default()
-        },
-    })
+            period: dist,
+            target: target.into(),
+        }),
+        options: AgentOptions::default(),
+    }
 }
 
 /// A simple agent that produces messages on a period, directed to target.
-pub fn periodic_producing_agent<T>(id: T, period: DiscreteTime, target: T) -> Box<dyn Agent>
+pub fn periodic_producing_agent<T>(id: T, period: DiscreteTime, target: T) -> AgentInitializer
 where
     T: Into<String>,
 {
@@ -178,41 +243,41 @@ where
     }
 
     impl Agent for PeriodicProducer {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+
         fn cost(&self) -> i64 {
             -(self.period as i64)
         }
 
-        fn process(
-            &mut self,
-            simulation_state: SimulationState,
-            _msg: &Message,
-        ) -> Option<Vec<Message>> {
-            self.state.mode = AgentMode::AsleepUntil(simulation_state.time + self.period);
+        fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
+            // nothing
+        }
 
-            Some(vec![Message {
-                queued_time: simulation_state.time,
-                source: self.state.id.to_owned(),
-                destination: self.target.to_owned(),
-                ..Default::default()
-            }])
+        fn on_tick(&mut self, ctx: &mut AgentContext) {
+            ctx.sleep_for(self.period);
+            ctx.send(&self.target.to_owned(), None);
         }
     }
 
-    Box::new(PeriodicProducer {
-        period,
-        target: target.into(),
-        state: AgentState {
-            mode: AgentMode::Proactive,
-            wake_mode: AgentMode::Proactive,
+    AgentInitializer {
+        agent: Box::new(PeriodicProducer {
+            period,
+            target: target.into(),
             id: id.into(),
+        }),
+        options: AgentOptions {
+            initial_mode: AgentMode::Proactive,
+            wake_mode: AgentMode::Proactive,
             ..Default::default()
         },
-    })
+    }
 }
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
-pub fn periodic_consuming_agent<T>(id: T, period: DiscreteTime) -> Box<dyn Agent>
+pub fn periodic_consuming_agent<T>(id: T, period: DiscreteTime) -> AgentInitializer
 where
     T: Into<String>,
 {
@@ -222,33 +287,24 @@ where
     }
 
     impl Agent for PeriodicConsumer {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+
         fn cost(&self) -> i64 {
             -(self.period as i64)
         }
 
-        fn process(
-            &mut self,
-            simulation_state: SimulationState,
-            msg: &Message,
-        ) -> Option<Vec<Message>> {
-            self.state.mode = AgentMode::AsleepUntil(simulation_state.time + self.period);
-
-            self.state.consumed.push(Message {
-                completed_time: Some(simulation_state.time),
-                ..msg.clone()
-            });
-
-            None
+        fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
+            ctx.sleep_for(self.period);
         }
     }
 
-    Box::new(PeriodicConsumer {
-        period,
-        state: AgentState {
-            mode: AgentMode::AsleepUntil(period),
-            wake_mode: AgentMode::Reactive,
+    AgentInitializer {
+        agent: Box::new(PeriodicConsumer {
             id: id.into(),
-            ..Default::default()
-        },
-    })
+            period,
+        }),
+        options: AgentOptions::default(),
+    }
 }

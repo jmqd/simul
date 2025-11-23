@@ -46,20 +46,30 @@ pub struct SimulationState {
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
     pub agents: Vec<Box<dyn Agent>>,
+
     /// A halt check function: given the state of the Simulation determine halt or not.
     pub halt_check: fn(&Simulation) -> bool,
+
     /// The current discrete time of the Simulation.
     pub time: DiscreteTime,
+
     /// Whether to record metrics on queue depths. Takes space.
     pub enable_queue_depth_metric: bool,
+
     /// Records a metric on the number of cycles an agent was asleep for.
     pub enable_agent_asleep_cycles_metric: bool,
+
     /// The mode of the Simulation.
     pub mode: SimulationMode,
-    /// Maps from agent.state().id => a handle for indexing the Agent in the vec.
+
+    /// Maps from id to AgentMetadata.
     agent_metadata_hash_table: HashMap<String, AgentMetadata>,
-    /// Maps from an Agent's String id to its index.
+
+    /// Maps from an Agent's id to its index, a handle for indexing the Agent.
     pub agent_id_index_map: HashMap<String, usize>,
+
+    /// Maps from an Agent's String id to its AgentState.
+    pub agent_states: Vec<AgentState>,
 }
 
 /// The parameters to create a Simulation.
@@ -67,7 +77,7 @@ pub struct Simulation {
 pub struct SimulationParameters {
     /// The agents within the simulation, e.g. adaptive agents.
     /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
-    pub agents: Vec<Box<dyn Agent>>,
+    pub agent_initializers: Vec<AgentInitializer>,
     /// Given the state of the Simulation a function that determines if the Simulation is complete.
     pub halt_check: fn(&Simulation) -> bool,
     /// The discrete time at which the simulation should begin.
@@ -82,7 +92,7 @@ pub struct SimulationParameters {
 impl Default for SimulationParameters {
     fn default() -> Self {
         SimulationParameters {
-            agents: vec![],
+            agent_initializers: vec![],
             halt_check: |_| true,
             starting_time: 0,
             enable_queue_depth_metrics: false,
@@ -99,21 +109,35 @@ struct AgentMetadata {
 
 impl Simulation {
     pub fn new(parameters: SimulationParameters) -> Simulation {
+        // TODO(jmqd): Add the handle id to the agents here, use instead of mapping.
         let agent_id_index_map: HashMap<String, usize> = parameters
-            .agents
+            .agent_initializers
             .iter()
             .enumerate()
-            .map(|(i, a)| (a.state().id.clone(), i))
+            .map(|(i, agent_initializer)| (agent_initializer.agent.id(), i))
+            .collect();
+
+        let agent_states: Vec<AgentState> = parameters
+            .agent_initializers
+            .iter()
+            .map(|agent_initializer| AgentState {
+                mode: agent_initializer.options.initial_mode,
+                wake_mode: agent_initializer.options.wake_mode,
+                // TODO(jmqd): Avoid this clone of the initial_queue.
+                queue: agent_initializer.options.initial_queue.clone(),
+                consumed: vec![],
+                produced: vec![],
+            })
             .collect();
 
         Simulation {
             mode: SimulationMode::Constructed,
             agent_metadata_hash_table: parameters
-                .agents
+                .agent_initializers
                 .iter()
-                .map(|a| {
+                .map(|agent_initializer| {
                     (
-                        a.state().id.to_owned(),
+                        agent_initializer.agent.id(),
                         AgentMetadata {
                             queue_depth_metrics: vec![],
                             asleep_cycle_count: 0,
@@ -121,25 +145,47 @@ impl Simulation {
                     )
                 })
                 .collect(),
-            agents: parameters.agents,
+            agents: parameters
+                .agent_initializers
+                .into_iter()
+                .map(|agent_initializer| agent_initializer.agent)
+                .collect(),
             halt_check: parameters.halt_check,
             time: parameters.starting_time,
             enable_queue_depth_metric: parameters.enable_queue_depth_metrics,
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
             agent_id_index_map,
+            agent_states,
         }
     }
 
     /// Returns the consumed messages for a given Agent during the Simulation.
     pub fn consumed_for_agent(&self, name: &str) -> Option<Vec<Message>> {
-        let agent = self.agents.iter().find(|a| a.state().id == name)?;
-        Some(agent.state().consumed.clone())
+        let agent = self.agents.iter().find(|a| a.id() == name)?;
+        Some(self.agent_state(&agent.id())?.consumed.clone())
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
     pub fn produced_for_agent(&self, name: &str) -> Option<Vec<Message>> {
-        let agent = self.agents.iter().find(|a| a.state().id == name)?;
-        Some(agent.state().produced.clone())
+        let agent = self.agents.iter().find(|a| a.id() == name)?;
+        Some(self.agent_state(&agent.id()).unwrap().produced.clone())
+    }
+
+    pub fn agent_state(&self, id: &str) -> Option<&AgentState> {
+        // SAFETY: We initialize the agent_states vec to be len(param.agents)
+        unsafe {
+            Some(
+                self.agent_states
+                    .get_unchecked(*self.agent_id_index_map.get(id)?),
+            )
+        }
+    }
+
+    pub fn agent_state_mut(&mut self, id: &str) -> Option<&AgentState> {
+        Some(unsafe {
+            self.agent_states
+                .get_unchecked_mut(*self.agent_id_index_map.get(id).unwrap())
+        })
     }
 
     /// Returns the queue depth timeseries for a given Agent during the Simulation.
@@ -162,61 +208,94 @@ impl Simulation {
     /// Runs the simulation. This should only be called after adding all the beginning state.
     pub fn run(&mut self) {
         self.mode = SimulationMode::Running;
+        let mut command_buffer: Vec<AgentCommand> = vec![];
 
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
-            let mut message_bus = vec![];
             self.wakeup_agents_scheduled_to_wakeup_now();
 
-            let tick_message = Message::new(self.time, "SIM_SRC".to_string(), "ANY".to_string());
-            let simulation_state = SimulationState {
-                time: self.time,
-                mode: self.mode.clone(),
-            };
+            for i in 0..self.agents.len() {
+                let agent = &mut self.agents[i];
+                let agent_id = agent.id();
+                let agent_handle = self.agent_id_index_map[&agent_id];
+                let queued_msg = self
+                    .agent_states
+                    .get_mut(agent_handle)
+                    .unwrap()
+                    .queue
+                    .pop_front();
+                let agent_state = self.agent_states.get_mut(agent_handle).unwrap();
 
-            for agent in self.agents.iter_mut() {
                 if self.enable_queue_depth_metric {
                     self.agent_metadata_hash_table
-                        .get_mut(&agent.state().id)
+                        .get_mut(&agent_id)
                         .expect("Failed to find agent in metrics")
                         .queue_depth_metrics
-                        .push(agent.state().queue.len());
+                        .push(agent_state.queue.len());
                 }
 
-                let queued_msg = agent.state_mut().queue.pop_front();
+                let mut agent_commands: Vec<AgentCommandType> = vec![];
 
-                match agent.state().mode {
-                    AgentMode::Proactive => {
-                        if let Some(messages) = agent.as_mut().process(
-                            simulation_state.clone(),
-                            queued_msg.as_ref().unwrap_or(&tick_message),
-                        ) {
-                            message_bus.extend(messages);
-                        }
-                    }
+                let mut ctx = AgentContext {
+                    id: &agent_id,
+                    time: self.time,
+                    commands: &mut agent_commands,
+                    state: agent_state,
+                    message_processing_status: MessageProcessingStatus::Initialized,
+                };
+
+                match agent_state.mode {
+                    AgentMode::Proactive => agent.as_mut().on_tick(&mut ctx),
                     AgentMode::Reactive => {
                         if let Some(msg) = queued_msg {
-                            if let Some(new_msgs) =
-                                agent.as_mut().process(simulation_state.clone(), &msg)
-                            {
-                                message_bus.extend(new_msgs);
+                            agent.as_mut().on_message(&mut ctx, &msg);
+
+                            match ctx.message_processing_status {
+                                MessageProcessingStatus::Failed
+                                | MessageProcessingStatus::InProgress => {
+                                    self.agent_states
+                                        .get_mut(agent_handle)
+                                        .unwrap()
+                                        .queue
+                                        .push_front(msg);
+                                }
+                                // TODO(jmqd): For now, we assume Initialized also means completed.
+                                // This is a leaky abstraction; we should find a better one.
+                                MessageProcessingStatus::Initialized
+                                | MessageProcessingStatus::Completed => {
+                                    self.agent_states
+                                        .get_mut(agent_handle)
+                                        .unwrap()
+                                        .consumed
+                                        .push(Message {
+                                            completed_time: Some(self.time),
+                                            ..msg
+                                        });
+                                }
                             }
                         }
                     }
                     AgentMode::AsleepUntil(_) => {
                         if self.enable_agent_asleep_cycles_metric {
                             self.agent_metadata_hash_table
-                                .get_mut(&agent.state().id)
+                                .get_mut(&agent.id())
                                 .expect("Failed to find agent in metrics")
                                 .asleep_cycle_count += 1
                         }
                     }
                     AgentMode::Dead => {}
                 }
+
+                command_buffer.extend(agent_commands.into_iter().map(|command_type| {
+                    AgentCommand {
+                        ty: command_type,
+                        agent_handle,
+                    }
+                }));
             }
 
             // Consume all the new messages in the bus and deliver to agents.
-            self.process_message_bus(message_bus);
+            self.process_command_buffer(&mut command_buffer);
 
             debug!("Finished this tick; incrementing time.");
             self.time += 1;
@@ -233,16 +312,16 @@ impl Simulation {
         for agent in self
             .agents
             .iter()
-            .filter(|a| !a.state().consumed.is_empty())
+            .filter(|a| !self.agent_state(&a.id()).unwrap().consumed.is_empty())
         {
             let mut sum_of_times: u64 = 0;
-            for completed in agent.state().consumed.iter() {
+            for completed in self.agent_state(&agent.id()).unwrap().consumed.iter() {
                 sum_of_times += completed.completed_time.unwrap() - completed.queued_time;
             }
 
             data.insert(
-                agent.state().id.clone(),
-                sum_of_times as usize / agent.state().consumed.len(),
+                agent.id(),
+                sum_of_times as usize / self.agent_state(&agent.id()).unwrap().consumed.len(),
             );
         }
 
@@ -255,7 +334,10 @@ impl Simulation {
         let mut data = HashMap::new();
 
         for agent in self.agents.iter() {
-            data.insert(agent.state().id.clone(), agent.state().queue.len());
+            data.insert(
+                agent.id().clone(),
+                self.agent_state(&agent.id()).unwrap().queue.len(),
+            );
         }
 
         data
@@ -266,7 +348,10 @@ impl Simulation {
         let mut data = HashMap::new();
 
         for agent in self.agents.iter() {
-            data.insert(agent.state().id.clone(), agent.state().consumed.len());
+            data.insert(
+                agent.id().clone(),
+                self.agent_state(&agent.id()).unwrap().consumed.len(),
+            );
         }
 
         data
@@ -277,7 +362,10 @@ impl Simulation {
         let mut data = HashMap::new();
 
         for agent in self.agents.iter() {
-            data.insert(agent.state().id.clone(), agent.state().produced.len());
+            data.insert(
+                agent.id().clone(),
+                self.agent_state(&agent.id()).unwrap().produced.len(),
+            );
         }
 
         data
@@ -297,32 +385,43 @@ impl Simulation {
 
     /// Consume a message_bus of messages and disperse those messages to the agents.
     /// If there are any interrupts, process those immediately.
-    fn process_message_bus(&mut self, mut message_bus: Vec<Message>) {
-        while let Some(message) = message_bus.pop() {
-            if let Some(&index) = self.agent_id_index_map.get(&message.destination) {
-                if let Some(agent) = self.agents.get_mut(index) {
-                    agent.push_message(message.clone());
-                }
-            }
+    fn process_command_buffer(&mut self, command_buffer: &mut Vec<AgentCommand>) {
+        while let Some(command) = command_buffer.pop() {
+            match command.ty {
+                AgentCommandType::SendMessage(message) => {
+                    let receiver_id_option = self.agent_id_index_map.get(&message.destination);
 
-            if let Some(&index) = self.agent_id_index_map.get(&message.source) {
-                if let Some(agent) = self.agents.get_mut(index) {
-                    agent.state_mut().produced.push(message.clone());
+                    if let Some(receiver_id) = receiver_id_option {
+                        let receiver_queue = &mut self.agent_states[*receiver_id].queue;
+                        receiver_queue.push_back(message.clone());
+                    }
+
+                    self.agent_states[command.agent_handle]
+                        .produced
+                        .push(message.clone());
                 }
-            }
-            if let Some(Interrupt::HaltSimulation(reason)) = message.interrupt {
-                info!("Received a halt interrupt: {:?}", reason);
-                self.mode = SimulationMode::Completed;
+
+                AgentCommandType::HaltSimulation(reason) => {
+                    info!("Received a halt interrupt: {:?}", reason);
+                    self.mode = SimulationMode::Completed;
+                }
+
+                AgentCommandType::Sleep(ticks) => {
+                    self.agent_states[command.agent_handle].mode =
+                        AgentMode::AsleepUntil(self.time + ticks);
+                }
             }
         }
     }
 
     /// An internal function used to wakeup sleeping Agents due to wake.
     fn wakeup_agents_scheduled_to_wakeup_now(&mut self) {
-        for agent in self.agents.iter_mut() {
-            if let AgentMode::AsleepUntil(wakeup_at) = agent.state().mode {
+        for i in 0..self.agents.len() {
+            let agent_state = &mut self.agent_states[i];
+
+            if let AgentMode::AsleepUntil(wakeup_at) = agent_state.mode {
                 if self.time >= wakeup_at {
-                    agent.state_mut().mode = agent.state().wake_mode;
+                    agent_state.mode = agent_state.wake_mode;
                 }
             }
         }
@@ -343,7 +442,7 @@ mod tests {
     fn basic_periodic_test() {
         init();
         let mut simulation = Simulation::new(SimulationParameters {
-            agents: vec![
+            agent_initializers: vec![
                 periodic_producing_agent("producer".to_string(), 1, "consumer".to_string()),
                 periodic_consuming_agent("consumer".to_string(), 1),
             ],
@@ -368,34 +467,26 @@ mod tests {
         struct Clerk {}
 
         impl Agent for Clerk {
-            fn process(
-                &mut self,
-                simulation_state: SimulationState,
-                msg: &Message,
-            ) -> Option<Vec<Message>> {
-                debug!("{} looking for a customer.", self.state().id);
-                if let Some(last) = self.state().consumed.last() {
-                    if last.completed_time? + 60 > simulation_state.time {
+            fn id(&self) -> String {
+                self.id.clone()
+            }
+
+            fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
+                debug!("{} looking for a customer.", self.id());
+                if let Some(last) = ctx.state.consumed.last() {
+                    if last.completed_time.unwrap() + 60 > ctx.time {
                         debug!("Sorry, we're still serving the last customer.");
-                        return None;
                     }
                 }
 
-                if let Some(message) = self.state_mut().queue.pop_front() {
-                    if msg.queued_time + 100 > simulation_state.time {
+                if let Some(message) = ctx.state.queue.front() {
+                    if msg.queued_time + 100 > ctx.time {
                         debug!("Still making your coffee, sorry!");
-                        self.state_mut().queue.push_front(message);
-                        return None;
+                        ctx.set_processing_status(MessageProcessingStatus::InProgress);
                     }
 
                     debug!("Serviced a customer!");
-                    self.state_mut().consumed.push(Message {
-                        completed_time: Some(simulation_state.time),
-                        ..message
-                    });
                 }
-
-                None
             }
         }
 
@@ -404,20 +495,18 @@ mod tests {
             enable_queue_depth_metrics: false,
             enable_agent_asleep_cycles_metric: false,
             halt_check: |s: &Simulation| s.time > 500,
-            agents: vec![
+            agent_initializers: vec![
                 poisson_distributed_producing_agent(
                     "Starbucks Customers".to_string(),
                     Poisson::new(80.0).unwrap(),
                     "Starbucks Clerk".to_string(),
                 ),
-                Box::new(Clerk {
-                    state: AgentState {
-                        mode: AgentMode::Reactive,
-                        wake_mode: AgentMode::Reactive,
+                AgentInitializer {
+                    agent: Box::new(Clerk {
                         id: "Starbucks Clerk".to_string(),
-                        ..Default::default()
-                    },
-                }),
+                    }),
+                    options: AgentOptions::default(),
+                },
             ],
         });
 
