@@ -143,20 +143,16 @@ impl Simulation {
 
     /// Returns a SimulationAgent by name.
     pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent> {
-        unsafe {
-            self.agent_name_handle_map
-                .get(name)
-                .map(|id| self.agents.get_unchecked(*id))
-        }
+        self.agent_name_handle_map
+            .get(name)
+            .map(|id| self.agents.get(*id))?
     }
 
     /// Returns a SimulationAgent by name.
     pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut SimulationAgent> {
-        unsafe {
-            self.agent_name_handle_map
-                .get(name)
-                .map(|id| self.agents.get_unchecked_mut(*id))
-        }
+        self.agent_name_handle_map
+            .get(name)
+            .map(|id| self.agents.get_mut(*id))?
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
