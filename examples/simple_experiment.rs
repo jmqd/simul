@@ -1,5 +1,5 @@
 use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
-use simul::experiment::experiment_by_annealing_objective;
+use simul::experiment::monte_carlo_experiment;
 use simul::*;
 
 /// Given a producer with a fixed period, returns producer-consumer two Agent
@@ -55,7 +55,7 @@ fn run_experiment() {
     // By also including the cost of the agent, we also optimize to not waste
     // resources with an over-eager consumer.
     let objective_fn = |s: &Simulation| {
-        -(s.time as i64)
+        -(s.time as f64)
             - s.agents
                 .iter()
                 .find(|a| a.name == "consumer")
@@ -68,7 +68,7 @@ fn run_experiment() {
 
     // Run the simulation 100 different times, randomly varying the agent
     // configuration, and return the one that maximized the objective function.
-    let approx_optimal = experiment_by_annealing_objective(
+    let approx_optimal = monte_carlo_experiment(
         simulation_parameters_generator,
         replications_limit,
         objective_fn,

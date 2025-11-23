@@ -1,4 +1,4 @@
-use crate::{message::*, DiscreteTime};
+use crate::{experiment::ObjectiveScore, message::*, DiscreteTime};
 use dyn_clone::DynClone;
 use rand::prelude::*;
 use rand_distr::Poisson;
@@ -185,8 +185,8 @@ pub trait Agent: std::fmt::Debug + DynClone {
 
     /// For annealing experiments, you may implement a cost function for the agent.
     /// For example, a periodic consuming agent has cost implented equal to its period.
-    fn cost(&self) -> i64 {
-        0
+    fn cost(&self) -> ObjectiveScore {
+        0f64
     }
 }
 
@@ -264,8 +264,8 @@ where
     }
 
     impl Agent for PeriodicProducer {
-        fn cost(&self) -> i64 {
-            -(self.period as i64)
+        fn cost(&self) -> ObjectiveScore {
+            -(self.period as ObjectiveScore)
         }
 
         #[allow(unused_variables)]
@@ -305,8 +305,8 @@ where
     }
 
     impl Agent for PeriodicConsumer {
-        fn cost(&self) -> i64 {
-            -(self.period as i64)
+        fn cost(&self) -> ObjectiveScore {
+            -(self.period as ObjectiveScore)
         }
 
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
