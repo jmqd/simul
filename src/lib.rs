@@ -61,7 +61,7 @@ pub struct Simulation {
 #[derive(Clone, Debug)]
 pub struct SimulationParameters {
     /// The agents within the simulation, e.g. adaptive agents.
-    /// See here: https://authors.library.caltech.edu/60491/1/MGM%20113.pdf
+    /// See here: <https://authors.library.caltech.edu/60491/1/MGM%20113.pdf>
     pub agent_initializers: Vec<AgentInitializer>,
 
     /// Given the state of the Simulation a function that determines if the Simulation is complete.
