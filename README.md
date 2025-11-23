@@ -25,9 +25,9 @@ Use-cases:
 > Experimental and unstable. Almost all APIs are expected to change.
 
 - For some examples, see the `examples` subdirectory.
-- For use cases where your agents need their own custom state, define a struct
-  and use the `#[simul_macro::agent]` macro and pass those agents to the
-  `Simulation`.
+- For use cases where your agents need their own custom state, define a struct,
+  implement `Agent`, and pass your agents into `Simulation` via constructing
+  `AgentInitializers`.
 
 ## Basic usage
 
