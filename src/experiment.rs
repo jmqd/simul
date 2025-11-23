@@ -2,7 +2,7 @@ use crate::Simulation;
 use crate::SimulationParameters;
 
 /// ObjectiveScore is a measure of how a Simulation performed according to an
-/// objective function. This is used to find approximate global optimazations.
+/// objective function. This is used to find approximate global optimizations.
 pub type ObjectiveScore = i64;
 
 /// Given a function that generates various configurations of
