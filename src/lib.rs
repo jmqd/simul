@@ -190,9 +190,8 @@ impl Simulation {
             debug!("Running next tick of simulation at time {}", self.time);
             self.wakeup_agents_scheduled_to_wakeup_now();
 
-            for i in 0..self.agents.len() {
-                let agent = &mut self.agents[i];
-                let agent_handle = self.agent_name_handle_map[&agent.name];
+            for agent_handle in 0..self.agents.len() {
+                let agent = &mut self.agents[agent_handle];
                 let queued_msg = agent.state.queue.pop_front();
 
                 if self.enable_queue_depth_metric {
@@ -205,7 +204,7 @@ impl Simulation {
                 let mut agent_commands: Vec<AgentCommandType> = vec![];
 
                 let mut ctx = AgentContext {
-                    handle: i,
+                    handle: agent_handle,
                     name: &agent.name,
                     time: self.time,
                     commands: &mut agent_commands,
