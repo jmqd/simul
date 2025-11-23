@@ -2,7 +2,7 @@ use criterion::criterion_group;
 use criterion::criterion_main;
 use criterion::Criterion;
 use rand::Rng;
-use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
+use simul::agent::{periodic_consumer, periodic_producing_agent};
 use simul::experiment::{simulated_annealing_search, ObjectiveScore};
 use simul::*;
 
@@ -35,7 +35,7 @@ fn build_sim_params(consumer_period: u64) -> SimulationParameters {
         PRODUCER_PERIOD,
         "consumer".to_string(),
     );
-    let consumer_agent = periodic_consuming_agent("consumer".to_string(), consumer_period);
+    let consumer_agent = periodic_consumer("consumer".to_string(), consumer_period);
 
     SimulationParameters {
         agent_initializers: vec![producer_agent, consumer_agent],

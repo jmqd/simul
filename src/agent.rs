@@ -295,12 +295,13 @@ where
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
-pub fn periodic_consuming_agent<T>(name: T, period: DiscreteTime) -> AgentInitializer
+pub fn periodic_consumer<T>(name: T, period: DiscreteTime) -> AgentInitializer
 where
     T: Into<String>,
 {
     #[derive(Clone, Debug)]
     struct PeriodicConsumer {
+        /// The amount of time between consuming.
         period: DiscreteTime,
     }
 

@@ -6,6 +6,8 @@ use rand::Rng;
 /// objective function. This is used to find approximate global optimizations.
 pub type ObjectiveScore = f64;
 
+/// Monte carlo search of simulations.
+///
 /// Given a function that generates various configurations of
 /// `SimulationParameters`, run many simulation replications with varying
 /// `SimulationParameters`. The parameters are varied by calling the generator.
@@ -92,7 +94,7 @@ pub fn simulated_annealing_search(
         } else {
             // If the new world is worse, there's still a chance we want to explore it.
             let acceptance_probability = (-delta_goodness / chaotic_flux).exp();
-            rand::rng().random_range(0.0..1.0_f64) < acceptance_probability
+            rand::rng().random_range(0.0..1.0) < acceptance_probability
         };
 
         if explore_parallel_world {

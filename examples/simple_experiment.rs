@@ -1,4 +1,4 @@
-use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
+use simul::agent::{periodic_consumer, periodic_producing_agent};
 use simul::experiment::monte_carlo_search;
 use simul::*;
 
@@ -18,8 +18,7 @@ fn periodic_agent_generator_fixed_producer(
             producer_period,
             "consumer".to_string(),
         );
-        let consumer_agent =
-            periodic_consuming_agent("consumer".to_string(), consumer_period as u64);
+        let consumer_agent = periodic_consumer("consumer".to_string(), consumer_period as u64);
         vec![producer_agent, consumer_agent]
     }
 }

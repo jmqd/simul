@@ -14,7 +14,7 @@ fn main() {
         // Agents are powerful, and you can pass-in custom implementations here.
         agent_initializers: vec![
             periodic_producing_agent("producer", 1, "consumer"),
-            periodic_consuming_agent("consumer", 2),
+            periodic_consumer("consumer", 2),
         ],
 
         // We pass in a halt condition so the simulation knows when it is finished.
