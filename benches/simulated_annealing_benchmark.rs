@@ -1,7 +1,6 @@
-#[macro_use]
-use criterion::Criterion;
 use criterion::criterion_group;
 use criterion::criterion_main;
+use criterion::Criterion;
 use rand::Rng;
 use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
 use simul::experiment::{simulated_annealing_experiment, ObjectiveScore};
@@ -53,7 +52,7 @@ fn perturb_consumer_period(current_params: &SimulationParameters) -> SimulationP
     let mut new_period = old_period;
 
     for _ in 0..2 {
-        let delta: i64 = if rng.gen_bool(0.5) { 1 } else { -1 };
+        let delta: i64 = if rng.random_bool(0.5) { 1 } else { -1 };
         let attempted_period = (old_period as i64 + delta)
             .max(0)
             .min(MAX_CONSUMER_PERIOD as i64);
