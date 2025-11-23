@@ -148,6 +148,7 @@ pub struct AgentOptions {
 }
 
 impl AgentOptions {
+    #[must_use]
     pub fn defaults_with_name(name: String) -> Self {
         Self {
             name,

@@ -91,7 +91,8 @@ impl Default for SimulationParameters {
 }
 
 impl Simulation {
-    pub fn new(parameters: SimulationParameters) -> Simulation {
+    #[must_use]
+    pub fn new(parameters: SimulationParameters) -> Self {
         // TODO(jmqd): Add the handle id to the agents here, use instead of mapping.
         let agent_name_handle_map: HashMap<String, usize> = parameters
             .agent_initializers
@@ -129,18 +130,20 @@ impl Simulation {
     }
 
     /// Returns the consumed messages for a given Agent during the Simulation.
+    #[must_use]
     pub fn consumed_for_agent(&self, name: &str) -> Option<&[Message]> {
         Some(&self.find_by_name(name)?.state.consumed)
     }
 
     /// Returns a `SimulationAgent` by name.
+    #[must_use]
     pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent> {
         self.agent_name_handle_map
             .get(name)
             .map(|id| self.agents.get(*id))?
     }
 
-    /// Returns a SimulationAgent by name.
+    /// Returns a `SimulationAgent` by name.
     pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut SimulationAgent> {
         self.agent_name_handle_map
             .get(name)
@@ -148,16 +151,19 @@ impl Simulation {
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
+    #[must_use]
     pub fn produced_for_agent(&self, name: &str) -> Option<&[Message]> {
         Some(&self.find_by_name(name)?.state.produced)
     }
 
     /// Returns the queue depth timeseries for a given Agent during the Simulation.
+    #[must_use]
     pub fn queue_depth_metrics(&self, name: &str) -> Option<&[usize]> {
         Some(&self.find_by_name(name)?.metadata.queue_depth_metrics)
     }
 
     /// Returns the asleep cycle count for a given Agent during the Simulation.
+    #[must_use]
     pub fn asleep_cycle_count(&self, name: &str) -> Option<DiscreteTime> {
         Some(self.find_by_name(name)?.metadata.asleep_cycle_count)
     }
@@ -242,6 +248,7 @@ impl Simulation {
 
     /// A helper to calculate the average waiting time to process items.
     /// Note: This function will likely go away; it is an artifact of prototyping.
+    #[must_use]
     pub fn calc_avg_wait_statistics(&self) -> HashMap<String, f32> {
         let mut data = HashMap::new();
         for agent in self
@@ -266,6 +273,7 @@ impl Simulation {
 
     /// Calculates the statistics of queue lengths.
     /// Mostly useful for checking which agents still have queues of work after halting.
+    #[must_use]
     pub fn calc_queue_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
@@ -277,6 +285,7 @@ impl Simulation {
     }
 
     /// Calculates the length of the consumed messages for each Agent.
+    #[must_use]
     pub fn calc_consumed_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
@@ -288,6 +297,7 @@ impl Simulation {
     }
 
     /// Calculates the length of the produced messages for each Agent.
+    #[must_use]
     pub fn calc_produced_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
@@ -375,11 +385,13 @@ impl Simulation {
     }
 
     /// Returns a slice of the Agents in the Simulation.
+    #[must_use]
     pub fn agents(&self) -> &[SimulationAgent] {
         self.agents.iter().as_slice()
     }
 
     /// Returns the current `DiscreteTime` tick for the Simulation.
+    #[must_use]
     pub const fn time(&self) -> DiscreteTime {
         self.time
     }
