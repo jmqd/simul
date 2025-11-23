@@ -7,4 +7,12 @@ cargo test
 cargo fmt --check
 cargo clippy -- -D warnings
 cargo audit
+
+licenses_outside_allowlist=$(cargo license | grep -Ev "((MIT)|(Apache-2.0)|(BSD-[23]))")
+if [ -n "$licenses_outside_allowlist" ]; then
+    echo -e "\033[31m ERROR: Disallowed licenses detected:\033[0m"
+    echo -e "\033[31m$licenses_outside_allowlist\033[0m"
+    exit 1;
+fi
+
 RUSTC_BOOTSTRAP=1 cargo udeps

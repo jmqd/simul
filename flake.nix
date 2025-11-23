@@ -37,9 +37,12 @@
           packages = with pkgs; [
             rustToolchain
             openssl
+
+            # Cargo checks / lints / tools
             cargo-audit
             cargo-deny
             cargo-edit
+            cargo-license
             cargo-udeps
             cargo-watch
           ];
