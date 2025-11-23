@@ -156,24 +156,17 @@ impl Simulation {
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
-    pub fn produced_for_agent(&self, name: &str) -> Option<Vec<Message>> {
-        Some(self.find_by_name(name)?.state.produced.clone())
+    pub fn produced_for_agent(&self, name: &str) -> Option<&[Message]> {
+        Some(&self.find_by_name(name)?.state.produced)
     }
 
     /// Returns the queue depth timeseries for a given Agent during the Simulation.
-    pub fn queue_depth_metrics(&self, name: &str) -> Option<Vec<usize>> {
-        // TODO(?): Return non option here.
-        Some(
-            self.find_by_name(name)?
-                .metadata
-                .queue_depth_metrics
-                .clone(),
-        )
+    pub fn queue_depth_metrics(&self, name: &str) -> Option<&[usize]> {
+        Some(&self.find_by_name(name)?.metadata.queue_depth_metrics)
     }
 
     /// Returns the asleep cycle count for a given Agent during the Simulation.
     pub fn asleep_cycle_count(&self, name: &str) -> Option<DiscreteTime> {
-        // TODO(?): Return non option here.
         Some(self.find_by_name(name)?.metadata.asleep_cycle_count)
     }
 
