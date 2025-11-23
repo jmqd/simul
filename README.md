@@ -1,5 +1,5 @@
-`simul` is a discrete-event simulation library aimed at high-level use-cases to
-quickly simulate real-world problems and run simulated experiments.
+`simul` is a discrete-event simulation library for running high-level
+simulations of real-world problems and for running simulated experiments.
 
 `simul` is a *discrete-event simulator* using *incremental time progression*,
 with [M/M/c queues](https://en.wikipedia.org/wiki/M/M/c_queue) for interactions
