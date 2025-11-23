@@ -114,44 +114,6 @@ being open.
 
 ![](./readme-assets/cafe-example-queued-durations.png)
 
-This is a code example for generating the above.
-
-``` rust
-use plotters::prelude::*;
-use rand_distr::Poisson;
-use simul::agent::*;
-use simul::*;
-use std::path::PathBuf;
-
-fn main() {
-    run_example_cafe_simulation();
-}
-
-fn run_example_cafe_simulation() -> Result<(), Box<dyn std::error::Error>> {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agents: vec![
-            poisson_distributed_consuming_agent("Barista".to_string(), Poisson::new(60.0).unwrap()),
-            poisson_distributed_producing_agent(
-                "Customers".to_string(),
-                Poisson::new(60.0).unwrap(),
-                "Barista".to_string(),
-            ),
-        ],
-        starting_time: 0,
-        enable_queue_depth_metric: true,
-        halt_check: |s: &Simulation| s.time == 60 * 60 * 12,
-    });
-
-    simulation.run();
-
-    plot_queued_durations_for_processed_messages(
-        &simulation,
-        &["Barista".into()],
-        &"/tmp/cafe-example-queued-durations.png".to_string().into(),
-    )
-}
-```
-
 # Contributing
 
 Issues, bugs, features are tracked in TODO.org
