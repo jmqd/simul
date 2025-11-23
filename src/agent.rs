@@ -88,10 +88,8 @@ pub enum AgentCommandType {
 }
 
 pub enum MessageProcessingStatus {
-    Initialized,
-    Completed,
+    NoError,
     InProgress,
-    Failed,
 }
 
 // The Context holds the capability for Agents to act on the world

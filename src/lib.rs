@@ -205,7 +205,7 @@ impl Simulation {
                     time: self.time,
                     commands: &mut agent_commands,
                     state: &agent.state,
-                    message_processing_status: MessageProcessingStatus::Initialized,
+                    message_processing_status: MessageProcessingStatus::NoError,
                 };
 
                 match agent.state.mode {
@@ -216,14 +216,10 @@ impl Simulation {
                             agent.agent.on_message(&mut ctx, &msg);
 
                             match ctx.message_processing_status {
-                                MessageProcessingStatus::Failed
-                                | MessageProcessingStatus::InProgress => {
+                                MessageProcessingStatus::InProgress => {
                                     agent.state.queue.push_front(msg);
                                 }
-                                // TODO(jmqd): For now, we assume Initialized also means completed.
-                                // This is a leaky abstraction; we should find a better one.
-                                MessageProcessingStatus::Initialized
-                                | MessageProcessingStatus::Completed => {
+                                MessageProcessingStatus::NoError => {
                                     agent.state.consumed.push(Message {
                                         completed_time: Some(self.time),
                                         ..msg
