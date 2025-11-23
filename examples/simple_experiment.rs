@@ -1,4 +1,4 @@
-use simul::agent::{periodic_consuming_agent, periodic_producing_agent, Agent};
+use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
 use simul::experiment::experiment_by_annealing_objective;
 use simul::*;
 
