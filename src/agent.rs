@@ -1,4 +1,4 @@
-use crate::{experiment::ObjectiveScore, message::*, DiscreteTime};
+use crate::{experiment::ObjectiveScore, message::Message, DiscreteTime};
 use dyn_clone::DynClone;
 use rand_distr::Distribution;
 use rand_distr::Poisson;
@@ -7,10 +7,10 @@ use std::collections::VecDeque;
 /// Possible states an Agent can be in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
 pub enum AgentMode {
-    /// The Agent is active; process() is called on every tick of the simulation.
+    /// The Agent is active; `on_tick()` is expected to do work.
     Proactive,
 
-    /// The Agent is reactive; process() is called when this agent has a message.
+    /// The Agent is reactive; `on_message()` is expected to do work.
     #[default]
     Reactive,
 
@@ -111,7 +111,7 @@ pub struct AgentContext<'a> {
     pub message_processing_status: MessageProcessingStatus,
 }
 
-impl<'a> AgentContext<'a> {
+impl AgentContext<'_> {
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
         self.commands.push(AgentCommandType::SendMessage(Message {
             source: self.name.to_string(),
