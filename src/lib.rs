@@ -137,8 +137,8 @@ impl Simulation {
     }
 
     /// Returns the consumed messages for a given Agent during the Simulation.
-    pub fn consumed_for_agent(&self, name: &str) -> Option<Vec<Message>> {
-        Some(self.find_by_name(name)?.state.consumed.clone())
+    pub fn consumed_for_agent(&self, name: &str) -> Option<&[Message]> {
+        Some(&self.find_by_name(name)?.state.consumed)
     }
 
     /// Returns a SimulationAgent by name.
