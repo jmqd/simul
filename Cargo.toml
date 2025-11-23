@@ -1,4 +1,3 @@
-workspace = { members = ["simul-macro"] }
 [package]
 name = "simul"
 version = "0.4.1"

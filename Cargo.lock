@@ -633,14 +633,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "simul-macro"
-version = "0.1.0"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.110"
 source = "registry+https://github.com/rust-lang/crates.io-index"
