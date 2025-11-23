@@ -86,14 +86,10 @@ fn main() {
 - If an `Agent` wants to interact with another `Agent`, it can send a `Message`
   via the `&mut ctx: AgentContext` passed into `on_tick` and `on_message`.
 
-![Diagram showing Agent trait](./diagrams/simulation_agents.png)
-
 The simulation runs all the logic of calling `process()`, distributing messages,
 tracking metrics, incrementing time, and when to halt. A `Simulation` is
 finished when the provided `halt_check` function returns `true`, or if an
 `Agent` responds with a special `Interrupt` to halt the `Simulation`.
-
-![Diagram showing Simulation sequence diagram](./diagrams/simulation_control_flow.png)
 
 ## Poisson-distributed example w/ Plotting
 
