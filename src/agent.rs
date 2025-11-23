@@ -23,7 +23,11 @@ pub enum AgentMode {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AgentMetadata {
+    /// Metrics recording the depth of the queue at each tick of the Sim.
+    /// TODO: We should store (time, depth) to minimize pushing here.
     pub queue_depth_metrics: Vec<usize>,
+
+    /// The number of cycles this agent was sleeping for.
     pub asleep_cycle_count: DiscreteTime,
 }
 
