@@ -275,7 +275,7 @@ where
 
         fn on_tick(&mut self, ctx: &mut AgentContext) {
             ctx.sleep_for(self.period);
-            ctx.send(&self.target.to_owned(), None);
+            ctx.send(&self.target, None);
         }
     }
 
