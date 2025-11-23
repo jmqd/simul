@@ -48,7 +48,7 @@ fn build_sim_params(consumer_period: u64) -> SimulationParameters {
 
 /// Randomly changes the consumer's period by +/- 1, keeping it within [0, MAX_CONSUMER_PERIOD].
 fn perturb_consumer_period(current_params: &SimulationParameters) -> SimulationParameters {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let old_period = get_consumer_period(current_params);
     let mut new_period = old_period;
 
@@ -95,7 +95,7 @@ fn geometric_chaotic_flux_schedule(k: u32) -> f64 {
 fn run_annealing_experiment() -> Option<SimulationParameters> {
     // A generator for the starting point of the search (e.g., a random period)
     let initial_params_generator = || {
-        let start_period = rand::thread_rng().gen_range(1..=MAX_CONSUMER_PERIOD);
+        let start_period = rand::rng().random_range(1..=MAX_CONSUMER_PERIOD);
         build_sim_params(start_period)
     };
 
@@ -133,7 +133,7 @@ fn simulated_annealing_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("simulated_annealing_experiment_benchmarks");
 
     let initial_params_generator = || {
-        let start_period = rand::thread_rng().gen_range(1..=MAX_CONSUMER_PERIOD);
+        let start_period = rand::rng().random_range(1..=MAX_CONSUMER_PERIOD);
         build_sim_params(start_period)
     };
 

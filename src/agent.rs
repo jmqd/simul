@@ -1,6 +1,6 @@
 use crate::{experiment::ObjectiveScore, message::*, DiscreteTime};
 use dyn_clone::DynClone;
-use rand::prelude::*;
+use rand_distr::Distribution;
 use rand_distr::Poisson;
 use std::collections::VecDeque;
 
@@ -205,7 +205,7 @@ where
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
-            let cooldown_period = self.period.sample(&mut rand::thread_rng()) as u64;
+            let cooldown_period = self.period.sample(&mut rand::rng()) as u64;
             ctx.sleep_for(cooldown_period);
         }
     }
@@ -236,7 +236,7 @@ where
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
-            let cooldown_period = self.period.sample(&mut rand::thread_rng()) as u64;
+            let cooldown_period = self.period.sample(&mut rand::rng()) as u64;
             ctx.sleep_for(cooldown_period);
             ctx.send(&self.target, None);
         }

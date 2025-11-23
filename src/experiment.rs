@@ -92,7 +92,7 @@ pub fn simulated_annealing_experiment(
         } else {
             // If the new world is worse, there's still a chance we want to explore it.
             let acceptance_probability = (-delta_goodness / chaotic_flux).exp();
-            rand::thread_rng().gen_range(0.0..1.0) < acceptance_probability
+            rand::rng().random_range(0.0..1.0) < acceptance_probability
         };
 
         if explore_parallel_world {

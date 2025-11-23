@@ -1,5 +1,6 @@
-use rand::distributions::WeightedIndex;
+use rand;
 use rand::prelude::*;
+use rand_distr::weighted::WeightedIndex;
 use simul::agent::*;
 use simul::message::Message;
 use simul::*;
@@ -17,7 +18,7 @@ struct NineBallPlayer {
 
 impl Agent for NineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let dist = WeightedIndex::new(self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
 
@@ -39,7 +40,7 @@ impl Agent for NineBallPlayer {
         }
 
         // If the opponent gets lucky, they get another turn.
-        let next_turn = if rng.gen_range(0.0..1.0) > (1.0 - self.luck_chance) {
+        let next_turn = if rng.random_range(0.0..1.0) > (1.0 - self.luck_chance) {
             ctx.name.to_string()
         } else {
             self.opponent_name.clone()
@@ -62,7 +63,7 @@ struct ApaNineBallPlayer {
 
 impl Agent for ApaNineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let dist = WeightedIndex::new(self.run_out_weights).unwrap();
         let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
         let mut ball = u8::from_le_bytes(msg.custom_payload.clone().unwrap().try_into().unwrap());
@@ -84,7 +85,7 @@ impl Agent for ApaNineBallPlayer {
         }
 
         // If the player gets lucky, they get another turn.
-        let next_turn = if rng.gen_range(0.0..1.0) > (1.0 - self.luck_chance) {
+        let next_turn = if rng.random_range(0.0..1.0) > (1.0 - self.luck_chance) {
             ctx.name.to_string()
         } else {
             self.opponent_name.clone()
