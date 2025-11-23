@@ -380,7 +380,7 @@ impl Simulation {
     }
 
     /// Returns the current DiscreteTime tick for the Simulation.
-    pub fn time(&self) -> DiscreteTime {
+    pub const fn time(&self) -> DiscreteTime {
         self.time
     }
 }
@@ -417,8 +417,6 @@ mod tests {
 
     #[test]
     fn starbucks_clerk() {
-        init();
-
         #[derive(Debug, Clone)]
         struct Clerk {}
 
@@ -426,7 +424,7 @@ mod tests {
             fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
                 debug!("{} looking for a customer.", ctx.name);
                 if let Some(last) = ctx.state.consumed.last() {
-                    if last.completed_time.unwrap() + 60 > ctx.time {
+                    if last.completed_time.is_some_and(|t| t + 60 > ctx.time) {
                         debug!("Sorry, we're still serving the last customer.");
                     }
                 }
@@ -442,6 +440,8 @@ mod tests {
             }
         }
 
+        init();
+
         let mut simulation = Simulation::new(SimulationParameters {
             starting_time: 1,
             enable_queue_depth_metrics: false,
@@ -450,7 +450,7 @@ mod tests {
             agent_initializers: vec![
                 poisson_distributed_producing_agent(
                     "Starbucks Customers".to_string(),
-                    Poisson::new(80.0).expect("failed to create poisson"),
+                    Poisson::new(80.0_f64).expect("failed to create poisson"),
                     "Starbucks Clerk".to_string(),
                 ),
                 AgentInitializer {

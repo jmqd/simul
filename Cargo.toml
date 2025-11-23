@@ -43,3 +43,17 @@ rand = {version = "0.9.2", features = ["alloc"]}
 rand_distr = "0.5.1"
 log = "0.4.28"
 dyn-clone = "1.0.20"
+
+[lints.clippy]
+all = "deny"
+pedantic = "warn"
+nursery = "warn"
+
+unwrap_used = "deny"
+expect_used = "deny"
+clone_on_copy = "deny"
+redundant_closure_for_method_calls = "deny"
+default_numeric_fallback = "deny"
+missing_docs_in_private_items = "warn"
+module_name_repetitions = "warn"
+too_many_lines = "warn"
