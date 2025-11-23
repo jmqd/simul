@@ -2,11 +2,12 @@
 
 set -euxo pipefail
 
-cargo check
-cargo test
-cargo fmt --check
-cargo clippy -- -D warnings
-cargo audit
+cargo check --all-features --all-targets
+cargo test --all-features --all-targets
+cargo fmt --check --all
+cargo clippy --all-features --all-targets -- -D warnings
+cargo audit --all-targets
+cargo doc --all-features --all-targets
 
 licenses_outside_allowlist=$(cargo license | grep -Ev "((MIT)|(Apache-2.0)|(BSD-[23]))")
 if [ -n "$licenses_outside_allowlist" ]; then
