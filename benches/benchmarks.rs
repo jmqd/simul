@@ -1,3 +1,5 @@
+//! A simple benchmark for baseline simulation perf.
+#![allow(clippy::missing_docs_in_private_items, clippy::expect_used)]
 #[macro_use]
 extern crate criterion;
 

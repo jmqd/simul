@@ -1,10 +1,17 @@
+#![allow(
+    clippy::missing_docs_in_private_items,
+    clippy::expect_used,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation
+)]
 use criterion::criterion_group;
 use criterion::criterion_main;
 use criterion::Criterion;
 use rand::Rng;
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::{simulated_annealing_search, ObjectiveScore};
-use simul::{Agent, AgentInitializer, Simulation, SimulationParameters};
+use simul::{AgentInitializer, Simulation, SimulationParameters};
 
 const PRODUCER_PERIOD: u64 = 2;
 const MAX_CONSUMER_PERIOD: u64 = 10;
@@ -17,7 +24,12 @@ const STARTING_TURBULENCE: f64 = 1.0;
 fn get_consumer_period(params: &SimulationParameters) -> u64 {
     // We assume the consumer is the second agent (index 1) as set up in the generator.
     if let Some(AgentInitializer { .. }) = params.agent_initializers.get(1) {
-        let cost = params.agent_initializers.get(1).unwrap().agent.cost();
+        let cost = params
+            .agent_initializers
+            .get(1)
+            .expect("agent to exist")
+            .agent
+            .cost();
         return (-cost) as u64;
     }
 
@@ -27,7 +39,12 @@ fn get_consumer_period(params: &SimulationParameters) -> u64 {
 /// Creates a full `SimulationParameters` object from a consumer period.
 fn build_sim_params(consumer_period: u64) -> SimulationParameters {
     let halt_condition = |s: &Simulation| {
-        s.find_by_name("consumer").unwrap().state.consumed.len() > HALT_CONSUMED_COUNT
+        s.find_by_name("consumer")
+            .expect("consumer found")
+            .state
+            .consumed
+            .len()
+            > HALT_CONSUMED_COUNT
     };
 
     let producer_agent = periodic_producer(

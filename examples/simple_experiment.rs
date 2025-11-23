@@ -1,6 +1,12 @@
+//! A simple experiment example.
+#![allow(
+    clippy::missing_docs_in_private_items,
+    clippy::expect_used,
+    clippy::cast_possible_truncation
+)]
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::monte_carlo_search;
-use simul::{Agent, AgentInitializer, DiscreteTime, Simulation, SimulationParameters};
+use simul::{AgentInitializer, DiscreteTime, Simulation, SimulationParameters};
 
 /// Given a producer with a fixed period, returns producer-consumer two Agent
 /// configurations (where only the consumer varies).
@@ -25,8 +31,14 @@ fn periodic_agent_generator_fixed_producer(
 
 /// Sandbox for running a simulated annealing experiment.
 fn run_experiment() {
-    let halt_condition =
-        |s: &Simulation| s.find_by_name("consumer").unwrap().state.consumed.len() > 10;
+    let halt_condition = |s: &Simulation| {
+        s.find_by_name("consumer")
+            .expect("consumer to exist")
+            .state
+            .consumed
+            .len()
+            > 10
+    };
 
     // Creates an agent generator w/ a fixed producer at interval 2 and a
     // consumer whose period randomly varies between [0, 10]
@@ -54,7 +66,11 @@ fn run_experiment() {
     // By also including the cost of the agent, we also optimize to not waste
     // resources with an over-eager consumer.
     let objective_fn = |s: &Simulation| {
-        -(s.time() as f64) - s.find_agent(|a| a.name == "consumer").unwrap().agent.cost()
+        -(s.time() as f64)
+            - s.find_agent(|a| a.name == "consumer")
+                .expect("consumer to exist")
+                .agent
+                .cost()
     };
 
     let replications_limit = 1000;
@@ -67,7 +83,12 @@ fn run_experiment() {
         objective_fn,
     );
 
-    println!("{:#?}", approx_optimal.unwrap().calc_avg_wait_statistics());
+    println!(
+        "{:#?}",
+        approx_optimal
+            .expect("result to exist")
+            .calc_avg_wait_statistics()
+    );
 }
 
 fn main() {

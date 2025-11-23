@@ -1,3 +1,4 @@
+//! An example of a simple simulation, featured in the README.md.
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::Simulation;
 use simul::SimulationParameters;

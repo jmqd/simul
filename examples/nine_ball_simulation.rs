@@ -1,3 +1,4 @@
+//! An example of running simulations for different billiards rule sets.
 use rand::prelude::*;
 use rand_distr::weighted::WeightedIndex;
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
@@ -6,6 +7,7 @@ use simul::{Simulation, SimulationParameters};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
+#[allow(clippy::missing_docs_in_private_items)]
 struct NineBallPlayer {
     luck_chance: f32,
     run_out_choices: [usize; 10],
@@ -15,6 +17,7 @@ struct NineBallPlayer {
     opponent_name: String,
 }
 
+#[allow(clippy::unwrap_used)]
 impl Agent for NineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
         let mut rng = rand::rng();
@@ -50,6 +53,7 @@ impl Agent for NineBallPlayer {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::missing_docs_in_private_items)]
 struct ApaNineBallPlayer {
     luck_chance: f32,
     run_out_choices: [usize; 10],
@@ -60,6 +64,7 @@ struct ApaNineBallPlayer {
     agent_options: AgentOptions,
 }
 
+#[allow(clippy::unwrap_used)]
 impl Agent for ApaNineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
         let mut rng = rand::rng();
@@ -94,6 +99,8 @@ impl Agent for ApaNineBallPlayer {
     }
 }
 
+#[allow(clippy::unwrap_used)]
+/// Runs a simulation for normal 9 ball rules.
 fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: usize) -> String {
     let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
 
@@ -156,6 +163,8 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
     .unwrap()
 }
 
+#[allow(clippy::unwrap_used)]
+/// Runs a simulation of APA rules pool.
 fn nine_ball_apa_rules_simulation_alice_vs_john(
     luck_chance: f32,
     starting_player: usize,
