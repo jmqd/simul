@@ -23,11 +23,11 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn new<S>(time: DiscreteTime, src: S, dst: S) -> Message
+    pub fn new<S>(time: DiscreteTime, src: S, dst: S) -> Self
     where
         S: Into<String>,
     {
-        Message {
+        Self {
             queued_time: time,
             completed_time: None,
             source: src.into(),

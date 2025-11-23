@@ -9,7 +9,7 @@ pub use message::*;
 use log::{debug, info};
 use std::collections::HashMap;
 
-/// DiscreteTime is a Simulation's internal representation of time.
+/// `DiscreteTime` is a Simulation's internal representation of time.
 pub type DiscreteTime = u64;
 
 /// The current mode of a Simulation.
@@ -80,7 +80,7 @@ pub struct SimulationParameters {
 
 impl Default for SimulationParameters {
     fn default() -> Self {
-        SimulationParameters {
+        Self {
             agent_initializers: vec![],
             halt_check: |_| true,
             starting_time: 0,
@@ -117,7 +117,7 @@ impl Simulation {
             })
             .collect();
 
-        Simulation {
+        Self {
             mode: SimulationMode::Constructed,
             agents,
             halt_check: parameters.halt_check,
@@ -133,7 +133,7 @@ impl Simulation {
         Some(&self.find_by_name(name)?.state.consumed)
     }
 
-    /// Returns a SimulationAgent by name.
+    /// Returns a `SimulationAgent` by name.
     pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent> {
         self.agent_name_handle_map
             .get(name)
@@ -215,7 +215,7 @@ impl Simulation {
                     }
                     AgentMode::AsleepUntil(_) => {
                         if self.enable_agent_asleep_cycles_metric {
-                            agent.metadata.asleep_cycle_count += 1
+                            agent.metadata.asleep_cycle_count += 1;
                         }
                     }
                     AgentMode::Dead => {}
@@ -250,7 +250,7 @@ impl Simulation {
             .filter(|agent| !agent.state.consumed.is_empty())
         {
             let mut sum_of_times: f32 = 0f32;
-            for completed in agent.state.consumed.iter() {
+            for completed in &agent.state.consumed {
                 sum_of_times +=
                     completed.completed_time.unwrap() as f32 - completed.queued_time as f32;
             }
@@ -269,7 +269,7 @@ impl Simulation {
     pub fn calc_queue_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
-        for agent in self.agents.iter() {
+        for agent in &self.agents {
             data.insert(agent.name.clone(), agent.state.queue.len());
         }
 
@@ -280,7 +280,7 @@ impl Simulation {
     pub fn calc_consumed_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
-        for agent in self.agents.iter() {
+        for agent in &self.agents {
             data.insert(agent.name.clone(), agent.state.consumed.len());
         }
 
@@ -291,7 +291,7 @@ impl Simulation {
     pub fn calc_produced_len_statistics(&self) -> HashMap<String, usize> {
         let mut data = HashMap::new();
 
-        for agent in self.agents.iter() {
+        for agent in &self.agents {
             data.insert(agent.name.clone(), agent.state.produced.len());
         }
 
@@ -309,13 +309,13 @@ impl Simulation {
         let avg_wait_stats = self.calc_avg_wait_statistics();
         let produced_len_stats = self.calc_produced_len_statistics();
 
-        debug!("Queues: {:?}", queue_len_stats);
-        debug!("Consumed: {:?}", consumed_len_stats);
-        debug!("Produced: {:?}", produced_len_stats);
-        debug!("Average processing time: {:?}", avg_wait_stats);
+        debug!("Queues: {queue_len_stats:?}");
+        debug!("Consumed: {consumed_len_stats:?}");
+        debug!("Produced: {produced_len_stats:?}");
+        debug!("Average processing time: {avg_wait_stats:?}");
     }
 
-    /// Consume a message_bus of messages and disperse those messages to the agents.
+    /// Consume a `message_bus` of messages and disperse those messages to the agents.
     /// If there are any interrupts, process those immediately.
     fn process_command_buffer(&mut self, command_buffer: &mut Vec<AgentCommand>) {
         while let Some(command) = command_buffer.pop() {
@@ -332,7 +332,7 @@ impl Simulation {
                 }
 
                 AgentCommandType::HaltSimulation(reason) => {
-                    info!("Received a halt interrupt: {:?}", reason);
+                    info!("Received a halt interrupt: {reason:?}");
                     self.mode = SimulationMode::Completed;
                 }
 
@@ -349,7 +349,7 @@ impl Simulation {
 
     /// An internal function used to wakeup sleeping Agents due to wake.
     fn wakeup_agents_scheduled_to_wakeup_now(&mut self) {
-        for agent in self.agents.iter_mut() {
+        for agent in &mut self.agents {
             if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
                 if self.time >= wakeup_at {
                     agent.state.mode = agent.state.wake_mode;
@@ -379,7 +379,7 @@ impl Simulation {
         self.agents.iter().as_slice()
     }
 
-    /// Returns the current DiscreteTime tick for the Simulation.
+    /// Returns the current `DiscreteTime` tick for the Simulation.
     pub const fn time(&self) -> DiscreteTime {
         self.time
     }
