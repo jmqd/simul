@@ -81,7 +81,7 @@ fn objective_fn(s: &Simulation) -> ObjectiveScore {
     // Score = -(Total Time) + (Consumer Cost)
     // We want the cost (period) to be small (close to 0) which means the cost value
     // should be close to 0 (since it's negative).
-    -(s.time as f64) + consumer_cost
+    -(s.time() as f64) + consumer_cost
 }
 
 /// Geometric Cooling Schedule: T(k) = T_start * alpha^k
@@ -116,7 +116,7 @@ fn run_annealing_experiment() -> Option<SimulationParameters> {
             let mut final_sim = Simulation::new(params.clone());
             final_sim.run();
             println!("Final Score: {:.2}", objective_fn(&final_sim));
-            println!("Final Simulation Time: {}", final_sim.time);
+            println!("Final Simulation Time: {}", final_sim.time());
 
             // Expected Result: Producer period is 2. Consumer only needs period 0 or 1
             // to keep up. The optimizer should prefer Period 1 (cost -1) over
