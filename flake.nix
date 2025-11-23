@@ -37,11 +37,11 @@
           packages = with pkgs; [
             rustToolchain
             openssl
+            cargo-audit
             cargo-deny
             cargo-edit
-            cargo-watch
             cargo-udeps
-            cargo-edit
+            cargo-watch
           ];
 
           shellHook = ''
