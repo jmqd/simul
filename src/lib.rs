@@ -25,14 +25,6 @@ pub enum SimulationMode {
     Failed,
 }
 
-/// State about the simulation that agents are aware of.
-/// TODO: This may later just become the `Simulation` itself passed about.
-#[derive(Clone, Debug)]
-pub struct SimulationState {
-    pub time: DiscreteTime,
-    pub mode: SimulationMode,
-}
-
 /// A Simulation struct is responsible to hold all the state for a simulation
 /// and coordinates the actions and interactions of the agents.
 ///
@@ -46,23 +38,23 @@ pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
     pub agents: Vec<SimulationAgent>,
 
-    /// A halt check function: given the state of the Simulation determine halt or not.
-    pub halt_check: fn(&Simulation) -> bool,
-
     /// The current discrete time of the Simulation.
     pub time: DiscreteTime,
 
+    /// A halt check function: given the state of the Simulation determine halt or not.
+    halt_check: fn(&Simulation) -> bool,
+
     /// Whether to record metrics on queue depths. Takes space.
-    pub enable_queue_depth_metric: bool,
+    enable_queue_depth_metric: bool,
 
     /// Records a metric on the number of cycles an agent was asleep for.
-    pub enable_agent_asleep_cycles_metric: bool,
+    enable_agent_asleep_cycles_metric: bool,
 
     /// The mode of the Simulation.
-    pub mode: SimulationMode,
+    mode: SimulationMode,
 
     /// Maps from an Agent's id to its index, a handle for indexing the Agent.
-    pub agent_name_handle_map: HashMap<String, usize>,
+    agent_name_handle_map: HashMap<String, usize>,
 }
 
 /// The parameters to create a Simulation.
@@ -431,7 +423,7 @@ mod tests {
             agent_initializers: vec![
                 poisson_distributed_producing_agent(
                     "Starbucks Customers".to_string(),
-                    Poisson::new(80.0).unwrap(),
+                    Poisson::new(80.0).expect("failed to create poisson"),
                     "Starbucks Clerk".to_string(),
                 ),
                 AgentInitializer {
