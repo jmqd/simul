@@ -193,16 +193,18 @@ pub trait Agent: std::fmt::Debug + DynClone {
 dyn_clone::clone_trait_object!(Agent);
 
 /// An agent that processes on a Poisson-distributed periodicity.
-pub fn poisson_distributed_consuming_agent<T>(name: T, dist: Poisson<f64>) -> AgentInitializer
+pub fn poisson_distributed_consumer<T>(name: T, dist: Poisson<f64>) -> AgentInitializer
 where
     T: Into<String>,
 {
     #[derive(Debug, Clone)]
     struct PoissonAgent {
+        /// The distribution of time between consuming messages.
         period: Poisson<f64>,
     }
 
     impl Agent for PoissonAgent {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
