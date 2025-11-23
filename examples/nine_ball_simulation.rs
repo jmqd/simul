@@ -1,4 +1,3 @@
-use rand;
 use rand::prelude::*;
 use rand_distr::weighted::WeightedIndex;
 use simul::agent::*;
@@ -193,7 +192,6 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
                 ..Default::default()
             }]
             .into(),
-            ..Default::default()
         },
         opponent_name: "alice".to_string(),
     };
@@ -221,7 +219,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
-        agent_initializers: agent_initializers,
+        agent_initializers,
         halt_check: halt_condition,
         ..Default::default()
     };

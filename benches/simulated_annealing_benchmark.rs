@@ -108,7 +108,7 @@ fn run_annealing_experiment() -> Option<SimulationParameters> {
 
     match approx_optimal_params.as_ref() {
         Some(params) => {
-            let period = get_consumer_period(&params);
+            let period = get_consumer_period(params);
             println!("Simulated Annealing found an approximate optimal configuration:");
             println!("Optimal Consumer Period: {}", period);
             println!("Producer is fixed at Period: {}", PRODUCER_PERIOD);
