@@ -461,7 +461,7 @@ mod tests {
             enable_agent_asleep_cycles_metric: false,
             halt_check: |s: &Simulation| s.time > 500,
             agent_initializers: vec![
-                poisson_distributed_producing_agent(
+                poisson_distributed_producer(
                     "Starbucks Customers".to_string(),
                     Poisson::new(80.0_f64).expect("failed to create poisson"),
                     "Starbucks Clerk".to_string(),

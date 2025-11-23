@@ -219,21 +219,21 @@ where
 
 /// Given a poisson distribution for the production period,
 /// returns an Agent that produces to Target with that frequency.
-pub fn poisson_distributed_producing_agent<T>(
-    name: T,
-    dist: Poisson<f64>,
-    target: T,
-) -> AgentInitializer
+pub fn poisson_distributed_producer<T>(name: T, dist: Poisson<f64>, target: T) -> AgentInitializer
 where
     T: Into<String>,
 {
     #[derive(Clone, Debug)]
     struct PoissonAgent {
+        /// The distribution of time between producing.
         period: Poisson<f64>,
+
+        /// The target to which we produce messages.
         target: String,
     }
 
     impl Agent for PoissonAgent {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
