@@ -18,7 +18,7 @@ pub type ObjectiveScore = f64;
 /// The simplest and most common objective function is to return negative
 /// simulation time. An objective function that returns negative simulation time
 /// will find the Simulation that completed in the least ticks of `DiscreteTime`.
-pub fn monte_carlo_experiment(
+pub fn monte_carlo_search(
     mut simulation_parameters_generator: impl FnMut() -> SimulationParameters,
     replications_limit: u32,
     objective_function: impl Fn(&Simulation) -> ObjectiveScore,
@@ -50,7 +50,7 @@ pub fn monte_carlo_experiment(
 /// the portal, we get to see how good that world "looks" and choose whether to
 /// step into it, and we sometimes take a gamble on worlds that "look bad", I
 /// hope that you too might find this analogy easier to understand.
-pub fn simulated_annealing_experiment(
+pub fn simulated_annealing_search(
     initial_parameters_generator: impl Fn() -> SimulationParameters,
     perturb_function: impl Fn(&SimulationParameters) -> SimulationParameters,
     objective_function: impl Fn(&Simulation) -> ObjectiveScore,

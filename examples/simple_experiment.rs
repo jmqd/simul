@@ -1,5 +1,5 @@
 use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
-use simul::experiment::monte_carlo_experiment;
+use simul::experiment::monte_carlo_search;
 use simul::*;
 
 /// Given a producer with a fixed period, returns producer-consumer two Agent
@@ -62,7 +62,7 @@ fn run_experiment() {
 
     // Run the simulation 100 different times, randomly varying the agent
     // configuration, and return the one that maximized the objective function.
-    let approx_optimal = monte_carlo_experiment(
+    let approx_optimal = monte_carlo_search(
         simulation_parameters_generator,
         replications_limit,
         objective_fn,

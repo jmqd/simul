@@ -3,7 +3,7 @@ use criterion::criterion_main;
 use criterion::Criterion;
 use rand::Rng;
 use simul::agent::{periodic_consuming_agent, periodic_producing_agent};
-use simul::experiment::{simulated_annealing_experiment, ObjectiveScore};
+use simul::experiment::{simulated_annealing_search, ObjectiveScore};
 use simul::*;
 
 const PRODUCER_PERIOD: u64 = 2;
@@ -98,7 +98,7 @@ fn run_annealing_experiment() -> Option<SimulationParameters> {
         build_sim_params(start_period)
     };
 
-    let approx_optimal_params = simulated_annealing_experiment(
+    let approx_optimal_params = simulated_annealing_search(
         initial_params_generator,
         perturb_consumer_period,
         objective_fn,
@@ -142,7 +142,7 @@ fn simulated_annealing_bench(c: &mut Criterion) {
 
     group.bench_function("simple_simulated_annealing_experiment_1000_steps", |b| {
         b.iter(|| {
-            let result = simulated_annealing_experiment(
+            let result = simulated_annealing_search(
                 initial_params_generator,
                 perturb_fn,
                 obj_fn,
