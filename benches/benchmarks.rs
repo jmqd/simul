@@ -3,9 +3,9 @@ extern crate criterion;
 
 use criterion::criterion_group;
 use criterion::Criterion;
-use simul::agent::*;
+use simul::agent::{periodic_consumer, periodic_producer};
 
-use simul::*;
+use simul::{Simulation, SimulationParameters};
 
 fn simple_periodic_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("simple periodic bench");
@@ -21,7 +21,7 @@ fn simple_periodic_bench(c: &mut Criterion) {
                 ..Default::default()
             });
             simulation.run();
-        })
+        });
     });
 }
 

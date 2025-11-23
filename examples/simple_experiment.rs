@@ -1,11 +1,11 @@
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::monte_carlo_search;
-use simul::*;
+use simul::{Agent, AgentInitializer, DiscreteTime, Simulation, SimulationParameters};
 
 /// Given a producer with a fixed period, returns producer-consumer two Agent
 /// configurations (where only the consumer varies).
 ///
-/// The consumer randomly varies between 0 and consumer_max_period. The two
+/// The consumer randomly varies between 0 and `consumer_max_period`. The two
 /// agents are always named "producer" and "consumer".
 fn periodic_agent_generator_fixed_producer(
     producer_period: DiscreteTime,
@@ -18,7 +18,7 @@ fn periodic_agent_generator_fixed_producer(
             producer_period,
             "consumer".to_string(),
         );
-        let consumer_agent = periodic_consumer("consumer".to_string(), consumer_period as u64);
+        let consumer_agent = periodic_consumer("consumer".to_string(), u64::from(consumer_period));
         vec![producer_agent, consumer_agent]
     }
 }

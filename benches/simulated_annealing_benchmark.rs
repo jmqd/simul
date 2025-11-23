@@ -4,7 +4,7 @@ use criterion::Criterion;
 use rand::Rng;
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::{simulated_annealing_search, ObjectiveScore};
-use simul::*;
+use simul::{Agent, AgentInitializer, Simulation, SimulationParameters};
 
 const PRODUCER_PERIOD: u64 = 2;
 const MAX_CONSUMER_PERIOD: u64 = 10;
@@ -13,7 +13,7 @@ const REPLICATIONS_LIMIT: u32 = 1000;
 const GEOMETRIC_COOLING_RATE: f64 = 0.99;
 const STARTING_TURBULENCE: f64 = 1.0;
 
-/// Extracts the consumer's period from the SimulationParameters.
+/// Extracts the consumer's period from the `SimulationParameters`.
 fn get_consumer_period(params: &SimulationParameters) -> u64 {
     // We assume the consumer is the second agent (index 1) as set up in the generator.
     if let Some(AgentInitializer { .. }) = params.agent_initializers.get(1) {
@@ -24,7 +24,7 @@ fn get_consumer_period(params: &SimulationParameters) -> u64 {
     0
 }
 
-/// Creates a full SimulationParameters object from a consumer period.
+/// Creates a full `SimulationParameters` object from a consumer period.
 fn build_sim_params(consumer_period: u64) -> SimulationParameters {
     let halt_condition = |s: &Simulation| {
         s.find_by_name("consumer").unwrap().state.consumed.len() > HALT_CONSUMED_COUNT
@@ -45,7 +45,7 @@ fn build_sim_params(consumer_period: u64) -> SimulationParameters {
     }
 }
 
-/// Randomly changes the consumer's period by +/- 1, keeping it within [0, MAX_CONSUMER_PERIOD].
+/// Randomly changes the consumer's period by +/- 1, keeping it within [0, `MAX_CONSUMER_PERIOD`].
 fn perturb_consumer_period(current_params: &SimulationParameters) -> SimulationParameters {
     let mut rng = rand::rng();
     let old_period = get_consumer_period(current_params);
@@ -84,7 +84,7 @@ fn objective_fn(s: &Simulation) -> ObjectiveScore {
     -(s.time() as f64) + consumer_cost
 }
 
-/// Geometric Cooling Schedule: T(k) = T_start * alpha^k
+/// Geometric Cooling Schedule: T(k) = `T_start` * alpha^k
 /// Chaotic flux decreases rapidly, favoring convergence.
 fn geometric_chaotic_flux_schedule(k: u32) -> f64 {
     STARTING_TURBULENCE * GEOMETRIC_COOLING_RATE.powi(k as i32)
@@ -110,8 +110,8 @@ fn run_annealing_experiment() -> Option<SimulationParameters> {
         Some(params) => {
             let period = get_consumer_period(params);
             println!("Simulated Annealing found an approximate optimal configuration:");
-            println!("Optimal Consumer Period: {}", period);
-            println!("Producer is fixed at Period: {}", PRODUCER_PERIOD);
+            println!("Optimal Consumer Period: {period}");
+            println!("Producer is fixed at Period: {PRODUCER_PERIOD}");
 
             let mut final_sim = Simulation::new(params.clone());
             final_sim.run();
@@ -151,7 +151,7 @@ fn simulated_annealing_bench(c: &mut Criterion) {
             );
 
             assert!(result.is_some());
-        })
+        });
     });
 
     group.finish();

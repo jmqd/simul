@@ -1,8 +1,8 @@
 use rand::prelude::*;
 use rand_distr::weighted::WeightedIndex;
-use simul::agent::*;
+use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
-use simul::*;
+use simul::{Simulation, SimulationParameters};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
@@ -152,7 +152,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
             .last()
             .is_some_and(|m| m.interrupt.is_some())
     })
-    .map(|a| a.name.to_string())
+    .map(|a| a.name.clone())
     .unwrap()
 }
 
@@ -244,7 +244,7 @@ fn main() {
     eprintln!("Normal 9-ball");
     println!("luck_chance\tbetter_player_win_percent");
 
-    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
+    for pct in [0.00, 0.20, 0.40, 0.50] {
         let mut count: HashMap<String, u32> = HashMap::new();
         for _ in 0..32768 {
             *count
@@ -267,7 +267,7 @@ fn main() {
     eprintln!("Normal 9-ball");
     println!("luck_chance\tbetter_player_win_percent");
 
-    for pct in [0.00, 0.20, 0.40, 0.50].into_iter() {
+    for pct in [0.00, 0.20, 0.40, 0.50] {
         let mut count: HashMap<String, u32> = HashMap::new();
         let mut starting_player = 0;
         for _ in 0..32768 {

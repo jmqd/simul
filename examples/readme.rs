@@ -1,4 +1,4 @@
-use simul::agent::*;
+use simul::agent::{periodic_consumer, periodic_producer};
 use simul::Simulation;
 use simul::SimulationParameters;
 
@@ -31,5 +31,5 @@ fn main() {
     simulation
         .agents()
         .iter()
-        .for_each(|agent| println!("{:#?}", agent));
+        .for_each(|agent| println!("{agent:#?}"));
 }
