@@ -316,12 +316,6 @@ impl Simulation {
         data
     }
 
-    /// Gets an agent by handle, mutably.
-    #[allow(dead_code)]
-    fn agent_by_handle_mut(&mut self, handle: usize) -> Option<&mut SimulationAgent> {
-        self.agents.get_mut(handle)
-    }
-
     /// SAFETY: The caller must ensure that `handle` is within the bounds of `self.agents`.
     unsafe fn agent_by_handle_mut_unchecked(&mut self, handle: usize) -> &mut SimulationAgent {
         unsafe { self.agents.get_unchecked_mut(handle) }
