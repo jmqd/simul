@@ -239,7 +239,7 @@ where
             // as determined by a poisson distribution function.
             let cooldown_period = self.period.sample(&mut rand::thread_rng()) as u64;
             ctx.sleep_for(cooldown_period);
-            ctx.send(&self.target.clone(), None);
+            ctx.send(&self.target, None);
         }
     }
 
