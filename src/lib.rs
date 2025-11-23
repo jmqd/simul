@@ -1,3 +1,24 @@
+//! `simul` is a discrete-event simulation library for running high-level
+//! simulations of real-world problems and for running simulated experiments.
+//!
+//! `simul` is a *discrete-event simulator* using *incremental time
+//! progression*, with [M/M/c queues](https://en.wikipedia.org/wiki/M/M/c_queue)
+//! for interactions between agents. It also supports some forms of
+//! experimentation and simulated annealing to replicate a simulation many
+//! times, varying the simulation parameters.
+//!
+//! Use-cases:
+//! - [Discrete-event simulation](https://en.wikipedia.org/wiki/Discrete-event_simulation)
+//! - [Complex adaptive systems](https://authors.library.caltech.edu/60491/1/MGM%20113.pdf)
+//! - [Simulated annealing](https://en.wikipedia.org/wiki/Simulated_annealing)
+//! - [Job-shop scheduling](https://en.wikipedia.org/wiki/Job-shop_scheduling)
+//! - [Birth-death processes](https://en.wikipedia.org/wiki/Birth%E2%80%93death_process)
+//! - [Computer experiments](https://en.wikipedia.org/wiki/Computer_experiment)
+//! - Other: simulating logistics, operations research problems, running
+//!   experiments to approximate a global optimum, simulating queueing systems,
+//!   distributed systems, performance engineering/analysis, and so on.
+//!
+
 extern crate self as simul;
 pub mod agent;
 pub mod experiment;
@@ -429,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn starbucks_clerk() {
+    fn starbucks_clerk() -> Result<(), Box<dyn std::error::Error>> {
         #[derive(Debug, Clone)]
         struct Clerk {}
 
@@ -463,7 +484,7 @@ mod tests {
             agent_initializers: vec![
                 poisson_distributed_producer(
                     "Starbucks Customers".to_string(),
-                    Poisson::new(80.0_f64).expect("failed to create poisson"),
+                    Poisson::new(80.0_f64)?,
                     "Starbucks Clerk".to_string(),
                 ),
                 AgentInitializer {
@@ -475,5 +496,6 @@ mod tests {
 
         simulation.run();
         assert!(Some(simulation).is_some());
+        Ok(())
     }
 }
