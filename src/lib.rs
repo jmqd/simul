@@ -328,7 +328,7 @@ impl Simulation {
                     let commanding_agent =
                         unsafe { self.agent_by_handle_mut_unchecked(command.agent_handle) };
 
-                    commanding_agent.state.produced.push(message.clone());
+                    commanding_agent.state.produced.push(message);
                 }
 
                 AgentCommandType::HaltSimulation(reason) => {
