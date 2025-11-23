@@ -76,13 +76,15 @@ fn main() {
 
 ## Simulation Concepts / Abstraction
 
-A simulation is a collection of `Agents` that interact with each other via
-`Messages`. The simulation keeps a discrete time (u64) which is incremented on
-each tick of the Simulation. What an `Agent` does at each tick of the simulation
-is provided by you in its `process()` method. `process()` means an `Agent`
-processes one of the messages in its queue. Each `Agent` must have a unique
-string id. If an `Agent` wants to interact with another `Agent`, it can return a
-`Message` from `process` with that other agent as a `target`.
+- A simulation is a collection of `Agents` that interact with each other via
+`Messages`.
+- The simulation keeps a discrete time (u64) which is incremented on each tick
+  of the Simulation.
+- What an `Agent` does at each tick of the simulation is provided by you in its
+  `on_tick()` and `on_message()` methods.
+- `Agents` must have a unique name.
+- If an `Agent` wants to interact with another `Agent`, it can send a `Message`
+  via the `&mut ctx: AgentContext` passed into `on_tick` and `on_message`.
 
 ![Diagram showing Agent trait](./diagrams/simulation_agents.png)
 
