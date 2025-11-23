@@ -158,7 +158,8 @@ impl AgentOptions {
     }
 }
 
-/// An initializer for an agent.
+/// An initializer for an agent. The `agent` holds the behavior and `on_`
+/// functions; the options are configuration for constructing the agent.
 #[derive(Debug, Clone)]
 pub struct AgentInitializer {
     pub agent: Box<dyn Agent>,
