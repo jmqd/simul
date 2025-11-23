@@ -38,9 +38,6 @@ pub struct SimulationAgent {
     /// The name for the agent. Must be unique for the simulation.
     pub name: String,
 
-    // The usize handle for this agent.
-    pub handle: usize,
-
     /// State that is mutable by the agent itself.
     pub state: AgentState,
 }

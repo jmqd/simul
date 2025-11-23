@@ -111,11 +111,9 @@ impl Simulation {
         let agents: Vec<SimulationAgent> = parameters
             .agent_initializers
             .into_iter()
-            .enumerate()
-            .map(|(handle, agent_initializer)| SimulationAgent {
+            .map(|agent_initializer| SimulationAgent {
                 agent: agent_initializer.agent,
                 name: agent_initializer.options.name,
-                handle,
                 metadata: AgentMetadata::default(),
                 state: AgentState {
                     mode: agent_initializer.options.initial_mode,
@@ -207,7 +205,7 @@ impl Simulation {
                 let mut agent_commands: Vec<AgentCommandType> = vec![];
 
                 let mut ctx = AgentContext {
-                    handle: agent.handle,
+                    handle: i,
                     name: &agent.name,
                     time: self.time,
                     commands: &mut agent_commands,
