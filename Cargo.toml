@@ -28,7 +28,7 @@ name = "simul"
 path = "src/lib.rs"
 
 [dev-dependencies]
-env_logger = "0.11.3"
+env_logger = "0.11.8"
 criterion = "0.5.1"
 
 [[bench]]
@@ -38,5 +38,5 @@ harness = false
 [dependencies]
 rand = {version = "0.8.5", features = ["alloc"]}
 rand_distr = "0.4.3"
-log = "0.4.21"
-dyn-clone = "1.0.17"
+log = "0.4.28"
+dyn-clone = "1.0.20"
