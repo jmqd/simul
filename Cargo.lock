@@ -647,7 +647,6 @@ dependencies = [
  "log",
  "rand",
  "rand_distr",
- "simul-macro",
 ]
 
 [[package]]

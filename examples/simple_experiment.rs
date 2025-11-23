@@ -26,7 +26,8 @@ fn periodic_agent_generator_fixed_producer(
 
 /// Sandbox for running a simulated annealing experiment.
 fn run_experiment() {
-    let halt_condition = |s: &Simulation| s.agent_state("consumer").unwrap().consumed.len() > 10;
+    let halt_condition =
+        |s: &Simulation| s.find_by_name("consumer").unwrap().state.consumed.len() > 10;
 
     // Creates an agent generator w/ a fixed producer at interval 2 and a
     // consumer whose period randomly varies between [0, 10]
@@ -57,8 +58,9 @@ fn run_experiment() {
         -(s.time as i64)
             - s.agents
                 .iter()
-                .find(|a| a.id() == "consumer")
+                .find(|a| a.name == "consumer")
                 .unwrap()
+                .agent
                 .cost()
     };
 

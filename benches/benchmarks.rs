@@ -13,7 +13,7 @@ fn simple_periodic_bench(c: &mut Criterion) {
     group.bench_function("benchmark", |b| {
         b.iter(|| {
             let mut simulation = Simulation::new(SimulationParameters {
-                agents: vec![
+                agent_initializers: vec![
                     periodic_producing_agent("producer".to_string(), 1, "consumer".to_string()),
                     periodic_consuming_agent("consumer".to_string(), 1),
                 ],

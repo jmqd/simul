@@ -40,4 +40,3 @@ rand = {version = "0.8.5", features = ["alloc"]}
 rand_distr = "0.4.3"
 log = "0.4.21"
 dyn-clone = "1.0.17"
-simul-macro = { path = "simul-macro" }

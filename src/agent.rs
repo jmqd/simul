@@ -2,7 +2,6 @@ use crate::{message::*, DiscreteTime};
 use dyn_clone::DynClone;
 use rand::prelude::*;
 use rand_distr::Poisson;
-use simul_macro::agent;
 use std::collections::VecDeque;
 
 /// Possible states an Agent can be in.
@@ -20,6 +19,30 @@ pub enum AgentMode {
 
     /// The Agent is dead (inactive) and does nothing in this state.
     Dead,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AgentMetadata {
+    pub queue_depth_metrics: Vec<usize>,
+    pub asleep_cycle_count: DiscreteTime,
+}
+
+#[derive(Debug, Clone)]
+pub struct SimulationAgent {
+    /// The agent that the user constructed; contains user state and behavior.
+    pub agent: Box<dyn Agent>,
+
+    /// The metadata associated with the agent.
+    pub(crate) metadata: AgentMetadata,
+
+    /// The name for the agent. Must be unique for the simulation.
+    pub name: String,
+
+    // The usize handle for this agent.
+    pub handle: usize,
+
+    /// State that is mutable by the agent itself.
+    pub state: AgentState,
 }
 
 #[derive(Debug, Clone)]
@@ -76,8 +99,11 @@ pub enum MessageProcessingStatus {
 
 // The Context holds the capability for Agents to act on the world
 pub struct AgentContext<'a> {
-    /// The id of the Agent.
-    pub id: &'a str,
+    /// The handle id of the Agent.
+    pub handle: usize,
+
+    /// The name of the Agent.
+    pub name: &'a str,
 
     /// The current simulation time.
     pub time: DiscreteTime,
@@ -93,7 +119,7 @@ pub struct AgentContext<'a> {
 impl<'a> AgentContext<'a> {
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
         self.commands.push(AgentCommandType::SendMessage(Message {
-            source: self.id.to_string(),
+            source: self.name.to_string(),
             destination: target.to_string(),
             queued_time: self.time,
             custom_payload: payload,
@@ -123,6 +149,16 @@ pub struct AgentOptions {
     pub initial_mode: AgentMode,
     pub wake_mode: AgentMode,
     pub initial_queue: VecDeque<Message>,
+    pub name: String,
+}
+
+impl AgentOptions {
+    pub fn defaults_with_name(name: String) -> Self {
+        Self {
+            name,
+            ..Default::default()
+        }
+    }
 }
 
 /// An initializer for an agent.
@@ -143,9 +179,6 @@ pub struct AgentInitializer {
 /// * A single-celled organism.
 /// * A player in a game.
 pub trait Agent: std::fmt::Debug + DynClone {
-    // Returns the id of the Agent.
-    fn id(&self) -> String;
-
     /// The main action an agent performs, processing messages that come in to it.
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message);
 
@@ -163,20 +196,16 @@ pub trait Agent: std::fmt::Debug + DynClone {
 dyn_clone::clone_trait_object!(Agent);
 
 /// An agent that processes on a Poisson-distributed periodicity.
-pub fn poisson_distributed_consuming_agent<T>(id: T, dist: Poisson<f64>) -> impl Agent
+pub fn poisson_distributed_consuming_agent<T>(name: T, dist: Poisson<f64>) -> AgentInitializer
 where
     T: Into<String>,
 {
-    #[agent]
+    #[derive(Debug, Clone)]
     struct PoissonAgent {
         period: Poisson<f64>,
     }
 
     impl Agent for PoissonAgent {
-        fn id(&self) -> String {
-            self.id.clone()
-        }
-
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
@@ -185,33 +214,29 @@ where
         }
     }
 
-    PoissonAgent {
-        period: dist,
-        id: id.into(),
+    AgentInitializer {
+        agent: Box::new(PoissonAgent { period: dist }),
+        options: AgentOptions::defaults_with_name(name.into()),
     }
 }
 
 /// Given a poisson distribution for the production period,
 /// returns an Agent that produces to Target with that frequency.
 pub fn poisson_distributed_producing_agent<T>(
-    id: T,
+    name: T,
     dist: Poisson<f64>,
     target: T,
 ) -> AgentInitializer
 where
     T: Into<String>,
 {
-    #[agent]
+    #[derive(Clone, Debug)]
     struct PoissonAgent {
         period: Poisson<f64>,
         target: String,
     }
 
     impl Agent for PoissonAgent {
-        fn id(&self) -> String {
-            self.id.clone()
-        }
-
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
@@ -223,30 +248,25 @@ where
 
     AgentInitializer {
         agent: Box::new(PoissonAgent {
-            id: id.into(),
             period: dist,
             target: target.into(),
         }),
-        options: AgentOptions::default(),
+        options: AgentOptions::defaults_with_name(name.into()),
     }
 }
 
 /// A simple agent that produces messages on a period, directed to target.
-pub fn periodic_producing_agent<T>(id: T, period: DiscreteTime, target: T) -> AgentInitializer
+pub fn periodic_producing_agent<T>(name: T, period: DiscreteTime, target: T) -> AgentInitializer
 where
     T: Into<String>,
 {
-    #[agent]
+    #[derive(Clone, Debug)]
     struct PeriodicProducer {
         period: DiscreteTime,
         target: String,
     }
 
     impl Agent for PeriodicProducer {
-        fn id(&self) -> String {
-            self.id.clone()
-        }
-
         fn cost(&self) -> i64 {
             -(self.period as i64)
         }
@@ -265,11 +285,11 @@ where
         agent: Box::new(PeriodicProducer {
             period,
             target: target.into(),
-            id: id.into(),
         }),
         options: AgentOptions {
             initial_mode: AgentMode::Proactive,
             wake_mode: AgentMode::Proactive,
+            name: name.into(),
             ..Default::default()
         },
     }
@@ -277,20 +297,16 @@ where
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
-pub fn periodic_consuming_agent<T>(id: T, period: DiscreteTime) -> AgentInitializer
+pub fn periodic_consuming_agent<T>(name: T, period: DiscreteTime) -> AgentInitializer
 where
     T: Into<String>,
 {
-    #[agent]
+    #[derive(Clone, Debug)]
     struct PeriodicConsumer {
         period: DiscreteTime,
     }
 
     impl Agent for PeriodicConsumer {
-        fn id(&self) -> String {
-            self.id.clone()
-        }
-
         fn cost(&self) -> i64 {
             -(self.period as i64)
         }
@@ -301,10 +317,7 @@ where
     }
 
     AgentInitializer {
-        agent: Box::new(PeriodicConsumer {
-            id: id.into(),
-            period,
-        }),
-        options: AgentOptions::default(),
+        agent: Box::new(PeriodicConsumer { period }),
+        options: AgentOptions::defaults_with_name(name.into()),
     }
 }
