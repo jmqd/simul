@@ -201,12 +201,12 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
 
     let mut agent_initializers = vec![
         AgentInitializer {
+            options: alice.agent_options.clone(),
             agent: Box::new(alice),
-            options: AgentOptions::default(),
         },
         AgentInitializer {
+            options: john.agent_options.clone(),
             agent: Box::new(john),
-            options: AgentOptions::default(),
         },
     ];
 
