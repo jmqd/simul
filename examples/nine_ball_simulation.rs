@@ -96,7 +96,7 @@ impl Agent for ApaNineBallPlayer {
 }
 
 fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: usize) -> String {
-    let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state.queue.is_empty());
+    let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
 
     let alice = NineBallPlayer {
         luck_chance: 0.0,
@@ -147,23 +147,21 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
     let mut sim = Simulation::new(simulation_parameters_generator());
     sim.run();
 
-    sim.agents
-        .iter()
-        .find(|a| {
-            a.state
-                .produced
-                .last()
-                .is_some_and(|m| m.interrupt.is_some())
-        })
-        .map(|a| a.name.to_string())
-        .unwrap()
+    sim.find_agent(|a| {
+        a.state
+            .produced
+            .last()
+            .is_some_and(|m| m.interrupt.is_some())
+    })
+    .map(|a| a.name.to_string())
+    .unwrap()
 }
 
 fn nine_ball_apa_rules_simulation_alice_vs_john(
     luck_chance: f32,
     starting_player: usize,
 ) -> String {
-    let halt_condition = |s: &Simulation| s.agents.iter().all(|a| a.state.queue.is_empty());
+    let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
 
     let alice = ApaNineBallPlayer {
         luck_chance: 0.0,
@@ -231,16 +229,14 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
     let mut sim = Simulation::new(simulation_parameters_generator());
     sim.run();
 
-    sim.agents
-        .iter()
-        .find(|a| {
-            a.state
-                .produced
-                .last()
-                .is_some_and(|m| m.interrupt.is_some())
-        })
-        .map(|a| a.name.clone())
-        .unwrap()
+    sim.find_agent(|a| {
+        a.state
+            .produced
+            .last()
+            .is_some_and(|m| m.interrupt.is_some())
+    })
+    .map(|a| a.name.clone())
+    .unwrap()
 }
 
 fn main() {

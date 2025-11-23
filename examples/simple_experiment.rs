@@ -55,13 +55,7 @@ fn run_experiment() {
     // By also including the cost of the agent, we also optimize to not waste
     // resources with an over-eager consumer.
     let objective_fn = |s: &Simulation| {
-        -(s.time as f64)
-            - s.agents
-                .iter()
-                .find(|a| a.name == "consumer")
-                .unwrap()
-                .agent
-                .cost()
+        -(s.time as f64) - s.find_agent(|a| a.name == "consumer").unwrap().agent.cost()
     };
 
     let replications_limit = 1000;
@@ -74,7 +68,7 @@ fn run_experiment() {
         objective_fn,
     );
 
-    println!("{:#?}", approx_optimal.unwrap().agents.iter());
+    println!("{:#?}", approx_optimal.unwrap().calc_avg_wait_statistics());
 }
 
 fn main() {

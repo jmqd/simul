@@ -36,7 +36,7 @@ pub enum SimulationMode {
 #[derive(Clone, Debug)]
 pub struct Simulation {
     /// The agents within the simulation, e.g. adaptive agents.
-    pub agents: Vec<SimulationAgent>,
+    pub(crate) agents: Vec<SimulationAgent>,
 
     /// The current discrete time of the Simulation.
     pub time: DiscreteTime,
@@ -355,6 +355,27 @@ impl Simulation {
                 }
             }
         }
+    }
+
+    /// Searches for an agent in the Simulation matching the given predicate.
+    pub fn find_agent<P>(&self, predicate: P) -> Option<&SimulationAgent>
+    where
+        P: FnMut(&&SimulationAgent) -> bool,
+    {
+        self.agents.iter().find(predicate)
+    }
+
+    /// Checks whether all agents match the given predicate.
+    pub fn all_agents<P>(&self, predicate: P) -> bool
+    where
+        P: FnMut(&SimulationAgent) -> bool,
+    {
+        self.agents.iter().all(predicate)
+    }
+
+    /// Returns a slice of the Agents in the Simulation.
+    pub fn agents(&self) -> &[SimulationAgent] {
+        self.agents.iter().as_slice()
     }
 }
 

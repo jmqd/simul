@@ -29,7 +29,7 @@ fn main() {
 
     // Post-simulation, you can do analytics on the stored metrics, data, etc.
     simulation
-        .agents
+        .agents()
         .iter()
         .for_each(|agent| println!("{:#?}", agent));
 }
