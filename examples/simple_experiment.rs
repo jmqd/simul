@@ -1,4 +1,4 @@
-use simul::agent::{periodic_consumer, periodic_producing_agent};
+use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::monte_carlo_search;
 use simul::*;
 
@@ -13,7 +13,7 @@ fn periodic_agent_generator_fixed_producer(
 ) -> impl Fn() -> Vec<AgentInitializer> {
     move || {
         let consumer_period = rand::random::<u32>() % (consumer_max_period + 1) as u32;
-        let producer_agent = periodic_producing_agent(
+        let producer_agent = periodic_producer(
             "producer".to_string(),
             producer_period,
             "consumer".to_string(),

@@ -13,7 +13,7 @@ fn main() {
         //   `consumer`: consumes w/ no side effects every second tick
         // Agents are powerful, and you can pass-in custom implementations here.
         agent_initializers: vec![
-            periodic_producing_agent("producer", 1, "consumer"),
+            periodic_producer("producer", 1, "consumer"),
             periodic_consumer("consumer", 2),
         ],
 

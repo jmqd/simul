@@ -253,13 +253,16 @@ where
 }
 
 /// A simple agent that produces messages on a period, directed to target.
-pub fn periodic_producing_agent<T>(name: T, period: DiscreteTime, target: T) -> AgentInitializer
+pub fn periodic_producer<T>(name: T, period: DiscreteTime, target: T) -> AgentInitializer
 where
     T: Into<String>,
 {
     #[derive(Clone, Debug)]
     struct PeriodicProducer {
+        /// The time between producing messages.
         period: DiscreteTime,
+
+        /// The agent to which we direct messages.
         target: String,
     }
 

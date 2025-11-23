@@ -412,7 +412,7 @@ mod tests {
         init();
         let mut simulation = Simulation::new(SimulationParameters {
             agent_initializers: vec![
-                periodic_producing_agent("producer".to_string(), 1, "consumer".to_string()),
+                periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 periodic_consumer("consumer".to_string(), 1),
             ],
             halt_check: |s: &Simulation| s.time == 5,
