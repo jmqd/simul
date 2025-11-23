@@ -271,8 +271,9 @@ where
             -(self.period as i64)
         }
 
+        #[allow(unused_variables)]
         fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-            // nothing
+            // TODO(jmqd): This is pretty jank, fix this interface.
         }
 
         fn on_tick(&mut self, ctx: &mut AgentContext) {

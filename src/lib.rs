@@ -147,7 +147,8 @@ impl Simulation {
     pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent> {
         unsafe {
             self.agent_name_handle_map
-                .get(name).map(|id| self.agents.get_unchecked(*id))
+                .get(name)
+                .map(|id| self.agents.get_unchecked(*id))
         }
     }
 
@@ -155,7 +156,8 @@ impl Simulation {
     pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut SimulationAgent> {
         unsafe {
             self.agent_name_handle_map
-                .get(name).map(|id| self.agents.get_unchecked_mut(*id))
+                .get(name)
+                .map(|id| self.agents.get_unchecked_mut(*id))
         }
     }
 
@@ -321,6 +323,8 @@ impl Simulation {
         data
     }
 
+    /// Gets an agent by handle, mutably.
+    #[allow(dead_code)]
     fn agent_by_handle_mut(&mut self, handle: usize) -> Option<&mut SimulationAgent> {
         self.agents.get_mut(handle)
     }
