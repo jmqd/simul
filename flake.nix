@@ -41,6 +41,7 @@
             cargo-edit
             cargo-watch
             cargo-udeps
+            cargo-edit
           ];
 
           shellHook = ''
