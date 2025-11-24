@@ -4,7 +4,6 @@
 * Performance
 ** TODO Parallelize experiment running.
 * Crate cleanup
-** TODO Cleanup and/or separate binary from library
 ** TODO Fully-integrate plotters feature into library
 ** TODO Move Agent creaton helpers into impl proper
 * Architecture / Interface
@@ -18,14 +17,11 @@ Change the API so that agent names are statically determined?
 ** TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
 * Testing
 ** TODO Add doctests throughout
-** TODO Integrate with criterion
 * Code Cleanup
 ** TODO Gracefully degrade Simulations into Failed state in cases of errors
 ** TODO If possible, move =log= dependency to feature or remove
 What's the best practice in Rust? Do people have debug! stmts in libs?
-** TODO Consistently use =Self {}= over concrete struct names
 * Interface Ergonomics - Low Hanging
-** IDEA Check for other places to consider implementing Default.
 ** WAIT Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
 #+BEGIN_SRC rust
 /// An ObjectiveFunction is used in simulated annealing and it is the function
@@ -56,16 +52,7 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 #+END_SRC
 ** IDEA Fix Poisson<f64> business -- f64 is the wrong type, feels weird/leaky
 * Message improvements
-** TODO Add Generic data field for Messages
 ** IDEA Consider allowing Messages w/ no target -- fanout / global broadcast
 ** TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
   ProducedMessage to dodge the unwraps and solve w/ type system
-** TODO Rename various time stamp fields to align on semantics
 ** IDEA Should Messages be an algebraic type, in fact?
-* Bug
-* Killed
-** KILL Add Default implementation for Message?
-Default doesn't make sense for message in its current form.  e.g. String source,
-String destination, u64 queued_time have no reasonable default value.
-Data structure needs to improve.
-** KILL Consider adding params struct for construction of Agents too.
