@@ -37,6 +37,7 @@
           packages = with pkgs; [
             rustToolchain
             openssl
+            llvmPackages.bolt
 
             # Cargo checks / lints / tools
             cargo-audit
