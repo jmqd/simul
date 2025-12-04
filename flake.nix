@@ -43,6 +43,7 @@
             cargo-deny
             cargo-edit
             cargo-license
+            cargo-pgo
             cargo-udeps
             cargo-watch
           ];
