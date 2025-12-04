@@ -25,6 +25,7 @@ readme = "README.md"
 [profile.release]
 lto = "fat"
 panic = "abort"
+strip = true
 
 [lib]
 name = "simul"
