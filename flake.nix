@@ -47,6 +47,7 @@
             cargo-pgo
             cargo-udeps
             cargo-watch
+            just
           ];
 
           shellHook = ''
