@@ -35,7 +35,7 @@ check-licenses:
     @# and 1 if it finds no matches (all licenses are good).
     @# We want to fail (exit 1) if grep finds matches.
     @if cargo license | grep -v -E "((MIT)|(Apache-2.0)|(BSD-[23]))"; then \
-        echo "\033[31m ERROR: Disallowed licenses detected above\033[0m"; \
+        printf "\033[31m ERROR: Disallowed licenses detected above\033[0m\n"; \
         exit 1; \
     else \
         echo "License check passed."; \
