@@ -1,6 +1,6 @@
 use crate::Simulation;
 use crate::SimulationParameters;
-use rand::Rng;
+use rand::RngExt;
 
 /// `ObjectiveScore` is a measure of how a Simulation performed according to an
 /// objective function. This is used to find approximate global optimizations.

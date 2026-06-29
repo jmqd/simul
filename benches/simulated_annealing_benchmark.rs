@@ -8,7 +8,7 @@
 use criterion::criterion_group;
 use criterion::criterion_main;
 use criterion::Criterion;
-use rand::Rng;
+use rand::RngExt;
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::{simulated_annealing_search, ObjectiveScore};
 use simul::{AgentInitializer, Simulation, SimulationParameters};
