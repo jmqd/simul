@@ -99,6 +99,25 @@ pub struct SimulationParameters {
     pub enable_agent_asleep_cycles_metric: bool,
 }
 
+/// Errors returned when simulation parameters are invalid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SimulationError {
+    /// More than one agent was configured with the same name.
+    DuplicateAgentName(String),
+}
+
+impl std::fmt::Display for SimulationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateAgentName(name) => {
+                write!(f, "duplicate agent name in simulation parameters: {name}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SimulationError {}
+
 impl Default for SimulationParameters {
     fn default() -> Self {
         Self {
@@ -112,15 +131,33 @@ impl Default for SimulationParameters {
 }
 
 impl Simulation {
+    /// Builds a simulation.
+    ///
+    /// # Panics
+    ///
+    /// Panics when parameters are invalid. Use [`Self::try_new`] to handle errors explicitly.
     #[must_use]
     pub fn new(parameters: SimulationParameters) -> Self {
-        // TODO(jmqd): Add the handle id to the agents here, use instead of mapping.
-        let agent_name_handle_map: HashMap<String, usize> = parameters
-            .agent_initializers
-            .iter()
-            .enumerate()
-            .map(|(i, agent_initializer)| (agent_initializer.options.name.clone(), i))
-            .collect();
+        match Self::try_new(parameters) {
+            Ok(simulation) => simulation,
+            Err(err) => panic!("{err}"),
+        }
+    }
+
+    /// Builds a simulation, returning an error when parameters are invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a name.
+    pub fn try_new(parameters: SimulationParameters) -> Result<Self, SimulationError> {
+        let mut agent_name_handle_map = HashMap::with_capacity(parameters.agent_initializers.len());
+
+        for (i, agent_initializer) in parameters.agent_initializers.iter().enumerate() {
+            let name = agent_initializer.options.name.clone();
+            if agent_name_handle_map.insert(name.clone(), i).is_some() {
+                return Err(SimulationError::DuplicateAgentName(name));
+            }
+        }
 
         let agents: Vec<SimulationAgent> = parameters
             .agent_initializers
@@ -139,7 +176,7 @@ impl Simulation {
             })
             .collect();
 
-        Self {
+        Ok(Self {
             mode: SimulationMode::Constructed,
             agents,
             halt_check: parameters.halt_check,
@@ -147,7 +184,7 @@ impl Simulation {
             enable_queue_depth_metric: parameters.enable_queue_depth_metrics,
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
             agent_name_handle_map,
-        }
+        })
     }
 
     /// Returns the consumed messages for a given Agent during the Simulation.
@@ -541,6 +578,21 @@ mod tests {
         assert_eq!(
             large_simulation.find_by_name("agent-8").map(|a| &a.name),
             Some(&"agent-8".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_agent_names() {
+        let result = Simulation::try_new(SimulationParameters {
+            agent_initializers: vec![
+                periodic_consumer("worker".to_string(), 1),
+                periodic_consumer("worker".to_string(), 2),
+            ],
+            ..Default::default()
+        });
+
+        assert!(
+            matches!(result, Err(SimulationError::DuplicateAgentName(name)) if name == "worker")
         );
     }
 }
