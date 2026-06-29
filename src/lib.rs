@@ -232,7 +232,7 @@ impl Simulation {
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
         let mut requested_sleep_until: Option<DiscreteTime>;
 
-        while !(self.halt_check)(self) {
+        while self.mode == SimulationMode::Running && !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
 
             {
