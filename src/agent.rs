@@ -111,12 +111,16 @@ pub struct AgentContext<'a> {
     /// Internal buffer for commands (messages, sleep requests, etc.)
     pub(crate) commands: &'a mut Vec<AgentCommand>,
 
+    /// Sleep requested by the agent during the current tick.
+    pub(crate) requested_sleep_until: &'a mut Option<DiscreteTime>,
+
     pub state: &'a AgentState,
 
     pub message_processing_status: MessageProcessingStatus,
 }
 
 impl AgentContext<'_> {
+    #[inline]
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
         self.commands.push(AgentCommand {
             ty: AgentCommandType::SendMessage(Message {
@@ -131,6 +135,7 @@ impl AgentContext<'_> {
     }
 
     /// Sends an interrupt to HALT the simulation.
+    #[inline]
     pub fn send_halt_interrupt(&mut self, reason: &str) {
         self.commands.push(AgentCommand {
             ty: AgentCommandType::HaltSimulation(reason.to_string()),
@@ -139,14 +144,13 @@ impl AgentContext<'_> {
     }
 
     /// Sleeps the Agent for a relative amount of time.
-    pub fn sleep_for(&mut self, ticks: DiscreteTime) {
-        self.commands.push(AgentCommand {
-            ty: AgentCommandType::Sleep(ticks),
-            agent_handle: self.handle,
-        });
+    #[inline]
+    pub const fn sleep_for(&mut self, ticks: DiscreteTime) {
+        *self.requested_sleep_until = Some(self.time + ticks);
     }
 
     /// Records whether the current message remains in progress or finished cleanly.
+    #[inline]
     pub const fn set_processing_status(&mut self, status: MessageProcessingStatus) {
         self.message_processing_status = status;
     }

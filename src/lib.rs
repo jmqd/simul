@@ -158,17 +158,17 @@ impl Simulation {
 
     /// Returns a `SimulationAgent` by name.
     #[must_use]
+    #[inline]
     pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent> {
-        self.agent_name_handle_map
-            .get(name)
-            .map(|id| self.agents.get(*id))?
+        self.find_handle_by_name(name)
+            .and_then(|id| self.agents.get(id))
     }
 
     /// Returns a `SimulationAgent` by name.
+    #[inline]
     pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut SimulationAgent> {
-        self.agent_name_handle_map
-            .get(name)
-            .map(|id| self.agents.get_mut(*id))?
+        let id = self.find_handle_by_name(name)?;
+        self.agents.get_mut(id)
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
@@ -193,6 +193,7 @@ impl Simulation {
     pub fn run(&mut self) {
         self.mode = SimulationMode::Running;
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
+        let mut requested_sleep_until: Option<DiscreteTime>;
 
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
@@ -213,43 +214,60 @@ impl Simulation {
                         .push(agent.state.queue.len());
                 }
 
-                {
-                    let mut ctx = AgentContext {
-                        handle: agent_handle,
-                        name: &agent.name,
-                        time: self.time,
-                        commands: &mut command_buffer,
-                        state: &agent.state,
-                        message_processing_status: MessageProcessingStatus::NoError,
-                    };
+                requested_sleep_until = None;
 
-                    match agent.state.mode {
-                        AgentMode::Proactive => agent.agent.on_tick(&mut ctx),
-                        AgentMode::Reactive => {
-                            if let Some(msg) = queued_msg {
-                                // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
-                                agent.agent.on_message(&mut ctx, &msg);
+                match agent.state.mode {
+                    AgentMode::Proactive => {
+                        let mut ctx = AgentContext {
+                            handle: agent_handle,
+                            name: &agent.name,
+                            time: self.time,
+                            commands: &mut command_buffer,
+                            requested_sleep_until: &mut requested_sleep_until,
+                            state: &agent.state,
+                            message_processing_status: MessageProcessingStatus::NoError,
+                        };
 
-                                match ctx.message_processing_status {
-                                    MessageProcessingStatus::InProgress => {
-                                        agent.state.queue.push_front(msg);
-                                    }
-                                    MessageProcessingStatus::NoError => {
-                                        agent.state.consumed.push(Message {
-                                            completed_time: Some(self.time),
-                                            ..msg
-                                        });
-                                    }
+                        agent.agent.on_tick(&mut ctx);
+                    }
+                    AgentMode::Reactive => {
+                        if let Some(msg) = queued_msg {
+                            let mut ctx = AgentContext {
+                                handle: agent_handle,
+                                name: &agent.name,
+                                time: self.time,
+                                commands: &mut command_buffer,
+                                requested_sleep_until: &mut requested_sleep_until,
+                                state: &agent.state,
+                                message_processing_status: MessageProcessingStatus::NoError,
+                            };
+
+                            // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
+                            agent.agent.on_message(&mut ctx, &msg);
+
+                            match ctx.message_processing_status {
+                                MessageProcessingStatus::InProgress => {
+                                    agent.state.queue.push_front(msg);
+                                }
+                                MessageProcessingStatus::NoError => {
+                                    agent.state.consumed.push(Message {
+                                        completed_time: Some(self.time),
+                                        ..msg
+                                    });
                                 }
                             }
                         }
-                        AgentMode::AsleepUntil(_) => {
-                            if self.enable_agent_asleep_cycles_metric {
-                                agent.metadata.asleep_cycle_count += 1;
-                            }
-                        }
-                        AgentMode::Dead => {}
                     }
+                    AgentMode::AsleepUntil(_) => {
+                        if self.enable_agent_asleep_cycles_metric {
+                            agent.metadata.asleep_cycle_count += 1;
+                        }
+                    }
+                    AgentMode::Dead => {}
+                }
+
+                if let Some(sleep_until) = requested_sleep_until {
+                    agent.state.mode = AgentMode::AsleepUntil(sleep_until);
                 }
             }
 
@@ -346,8 +364,19 @@ impl Simulation {
         debug!("Average processing time: {avg_wait_stats:?}");
     }
 
+    /// Returns an agent handle by name, using a linear scan for small simulations.
+    #[inline]
+    fn find_handle_by_name(&self, name: &str) -> Option<usize> {
+        if self.agents.len() <= 8 {
+            self.agents.iter().position(|agent| agent.name == name)
+        } else {
+            self.agent_name_handle_map.get(name).copied()
+        }
+    }
+
     /// Consume a `message_bus` of messages and disperse those messages to the agents.
     /// If there are any interrupts, process those immediately.
+    #[inline]
     fn process_command_buffer(&mut self, command_buffer: &mut Vec<AgentCommand>) {
         while let Some(command) = command_buffer.pop() {
             match command.ty {
@@ -485,5 +514,33 @@ mod tests {
         simulation.run();
         assert!(Some(simulation).is_some());
         Ok(())
+    }
+
+    #[test]
+    fn finds_agents_with_small_and_large_lookup_paths() {
+        let small_simulation = Simulation::new(SimulationParameters {
+            agent_initializers: vec![
+                periodic_consumer("first".to_string(), 1),
+                periodic_consumer("second".to_string(), 1),
+            ],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            small_simulation.find_by_name("second").map(|a| &a.name),
+            Some(&"second".to_string())
+        );
+
+        let large_simulation = Simulation::new(SimulationParameters {
+            agent_initializers: (0..9)
+                .map(|i| periodic_consumer(format!("agent-{i}"), 1))
+                .collect(),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            large_simulation.find_by_name("agent-8").map(|a| &a.name),
+            Some(&"agent-8".to_string())
+        );
     }
 }
