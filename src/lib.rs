@@ -235,76 +235,81 @@ impl Simulation {
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
 
-            for agent_handle in 0..self.agents.len() {
-                let agent = &mut self.agents[agent_handle];
-                if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
-                    if self.time >= wakeup_at {
-                        agent.state.mode = agent.state.wake_mode;
+            {
+                let agent_name_handle_map = &self.agent_name_handle_map;
+                for agent_handle in 0..self.agents.len() {
+                    let agent = &mut self.agents[agent_handle];
+                    if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
+                        if self.time >= wakeup_at {
+                            agent.state.mode = agent.state.wake_mode;
+                        }
                     }
-                }
-                let queued_msg = agent.state.queue.pop_front();
+                    let queued_msg = agent.state.queue.pop_front();
 
-                if self.enable_queue_depth_metric {
-                    agent
-                        .metadata
-                        .queue_depth_metrics
-                        .push(agent.state.queue.len());
-                }
-
-                requested_sleep_until = None;
-
-                match agent.state.mode {
-                    AgentMode::Proactive => {
-                        let mut ctx = AgentContext {
-                            handle: agent_handle,
-                            name: &agent.name,
-                            time: self.time,
-                            commands: &mut command_buffer,
-                            requested_sleep_until: &mut requested_sleep_until,
-                            state: &agent.state,
-                            message_processing_status: MessageProcessingStatus::NoError,
-                        };
-
-                        agent.agent.on_tick(&mut ctx);
+                    if self.enable_queue_depth_metric {
+                        agent
+                            .metadata
+                            .queue_depth_metrics
+                            .push(agent.state.queue.len());
                     }
-                    AgentMode::Reactive => {
-                        if let Some(msg) = queued_msg {
+
+                    requested_sleep_until = None;
+
+                    match agent.state.mode {
+                        AgentMode::Proactive => {
                             let mut ctx = AgentContext {
                                 handle: agent_handle,
                                 name: &agent.name,
                                 time: self.time,
                                 commands: &mut command_buffer,
                                 requested_sleep_until: &mut requested_sleep_until,
+                                agent_name_handle_map,
                                 state: &agent.state,
                                 message_processing_status: MessageProcessingStatus::NoError,
                             };
 
-                            // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
-                            agent.agent.on_message(&mut ctx, &msg);
+                            agent.agent.on_tick(&mut ctx);
+                        }
+                        AgentMode::Reactive => {
+                            if let Some(msg) = queued_msg {
+                                let mut ctx = AgentContext {
+                                    handle: agent_handle,
+                                    name: &agent.name,
+                                    time: self.time,
+                                    commands: &mut command_buffer,
+                                    requested_sleep_until: &mut requested_sleep_until,
+                                    state: &agent.state,
+                                    agent_name_handle_map,
+                                    message_processing_status: MessageProcessingStatus::NoError,
+                                };
 
-                            match ctx.message_processing_status {
-                                MessageProcessingStatus::InProgress => {
-                                    agent.state.queue.push_front(msg);
-                                }
-                                MessageProcessingStatus::NoError => {
-                                    agent.state.consumed.push(Message {
-                                        completed_time: Some(self.time),
-                                        ..msg
-                                    });
+                                // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
+                                agent.agent.on_message(&mut ctx, &msg);
+
+                                match ctx.message_processing_status {
+                                    MessageProcessingStatus::InProgress => {
+                                        agent.state.queue.push_front(msg);
+                                    }
+                                    MessageProcessingStatus::NoError => {
+                                        agent.state.consumed.push(Message {
+                                            completed_time: Some(self.time),
+                                            ..msg
+                                        });
+                                    }
                                 }
                             }
                         }
-                    }
-                    AgentMode::AsleepUntil(_) => {
-                        if self.enable_agent_asleep_cycles_metric {
-                            agent.metadata.asleep_cycle_count += 1;
+                        AgentMode::AsleepUntil(_) => {
+                            if self.enable_agent_asleep_cycles_metric {
+                                agent.metadata.asleep_cycle_count += 1;
+                            }
                         }
+                        AgentMode::Dead => {}
                     }
-                    AgentMode::Dead => {}
-                }
 
-                if let Some(sleep_until) = requested_sleep_until {
-                    agent.state.mode = AgentMode::AsleepUntil(sleep_until);
+                    if let Some(sleep_until) = requested_sleep_until {
+                        agent.state.mode = AgentMode::AsleepUntil(sleep_until);
+                    }
                 }
             }
 
@@ -418,7 +423,9 @@ impl Simulation {
         while let Some(command) = command_buffer.pop() {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
-                    if let Some(receiver) = self.find_by_name_mut(&message.destination) {
+                    if let Some(receiver_handle) = command.receiver_handle {
+                        let receiver =
+                            unsafe { self.agent_by_handle_mut_unchecked(receiver_handle) };
                         receiver.state.queue.push_back(message.clone());
                     }
 

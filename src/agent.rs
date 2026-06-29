@@ -2,7 +2,7 @@ use crate::{experiment::ObjectiveScore, message::Message, DiscreteTime};
 use dyn_clone::DynClone;
 use rand_distr::Distribution;
 use rand_distr::Poisson;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Possible states an Agent can be in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
@@ -80,6 +80,7 @@ impl Default for AgentState {
 pub struct AgentCommand {
     pub ty: AgentCommandType,
     pub agent_handle: usize,
+    pub receiver_handle: Option<usize>,
 }
 
 /// Actions the Agent can perform.
@@ -114,6 +115,9 @@ pub struct AgentContext<'a> {
     /// Sleep requested by the agent during the current tick.
     pub(crate) requested_sleep_until: &'a mut Option<DiscreteTime>,
 
+    /// Maps agent names to stable handles for internal message routing.
+    pub(crate) agent_name_handle_map: &'a HashMap<String, usize>,
+
     pub state: &'a AgentState,
 
     pub message_processing_status: MessageProcessingStatus,
@@ -131,6 +135,7 @@ impl AgentContext<'_> {
                 ..Default::default()
             }),
             agent_handle: self.handle,
+            receiver_handle: self.agent_name_handle_map.get(target).copied(),
         });
     }
 
@@ -140,6 +145,7 @@ impl AgentContext<'_> {
         self.commands.push(AgentCommand {
             ty: AgentCommandType::HaltSimulation(reason.to_string()),
             agent_handle: self.handle,
+            receiver_handle: None,
         });
     }
 
