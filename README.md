@@ -33,7 +33,7 @@ Use-cases:
 
 ``` toml
 [dependencies]
-simul = "0.4.1"
+simul = "0.5.1"
 ```
 
 ``` rust
@@ -52,13 +52,13 @@ fn main() {
         //   `consumer`: consumes w/ no side effects every second tick
         // Agents are powerful, and you can pass-in custom implementations here.
         agent_initializers: vec![
-            periodic_producing_agent("producer", 1, "consumer"),
-            periodic_consuming_agent("consumer", 2),
+            periodic_producer("producer", 1, "consumer"),
+            periodic_consumer("consumer", 2),
         ],
 
         // We pass in a halt condition so the simulation knows when it is finished.
         // In this case, it is "when the simulation is 10 ticks old, we're done."
-        halt_check: |s: &Simulation| s.time == 10,
+        halt_check: |s: &Simulation| s.time() == 10,
 
         ..Default::default()
     });
@@ -68,9 +68,9 @@ fn main() {
 
     // Post-simulation, you can do analytics on the stored metrics, data, etc.
     simulation
-        .agents
+        .agents()
         .iter()
-        .for_each(|agent| println!("{:#?}", agent));
+        .for_each(|agent| println!("{agent:#?}"));
 }
 ```
 
