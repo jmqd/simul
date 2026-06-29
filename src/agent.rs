@@ -21,6 +21,7 @@ pub enum AgentMode {
     Dead,
 }
 
+/// Per-agent bookkeeping collected by the simulation engine.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AgentMetadata {
     /// Metrics recording the depth of the queue at each tick of the Sim.
@@ -108,7 +109,7 @@ pub struct AgentContext<'a> {
     pub time: DiscreteTime,
 
     /// Internal buffer for commands (messages, sleep requests, etc.)
-    pub(crate) commands: &'a mut Vec<AgentCommandType>,
+    pub(crate) commands: &'a mut Vec<AgentCommand>,
 
     pub state: &'a AgentState,
 
@@ -117,27 +118,36 @@ pub struct AgentContext<'a> {
 
 impl AgentContext<'_> {
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
-        self.commands.push(AgentCommandType::SendMessage(Message {
-            source: self.name.to_string(),
-            destination: target.to_string(),
-            queued_time: self.time,
-            custom_payload: payload,
-            ..Default::default()
-        }));
+        self.commands.push(AgentCommand {
+            ty: AgentCommandType::SendMessage(Message {
+                source: self.name.to_string(),
+                destination: target.to_string(),
+                queued_time: self.time,
+                custom_payload: payload,
+                ..Default::default()
+            }),
+            agent_handle: self.handle,
+        });
     }
 
     /// Sends an interrupt to HALT the simulation.
     pub fn send_halt_interrupt(&mut self, reason: &str) {
-        self.commands
-            .push(AgentCommandType::HaltSimulation(reason.to_string()));
+        self.commands.push(AgentCommand {
+            ty: AgentCommandType::HaltSimulation(reason.to_string()),
+            agent_handle: self.handle,
+        });
     }
 
     /// Sleeps the Agent for a relative amount of time.
     pub fn sleep_for(&mut self, ticks: DiscreteTime) {
-        self.commands.push(AgentCommandType::Sleep(ticks));
+        self.commands.push(AgentCommand {
+            ty: AgentCommandType::Sleep(ticks),
+            agent_handle: self.handle,
+        });
     }
 
-    pub fn set_processing_status(&mut self, status: MessageProcessingStatus) {
+    /// Records whether the current message remains in progress or finished cleanly.
+    pub const fn set_processing_status(&mut self, status: MessageProcessingStatus) {
         self.message_processing_status = status;
     }
 }

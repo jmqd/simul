@@ -27,7 +27,7 @@ pub mod message;
 pub use agent::*;
 pub use message::*;
 
-use log::{debug, info};
+use log::{debug, info, log_enabled, Level};
 use std::collections::HashMap;
 
 /// `DiscreteTime` is a Simulation's internal representation of time.
@@ -63,7 +63,7 @@ pub struct Simulation {
     time: DiscreteTime,
 
     /// A halt check function: given the state of the Simulation determine halt or not.
-    halt_check: fn(&Simulation) -> bool,
+    halt_check: fn(&Self) -> bool,
 
     /// Whether to record metrics on queue depths. Takes space.
     enable_queue_depth_metric: bool,
@@ -192,14 +192,18 @@ impl Simulation {
     /// Runs the simulation. This should only be called after adding all the beginning state.
     pub fn run(&mut self) {
         self.mode = SimulationMode::Running;
-        let mut command_buffer: Vec<AgentCommand> = vec![];
+        let mut command_buffer: Vec<AgentCommand> = Vec::new();
 
         while !(self.halt_check)(self) {
             debug!("Running next tick of simulation at time {}", self.time);
-            self.wakeup_agents_scheduled_to_wakeup_now();
 
             for agent_handle in 0..self.agents.len() {
                 let agent = &mut self.agents[agent_handle];
+                if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
+                    if self.time >= wakeup_at {
+                        agent.state.mode = agent.state.wake_mode;
+                    }
+                }
                 let queued_msg = agent.state.queue.pop_front();
 
                 if self.enable_queue_depth_metric {
@@ -209,51 +213,44 @@ impl Simulation {
                         .push(agent.state.queue.len());
                 }
 
-                let mut agent_commands: Vec<AgentCommandType> = vec![];
+                {
+                    let mut ctx = AgentContext {
+                        handle: agent_handle,
+                        name: &agent.name,
+                        time: self.time,
+                        commands: &mut command_buffer,
+                        state: &agent.state,
+                        message_processing_status: MessageProcessingStatus::NoError,
+                    };
 
-                let mut ctx = AgentContext {
-                    handle: agent_handle,
-                    name: &agent.name,
-                    time: self.time,
-                    commands: &mut agent_commands,
-                    state: &agent.state,
-                    message_processing_status: MessageProcessingStatus::NoError,
-                };
+                    match agent.state.mode {
+                        AgentMode::Proactive => agent.agent.on_tick(&mut ctx),
+                        AgentMode::Reactive => {
+                            if let Some(msg) = queued_msg {
+                                // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
+                                agent.agent.on_message(&mut ctx, &msg);
 
-                match agent.state.mode {
-                    AgentMode::Proactive => agent.agent.on_tick(&mut ctx),
-                    AgentMode::Reactive => {
-                        if let Some(msg) = queued_msg {
-                            // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
-                            agent.agent.on_message(&mut ctx, &msg);
-
-                            match ctx.message_processing_status {
-                                MessageProcessingStatus::InProgress => {
-                                    agent.state.queue.push_front(msg);
-                                }
-                                MessageProcessingStatus::NoError => {
-                                    agent.state.consumed.push(Message {
-                                        completed_time: Some(self.time),
-                                        ..msg
-                                    });
+                                match ctx.message_processing_status {
+                                    MessageProcessingStatus::InProgress => {
+                                        agent.state.queue.push_front(msg);
+                                    }
+                                    MessageProcessingStatus::NoError => {
+                                        agent.state.consumed.push(Message {
+                                            completed_time: Some(self.time),
+                                            ..msg
+                                        });
+                                    }
                                 }
                             }
                         }
-                    }
-                    AgentMode::AsleepUntil(_) => {
-                        if self.enable_agent_asleep_cycles_metric {
-                            agent.metadata.asleep_cycle_count += 1;
+                        AgentMode::AsleepUntil(_) => {
+                            if self.enable_agent_asleep_cycles_metric {
+                                agent.metadata.asleep_cycle_count += 1;
+                            }
                         }
+                        AgentMode::Dead => {}
                     }
-                    AgentMode::Dead => {}
                 }
-
-                command_buffer.extend(agent_commands.into_iter().map(|command_type| {
-                    AgentCommand {
-                        ty: command_type,
-                        agent_handle,
-                    }
-                }));
             }
 
             // Consume all the new messages in the bus and deliver to agents.
@@ -264,7 +261,9 @@ impl Simulation {
         }
 
         self.mode = SimulationMode::Completed;
-        self.emit_completed_simulation_debug_logging();
+        if log_enabled!(Level::Debug) {
+            self.emit_completed_simulation_debug_logging();
+        }
     }
 
     /// A helper to calculate the average waiting time to process items.
@@ -374,17 +373,6 @@ impl Simulation {
                         unsafe { self.agent_by_handle_mut_unchecked(command.agent_handle) };
 
                     commanding_agent.state.mode = AgentMode::AsleepUntil(sleep_until);
-                }
-            }
-        }
-    }
-
-    /// An internal function used to wakeup sleeping Agents due to wake.
-    fn wakeup_agents_scheduled_to_wakeup_now(&mut self) {
-        for agent in &mut self.agents {
-            if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
-                if self.time >= wakeup_at {
-                    agent.state.mode = agent.state.wake_mode;
                 }
             }
         }
