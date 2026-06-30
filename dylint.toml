@@ -1,0 +1,15 @@
+[workspace.metadata.dylint]
+libraries = [
+    { git = "https://github.com/trailofbits/dylint", tag = "v6.0.1", pattern = [
+        "examples/general/non_local_effect_before_unhandled_error",
+        "examples/general/basic_dead_store",
+        "examples/general/incorrect_matches_operation",
+        "examples/general/non_thread_safe_call_in_test",
+        "examples/general/crate_wide_allow",
+        "examples/supplementary/inconsistent_struct_pattern",
+        "examples/restriction/assert_eq_arg_misordering",
+    ] },
+]
+
+[non_local_effect_before_unhandled_error]
+work_limit = 500_000

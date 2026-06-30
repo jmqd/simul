@@ -2,7 +2,7 @@
 default:
     @just --list
 
-# Run all checks (test, lint, fmt, audit, doc, licenses, udeps)
+# Run all mandatory checks (test, clippy, fmt, audit, doc, licenses, udeps)
 check: test lint fmt-check audit doc check-licenses check-udeps
 
 # Fix all auto-fixable issues
@@ -15,6 +15,14 @@ test:
 # Run clippy lints
 lint:
     cargo clippy --all-features --all-targets -- -D warnings
+
+# Install the nightly components required by the pinned Dylint libraries
+dylint-toolchain:
+    rustup toolchain install nightly-2026-04-16 --component rust-src --component rustc-dev --component llvm-tools-preview
+
+# Run Dylint lints
+dylint: dylint-toolchain
+    CARGO_NET_GIT_FETCH_WITH_CLI=true cargo dylint --all -- --all-features --all-targets
 
 # Check formatting
 fmt-check:
