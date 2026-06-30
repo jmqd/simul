@@ -49,6 +49,9 @@ rand_distr = "0.6.0"
 log = "0.4.33"
 dyn-clone = "1.0.20"
 
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
 [lints.clippy]
 all = { level = "deny", priority = -3 }
 pedantic = { level = "warn", priority = -2 }
