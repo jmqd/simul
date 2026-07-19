@@ -44,7 +44,7 @@ name = "simulated_annealing_benchmark"
 harness = false
 
 [dependencies]
-rand = {version = "0.10.1", features = ["alloc"]}
+rand = {version = "0.10.2", features = ["alloc"]}
 rand_distr = "0.6.0"
 log = "0.4.33"
 dyn-clone = "1.0.20"
