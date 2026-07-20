@@ -1,3 +1,7 @@
+pub mod replicated;
+
+pub use replicated::*;
+
 use crate::Simulation;
 use crate::SimulationParameters;
 use rand::RngExt;
