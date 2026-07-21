@@ -337,6 +337,11 @@ const fn short_multiple(value: u16, divisor: u16) -> bool {
     divisor != 0 && value % divisor == 0
 }
 
+fn assignee_for_ticket(ticket_id: u16) -> u8 {
+    let assignee = ticket_id.saturating_sub(1) % u16::from(DEVELOPER_COUNT);
+    u8::try_from(assignee).unwrap_or(0)
+}
+
 fn developer_name(id: u8) -> &'static str {
     match id {
         0 => "alice",
@@ -686,7 +691,7 @@ impl Agent for ProductManager {
 
         let ticket_id = self.next_ticket_id;
         self.next_ticket_id = self.next_ticket_id.saturating_add(1);
-        let assignee = ticket_id.wrapping_sub(1).to_le_bytes()[0] % DEVELOPER_COUNT;
+        let assignee = assignee_for_ticket(ticket_id);
         let coding_ticks = self.params.base_coding_ticks.saturating_add(ticket_id % 5);
         let needs_decision = short_multiple(ticket_id, self.params.decision_request_every);
 
@@ -1138,6 +1143,15 @@ mod tests {
             ci_failure_every: 0,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn ticket_assignment_uses_the_full_identifier() {
+        assert_eq!(assignee_for_ticket(255), 2);
+        assert_eq!(assignee_for_ticket(256), 0);
+        assert_eq!(assignee_for_ticket(257), 1);
+        assert_eq!(assignee_for_ticket(258), 2);
+        assert_eq!(assignee_for_ticket(520), 0);
     }
 
     #[test]

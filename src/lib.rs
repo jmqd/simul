@@ -244,7 +244,11 @@ impl Simulation {
                             agent.state.mode = agent.state.wake_mode;
                         }
                     }
-                    let queued_msg = agent.state.queue.pop_front();
+                    let queued_msg = if agent.state.mode == AgentMode::Reactive {
+                        agent.state.queue.pop_front()
+                    } else {
+                        None
+                    };
 
                     if self.enable_queue_depth_metric {
                         agent
@@ -508,6 +512,36 @@ mod tests {
         let consumed_stats = simulation.calc_consumed_len_statistics();
         assert_eq!(consumed_stats.get("producer"), Some(&0));
         assert_eq!(consumed_stats.get("consumer"), Some(&4));
+    }
+
+    #[test]
+    fn sleeping_reactive_agent_preserves_messages_until_wakeup() {
+        let mut consumer = periodic_consumer("consumer".to_string(), 1);
+        consumer.options.initial_mode = AgentMode::AsleepUntil(3);
+        consumer.options.wake_mode = AgentMode::Reactive;
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: vec![
+                periodic_producer("producer".to_string(), 1, "consumer".to_string()),
+                consumer,
+            ],
+            halt_check: |simulation: &Simulation| simulation.time == 5,
+            ..Default::default()
+        });
+
+        simulation.run();
+
+        assert_eq!(
+            simulation.calc_produced_len_statistics().get("producer"),
+            Some(&5)
+        );
+        assert_eq!(
+            simulation.calc_consumed_len_statistics().get("consumer"),
+            Some(&2)
+        );
+        assert_eq!(
+            simulation.calc_queue_len_statistics().get("consumer"),
+            Some(&3)
+        );
     }
 
     #[test]

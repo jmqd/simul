@@ -6,15 +6,25 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      flake-utils,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
 
         pkgs = import nixpkgs { inherit system overlays; };
 
-        rustToolchain =
-          pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        rustToolchainConfig = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);
+        rustToolchainChannel = rustToolchainConfig.toolchain.channel;
+
+        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
         rustPlatform = pkgs.makeRustPlatform {
           cargo = rustToolchain;
@@ -64,10 +74,9 @@
           fi
         '';
 
-
+        # Keep this checkout on the pinned Nix toolchain. Nested projects that explicitly
+        # request another channel still delegate to the user's rustup installation.
         dylintCargo = pkgs.writeShellScriptBin "cargo" ''
-          project_root=${toString ./.}
-
           find_toolchain_dir() {
             dir="$PWD"
             while [ "$dir" != "/" ]; do
@@ -79,34 +88,50 @@
             done
           }
 
-          toolchain_dir="$(find_toolchain_dir || true)"
-          if [ -n "$toolchain_dir" ] && [ "$toolchain_dir" != "$project_root" ]; then
-            toolchain_file="$toolchain_dir/rust-toolchain"
-            if [ -f "$toolchain_dir/rust-toolchain.toml" ]; then
-              toolchain_file="$toolchain_dir/rust-toolchain.toml"
-            fi
+          toolchain="''${RUSTUP_TOOLCHAIN:-}"
+          if [ -z "$toolchain" ]; then
+            toolchain_dir="$(find_toolchain_dir || true)"
+            if [ -n "$toolchain_dir" ]; then
+              toolchain_file="$toolchain_dir/rust-toolchain"
+              if [ -f "$toolchain_dir/rust-toolchain.toml" ]; then
+                toolchain_file="$toolchain_dir/rust-toolchain.toml"
+              fi
 
-            toolchain="$(${pkgs.gnused}/bin/sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$toolchain_file" | ${pkgs.coreutils}/bin/head -n 1)"
-            if [ -z "$toolchain" ]; then
-              toolchain="$(${pkgs.coreutils}/bin/head -n 1 "$toolchain_file")"
+              toolchain="$(${pkgs.gnused}/bin/sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$toolchain_file" | ${pkgs.coreutils}/bin/head -n 1)"
+              if [ -z "$toolchain" ]; then
+                toolchain="$(${pkgs.coreutils}/bin/head -n 1 "$toolchain_file")"
+              fi
             fi
+          fi
 
-            exec ${pkgs.rustup}/bin/rustup run "$toolchain" cargo "$@"
+          if [ -n "$toolchain" ] && [ "$toolchain" != "${rustToolchainChannel}" ]; then
+            cargo_path="$(${pkgs.rustup}/bin/rustup which --toolchain "$toolchain" cargo)"
+            toolchain_bin="$(${pkgs.coreutils}/bin/dirname "$cargo_path")"
+            toolchain_root="$(${pkgs.coreutils}/bin/dirname "$toolchain_bin")"
+            toolchain_name="$(${pkgs.coreutils}/bin/basename "$toolchain_root")"
+            exec ${pkgs.coreutils}/bin/env \
+              PATH="$toolchain_bin:$PATH" \
+              RUSTC="$toolchain_bin/rustc" \
+              RUSTDOC="$toolchain_bin/rustdoc" \
+              RUSTUP_TOOLCHAIN="$toolchain_name" \
+              "$cargo_path" "$@"
           fi
 
           exec ${rustToolchain}/bin/cargo "$@"
         '';
 
-
         simul = rustPlatform.buildRustPackage {
           pname = "simul";
           version = "0.5.1";
           src = ./.;
-          cargoLock = { lockFile = ./Cargo.lock; };
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
           nativeBuildInputs = [ ];
           buildInputs = [ ];
         };
-      in {
+      in
+      {
         packages.default = simul;
         apps.default = flake-utils.lib.mkApp { drv = simul; };
 
@@ -138,5 +163,6 @@
             export RUST_SRC_PATH=${rustToolchain}/lib/rustlib/src/rust/library
           '';
         };
-      });
+      }
+    );
 }

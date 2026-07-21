@@ -492,6 +492,8 @@ where
         return Ok(Vec::new());
     }
 
+    validate_candidate_ids(candidates)?;
+
     let (replications, trial_count) =
         checked_trial_count::<WE>(candidates.len(), plan.replications.get())?;
 
@@ -499,8 +501,6 @@ where
     output
         .try_reserve_exact(trial_count)
         .map_err(|source| reserve_error(ReplicationAllocation::TrialRecords, None, source))?;
-
-    validate_candidate_ids(candidates)?;
 
     let worker_count =
         capped_worker_count(plan.workers, trial_count, thread::available_parallelism());
