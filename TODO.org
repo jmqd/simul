@@ -12,6 +12,16 @@
 ** IDEA Re-evaluate targeting system architecture for messages
 Should agents be passed as a graph?
 Should agents be in charge of which tickets they receive?
+** IDEA Implement "Interning with Fallback" for Agent Identity
+Refactor the engine to use `AgentId` (usize) instead of Strings for the hot path.
+1. Define `pub type AgentId = usize`.
+2. Update `Message` to use `AgentId` for source/destination.
+3. Add a `start(&mut self, directory: &AgentDirectory)` lifecycle hook to `Agent`.
+   - This allows agents to look up and cache IDs of their peers *before* the simulation loop.
+   - Preserves O(1) messaging performance (array indexing) vs O(N) HashMap lookups.
+4. Update `AgentContext` to support both fast `send(id)` and prototyping-friendly `send_by_name(str)`.
+   - `send_by_name` would perform the lookup on the fly (slower).
+5. Note: This assumes static topology (no dynamic spawning). If dynamic spawning is added, `AgentDirectory` needs to be observable.
 ** TODO Remove the "stringly-typed" feel of agents currently.
 Change the API so that agent names are statically determined?
 ** TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
