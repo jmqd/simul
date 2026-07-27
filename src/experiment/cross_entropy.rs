@@ -577,7 +577,14 @@ fn circular_mean<const N: usize>(
 /// Returns the shortest signed displacement from `from` to `to`.
 #[inline]
 fn circular_delta(from: f64, to: f64) -> f64 {
-    (to - from + 0.5).rem_euclid(1.0) - 0.5
+    let delta = to - from;
+    if delta >= 0.5 {
+        delta - 1.0
+    } else if delta < -0.5 {
+        delta + 1.0
+    } else {
+        delta
+    }
 }
 
 /// Projects a value into its normalized domain.
@@ -684,6 +691,19 @@ mod tests {
             search.ask_with_standard_normal(|_| f64::INFINITY),
             Err(CrossEntropyError::InvalidStandardNormal { dimension: 0 })
         );
+    }
+
+    #[test]
+    fn circular_delta_wraps_with_a_negative_half_turn_tie() {
+        let below_half_turn = f64::from_bits(0.5_f64.to_bits() - 1);
+        let above_half_turn = f64::from_bits(0.5_f64.to_bits() + 1);
+
+        assert!(circular_delta(0.0, below_half_turn) > 0.0);
+        assert_eq!(circular_delta(0.0, 0.5).to_bits(), (-0.5_f64).to_bits());
+        assert_eq!(circular_delta(0.5, 0.0).to_bits(), (-0.5_f64).to_bits());
+        assert!(circular_delta(0.0, above_half_turn) < 0.0);
+        assert_close(circular_delta(0.9, 0.1), 0.2, f64::EPSILON);
+        assert_close(circular_delta(0.1, 0.9), -0.2, f64::EPSILON);
     }
 
     #[test]
