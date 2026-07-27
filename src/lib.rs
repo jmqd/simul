@@ -4,13 +4,14 @@
 //! `simul` is a *discrete-event simulator* using *incremental time
 //! progression*, with [M/M/c queues](https://en.wikipedia.org/wiki/M/M/c_queue)
 //! for interactions between agents. It also supports some forms of
-//! experimentation and simulated annealing to replicate a simulation many
-//! times, varying the simulation parameters.
+//! experimentation, simulated annealing, and cross-entropy optimization over
+//! repeated simulation runs with varying parameters.
 //!
 //! Use-cases:
 //! - [Discrete-event simulation](https://en.wikipedia.org/wiki/Discrete-event_simulation)
 //! - [Complex adaptive systems](https://authors.library.caltech.edu/60491/1/MGM%20113.pdf)
 //! - [Simulated annealing](https://en.wikipedia.org/wiki/Simulated_annealing)
+//! - [Cross-entropy method](https://en.wikipedia.org/wiki/Cross-entropy_method)
 //! - [Job-shop scheduling](https://en.wikipedia.org/wiki/Job-shop_scheduling)
 //! - [Birth-death processes](https://en.wikipedia.org/wiki/Birth%E2%80%93death_process)
 //! - [Computer experiments](https://en.wikipedia.org/wiki/Computer_experiment)
