@@ -323,7 +323,11 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         }
 
         let elite_samples = elite_count(valid_samples, self.elite_fraction);
-        let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
+        if valid_samples == samples.len() {
+            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_valid_samples);
+        } else {
+            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
+        }
         let elites = &samples[..elite_samples];
         let mut generation_best = elites[0];
         for sample in &elites[1..] {
@@ -519,6 +523,15 @@ fn compare_samples<const N: usize>(
         (false, true) => Ordering::Less,
         (false, false) => right.score.total_cmp(&left.score),
     }
+}
+
+/// Orders two known-valid scores from greatest to least.
+#[inline]
+fn compare_valid_samples<const N: usize>(
+    left: &CrossEntropySample<N>,
+    right: &CrossEntropySample<N>,
+) -> Ordering {
+    right.score.total_cmp(&left.score)
 }
 
 /// Computes the ceiling of the elite fraction without a float-to-int cast.
