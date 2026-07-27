@@ -287,17 +287,21 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         &self,
         mut standard_normal: impl FnMut(usize) -> f64,
     ) -> Result<[f64; N], CrossEntropyError> {
-        let mut invalid_dimension = None;
+        let mut all_finite = true;
         let point = self.sample_unchecked(|dimension| {
             let value = standard_normal(dimension);
-            if !value.is_finite() && invalid_dimension.is_none() {
-                invalid_dimension = Some(dimension);
-            }
+            all_finite &= value.is_finite();
             value
         });
-        invalid_dimension.map_or(Ok(point), |dimension| {
+        if all_finite {
+            Ok(point)
+        } else {
+            let dimension = point
+                .iter()
+                .position(|value| !value.is_finite())
+                .unwrap_or(0);
             Err(CrossEntropyError::InvalidStandardNormal { dimension })
-        })
+        }
     }
 
     /// Updates the proposal distribution from scored samples.
@@ -698,6 +702,14 @@ mod tests {
         assert_eq!(
             search.ask_with_standard_normal(|_| f64::INFINITY),
             Err(CrossEntropyError::InvalidStandardNormal { dimension: 0 })
+        );
+        assert_eq!(
+            search.ask_with_standard_normal(|dimension| if dimension == 1 {
+                f64::NAN
+            } else {
+                0.0
+            }),
+            Err(CrossEntropyError::InvalidStandardNormal { dimension: 1 })
         );
     }
 
