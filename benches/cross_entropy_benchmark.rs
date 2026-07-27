@@ -126,9 +126,14 @@ fn run_annealing_search() -> f64 {
 /// Measures optimizer overhead independent of simulation cost.
 fn cross_entropy_generation_benchmarks(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("cross_entropy_generation");
-    for population in [24_u64, 96, 512] {
+    for population in [12_u64, 24, 96, 512] {
         group.throughput(Throughput::Elements(population));
         match population {
+            12 => {
+                group.bench_function(BenchmarkId::new("ask_evaluate_tell", population), |bench| {
+                    bench.iter(|| black_box(run_generation::<12>()));
+                })
+            }
             24 => {
                 group.bench_function(BenchmarkId::new("ask_evaluate_tell", population), |bench| {
                     bench.iter(|| black_box(run_generation::<24>()));
