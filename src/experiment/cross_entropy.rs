@@ -499,14 +499,13 @@ fn validate_samples<const N: usize>(
 }
 
 /// Returns whether a coordinate belongs to its normalized domain.
+#[allow(clippy::manual_range_contains)]
 #[inline]
 fn valid_coordinate(value: f64, dimension: CrossEntropyDimension) -> bool {
-    value.is_finite()
-        && value >= 0.0
-        && match dimension {
-            CrossEntropyDimension::Linear => value <= 1.0,
-            CrossEntropyDimension::Circular => value < 1.0,
-        }
+    match dimension {
+        CrossEntropyDimension::Linear => value >= 0.0 && value <= 1.0,
+        CrossEntropyDimension::Circular => value >= 0.0 && value < 1.0,
+    }
 }
 
 /// Orders valid scores from greatest to least and places NaNs last.
