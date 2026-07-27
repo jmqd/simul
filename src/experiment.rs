@@ -1,3 +1,6 @@
+pub mod cross_entropy;
+
+pub use cross_entropy::*;
 pub mod replicated;
 
 pub use replicated::*;
