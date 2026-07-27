@@ -400,6 +400,9 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
 
     /// Fits and smooths distribution parameters using `elites`.
     fn fit(&mut self, elites: &[CrossEntropySample<N>]) {
+        if self.learning_rate <= 0.0 {
+            return;
+        }
         let inverse_elite_count = 1.0 / elites.len() as f64;
         let retained_weight = 1.0 - self.learning_rate;
 
