@@ -301,9 +301,9 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     ///
     /// This maximizes `score`, ignores NaN scores, and accepts infinite scores.
     /// Every coordinate belonging to a non-NaN score must be normalized for its
-    /// dimension. Samples are reordered in descending score order to avoid an
-    /// internal allocation. If no score is usable, this returns `Ok(None)` and
-    /// leaves the optimizer unchanged.
+    /// dimension. Samples are partitioned in place so the elite subset precedes
+    /// the rest of the population, avoiding both an internal allocation and a
+    /// full sort. If no score is usable, this returns `Ok(None)` unchanged.
     ///
     /// # Errors
     ///
@@ -314,19 +314,23 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         samples: &mut [CrossEntropySample<N>],
     ) -> Result<Option<CrossEntropyUpdate>, CrossEntropyError> {
         validate_samples(samples, &self.dimensions)?;
-        samples.sort_unstable_by(compare_samples);
-
         let valid_samples = samples
             .iter()
-            .take_while(|sample| !sample.score.is_nan())
+            .filter(|sample| !sample.score.is_nan())
             .count();
         if valid_samples == 0 {
             return Ok(None);
         }
 
         let elite_samples = elite_count(valid_samples, self.elite_fraction);
+        let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
         let elites = &samples[..elite_samples];
-        let generation_best = samples[0];
+        let mut generation_best = elites[0];
+        for sample in &elites[1..] {
+            if sample.score >= generation_best.score {
+                generation_best = *sample;
+            }
+        }
         if self
             .best
             .is_none_or(|best| generation_best.score >= best.score)
