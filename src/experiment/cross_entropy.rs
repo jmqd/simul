@@ -304,9 +304,10 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     ///
     /// This maximizes `score`, ignores NaN scores, and accepts infinite scores.
     /// Every coordinate belonging to a non-NaN score must be normalized for its
-    /// dimension. Samples are partitioned in place so the elite subset precedes
-    /// the rest of the population, avoiding both an internal allocation and a
-    /// full sort. If no score is usable, this returns `Ok(None)` unchanged.
+    /// dimension. Samples are reordered in place so the elite subset precedes
+    /// the rest of the population without an internal allocation. Small
+    /// populations are sorted; larger populations are partitioned at the elite
+    /// boundary. If no score is usable, this returns `Ok(None)` unchanged.
     ///
     /// # Errors
     ///
