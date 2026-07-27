@@ -54,6 +54,15 @@ fn objective(point: &[f64; DIMENSIONS]) -> f64 {
     0.03_f64.mul_add(ripple, -squared_error)
 }
 
+/// Cheap objective used to expose optimizer overhead in one-generation benchmarks.
+#[inline]
+fn quadratic_objective(point: &[f64; DIMENSIONS]) -> f64 {
+    -point.iter().zip(TARGET).fold(0.0, |sum, (actual, target)| {
+        let difference = actual - target;
+        difference.mul_add(difference, sum)
+    })
+}
+
 /// Executes one ask/evaluate/tell generation of a compile-time population size.
 fn run_generation<const POPULATION: usize>() -> f64 {
     let mut optimizer = optimizer(0.6);
@@ -61,7 +70,7 @@ fn run_generation<const POPULATION: usize>() -> f64 {
     let mut samples = [CrossEntropySample::new([0.0; DIMENSIONS], f64::NAN); POPULATION];
     for sample in &mut samples {
         sample.point = optimizer.ask(&mut rng);
-        sample.score = objective(&sample.point);
+        sample.score = quadratic_objective(&sample.point);
     }
     if let Err(error) = optimizer.tell(&mut samples) {
         panic!("benchmark population is invalid: {error}");
@@ -129,26 +138,30 @@ fn cross_entropy_generation_benchmarks(criterion: &mut Criterion) {
     for population in [12_u64, 24, 96, 512] {
         group.throughput(Throughput::Elements(population));
         match population {
-            12 => {
-                group.bench_function(BenchmarkId::new("ask_evaluate_tell", population), |bench| {
+            12 => group.bench_function(
+                BenchmarkId::new("ask_quadratic_tell", population),
+                |bench| {
                     bench.iter(|| black_box(run_generation::<12>()));
-                })
-            }
-            24 => {
-                group.bench_function(BenchmarkId::new("ask_evaluate_tell", population), |bench| {
+                },
+            ),
+            24 => group.bench_function(
+                BenchmarkId::new("ask_quadratic_tell", population),
+                |bench| {
                     bench.iter(|| black_box(run_generation::<24>()));
-                })
-            }
-            96 => {
-                group.bench_function(BenchmarkId::new("ask_evaluate_tell", population), |bench| {
+                },
+            ),
+            96 => group.bench_function(
+                BenchmarkId::new("ask_quadratic_tell", population),
+                |bench| {
                     bench.iter(|| black_box(run_generation::<96>()));
-                })
-            }
-            512 => {
-                group.bench_function(BenchmarkId::new("ask_evaluate_tell", population), |bench| {
+                },
+            ),
+            512 => group.bench_function(
+                BenchmarkId::new("ask_quadratic_tell", population),
+                |bench| {
                     bench.iter(|| black_box(run_generation::<512>()));
-                })
-            }
+                },
+            ),
             _ => panic!("unregistered benchmark population"),
         };
     }
