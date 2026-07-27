@@ -9,6 +9,9 @@ use rand_distr::StandardNormal;
 
 use super::ObjectiveScore;
 
+/// Largest population for which full sorting beats generic selection overhead.
+const FULL_SORT_POPULATION_THRESHOLD: usize = 12;
+
 /// Geometry used by one normalized search dimension.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CrossEntropyDimension {
@@ -323,7 +326,13 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         }
 
         let elite_samples = elite_count(valid_samples, self.elite_fraction);
-        if valid_samples == samples.len() {
+        if samples.len() <= FULL_SORT_POPULATION_THRESHOLD {
+            if valid_samples == samples.len() {
+                samples.sort_unstable_by(compare_valid_samples);
+            } else {
+                samples.sort_unstable_by(compare_samples);
+            }
+        } else if valid_samples == samples.len() {
             let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_valid_samples);
         } else {
             let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
