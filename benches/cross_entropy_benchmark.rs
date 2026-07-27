@@ -17,6 +17,11 @@ const GENERATIONS: usize = 20;
 const SEARCH_EVALUATIONS: usize = POPULATION_SIZE * GENERATIONS;
 /// Global optimum around which the bounded toy objective is shaped.
 const TARGET: [f64; DIMENSIONS] = [0.08, 0.72, 0.24, 0.81, 0.35];
+/// Reusable finite standard-normal quantiles for the caller-supplied sampling path.
+const STANDARD_NORMAL_VARIATES: [f64; 16] = [
+    -1.534, -1.151, -0.887, -0.674, -0.488, -0.319, -0.157, -0.052, 0.052, 0.157, 0.319, 0.488,
+    0.674, 0.887, 1.151, 1.534,
+];
 
 /// Creates the deterministic optimizer used by overhead and search benchmarks.
 fn optimizer(learning_rate: f64) -> CrossEntropyOptimizer<DIMENSIONS> {
@@ -70,6 +75,28 @@ fn run_generation<const POPULATION: usize>() -> f64 {
     let mut samples = [CrossEntropySample::new([0.0; DIMENSIONS], f64::NAN); POPULATION];
     for sample in &mut samples {
         sample.point = optimizer.ask(&mut rng);
+        sample.score = quadratic_objective(&sample.point);
+    }
+    if let Err(error) = optimizer.tell(&mut samples) {
+        panic!("benchmark population is invalid: {error}");
+    }
+    optimizer.best().map_or(f64::NAN, |sample| sample.score)
+}
+
+/// Executes one generation through the deterministic caller-supplied sampling path.
+fn run_callback_generation<const POPULATION: usize>() -> f64 {
+    let mut optimizer = optimizer(0.6);
+    let mut samples = [CrossEntropySample::new([0.0; DIMENSIONS], f64::NAN); POPULATION];
+    let standard_normal_variates = black_box(&STANDARD_NORMAL_VARIATES);
+    for (sample_index, sample) in samples.iter_mut().enumerate() {
+        let offset = sample_index * DIMENSIONS;
+        let point = optimizer.ask_with_standard_normal(|dimension| {
+            standard_normal_variates[(offset + dimension) % standard_normal_variates.len()]
+        });
+        sample.point = match point {
+            Ok(point) => point,
+            Err(error) => panic!("benchmark standard-normal variate is invalid: {error}"),
+        };
         sample.score = quadratic_objective(&sample.point);
     }
     if let Err(error) = optimizer.tell(&mut samples) {
@@ -138,30 +165,46 @@ fn cross_entropy_generation_benchmarks(criterion: &mut Criterion) {
     for population in [12_u64, 24, 96, 512] {
         group.throughput(Throughput::Elements(population));
         match population {
-            12 => group.bench_function(
-                BenchmarkId::new("ask_quadratic_tell", population),
-                |bench| {
-                    bench.iter(|| black_box(run_generation::<12>()));
-                },
-            ),
-            24 => group.bench_function(
-                BenchmarkId::new("ask_quadratic_tell", population),
-                |bench| {
-                    bench.iter(|| black_box(run_generation::<24>()));
-                },
-            ),
-            96 => group.bench_function(
-                BenchmarkId::new("ask_quadratic_tell", population),
-                |bench| {
-                    bench.iter(|| black_box(run_generation::<96>()));
-                },
-            ),
-            512 => group.bench_function(
-                BenchmarkId::new("ask_quadratic_tell", population),
-                |bench| {
-                    bench.iter(|| black_box(run_generation::<512>()));
-                },
-            ),
+            12 => {
+                group.bench_function(
+                    BenchmarkId::new("ask_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_generation::<12>())),
+                );
+                group.bench_function(
+                    BenchmarkId::new("ask_callback_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_callback_generation::<12>())),
+                )
+            }
+            24 => {
+                group.bench_function(
+                    BenchmarkId::new("ask_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_generation::<24>())),
+                );
+                group.bench_function(
+                    BenchmarkId::new("ask_callback_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_callback_generation::<24>())),
+                )
+            }
+            96 => {
+                group.bench_function(
+                    BenchmarkId::new("ask_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_generation::<96>())),
+                );
+                group.bench_function(
+                    BenchmarkId::new("ask_callback_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_callback_generation::<96>())),
+                )
+            }
+            512 => {
+                group.bench_function(
+                    BenchmarkId::new("ask_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_generation::<512>())),
+                );
+                group.bench_function(
+                    BenchmarkId::new("ask_callback_quadratic_tell", population),
+                    |bench| bench.iter(|| black_box(run_callback_generation::<512>())),
+                )
+            }
             _ => panic!("unregistered benchmark population"),
         };
     }
