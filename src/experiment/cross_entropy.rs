@@ -770,6 +770,26 @@ mod tests {
     }
 
     #[test]
+    fn circular_mean_retains_fallback_for_antipodal_elites() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.25], [0.4])
+                .with_dimensions([CrossEntropyDimension::Circular])
+                .with_minimum_standard_deviation([0.001])
+                .with_elite_fraction(1.0)
+                .with_learning_rate(1.0),
+        );
+        let mut samples = [
+            CrossEntropySample::new([0.0], 1.0),
+            CrossEntropySample::new([0.5], 1.0),
+        ];
+        let result = search.tell(&mut samples);
+        assert!(result.is_ok());
+
+        assert_close(search.mean()[0], 0.25, f64::EPSILON);
+        assert_close(search.standard_deviation()[0], 0.25, f64::EPSILON);
+    }
+
+    #[test]
     fn zero_learning_rate_provides_a_fixed_proposal_distribution() {
         let mut search = optimizer(
             CrossEntropyConfig::new([0.5], [0.2])
