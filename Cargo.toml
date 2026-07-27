@@ -43,6 +43,10 @@ harness = false
 name = "simulated_annealing_benchmark"
 harness = false
 
+
+[[bench]]
+name = "cross_entropy_benchmark"
+harness = false
 [dependencies]
 rand = {version = "0.10.2", features = ["alloc"]}
 rand_distr = "0.6.0"
