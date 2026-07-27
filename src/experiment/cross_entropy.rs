@@ -547,14 +547,10 @@ fn compare_valid_samples<const N: usize>(
     right.score.total_cmp(&left.score)
 }
 
-/// Computes the ceiling of the elite fraction without a float-to-int cast.
+/// Computes the ceiling of the elite fraction in constant time.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn elite_count(valid_samples: usize, elite_fraction: f64) -> usize {
-    let target = valid_samples as f64 * elite_fraction;
-    let mut count = 1;
-    while count < valid_samples && (count as f64) < target {
-        count += 1;
-    }
-    count
+    ((valid_samples as f64 * elite_fraction).ceil() as usize).clamp(1, valid_samples)
 }
 
 /// Computes a circular mean, retaining `fallback` for an undefined resultant.
@@ -636,6 +632,15 @@ mod tests {
             (actual - expected).abs() <= tolerance,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    fn elite_count_rounds_up_and_clamps_to_the_population() {
+        assert_eq!(elite_count(10, 0.01), 1);
+        assert_eq!(elite_count(10, 0.2), 2);
+        assert_eq!(elite_count(10, 0.21), 3);
+        assert_eq!(elite_count(10, 1.0), 10);
+        assert_eq!(elite_count(usize::MAX, 1.0), usize::MAX);
     }
 
     #[test]
