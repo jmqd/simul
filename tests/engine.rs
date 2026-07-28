@@ -81,6 +81,54 @@ fn unknown_destination_records_produced_message_without_delivery() {
 }
 
 #[derive(Clone, Debug)]
+struct BurstSender;
+
+impl Agent for BurstSender {
+    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
+
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        ctx.send("receiver", Some(vec![1]));
+        ctx.send("receiver", Some(vec![2]));
+    }
+}
+
+#[test]
+fn messages_sent_by_one_callback_preserve_call_order() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            proactive_agent("sender", BurstSender),
+            periodic_consumer("receiver".to_string(), 1),
+        ],
+        halt_check: |simulation| simulation.time() == 1,
+        ..Default::default()
+    });
+
+    simulation.run();
+
+    let payloads = |messages: &[Message]| {
+        messages
+            .iter()
+            .map(|message| message.custom_payload.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        simulation.produced_for_agent("sender").map(payloads),
+        Some(vec![Some(vec![1]), Some(vec![2])])
+    );
+    assert_eq!(
+        simulation.find_by_name("receiver").map(|agent| {
+            agent
+                .state
+                .queue
+                .iter()
+                .map(|message| message.custom_payload.clone())
+                .collect::<Vec<_>>()
+        }),
+        Some(vec![Some(vec![1]), Some(vec![2])])
+    );
+}
+
+#[derive(Clone, Debug)]
 struct SlowConsumer;
 
 impl Agent for SlowConsumer {

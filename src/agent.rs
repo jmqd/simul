@@ -124,6 +124,9 @@ pub struct AgentContext<'a> {
 }
 
 impl AgentContext<'_> {
+    /// Queues a message for end-of-tick delivery.
+    ///
+    /// Multiple messages sent by one callback are delivered in call order.
     #[inline]
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
         self.commands.push(AgentCommand {

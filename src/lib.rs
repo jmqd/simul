@@ -421,11 +421,10 @@ impl Simulation {
         }
     }
 
-    /// Consume a `message_bus` of messages and disperse those messages to the agents.
-    /// If there are any interrupts, process those immediately.
+    /// Applies buffered Agent commands in the order they were issued.
     #[inline]
     fn process_command_buffer(&mut self, command_buffer: &mut Vec<AgentCommand>) {
-        while let Some(command) = command_buffer.pop() {
+        for command in command_buffer.drain(..) {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
                     if let Some(receiver_handle) = command.receiver_handle {
