@@ -41,7 +41,7 @@ pub fn monte_carlo_search(
 
         let score = objective_function(&simulation);
         if score > high_score {
-            approx_optimal_simulation = Some(simulation.clone());
+            approx_optimal_simulation = Some(simulation);
             high_score = score;
         }
     }
