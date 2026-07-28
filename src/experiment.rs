@@ -27,22 +27,25 @@ pub type ObjectiveScore = f64;
 /// The simplest and most common objective function is to return negative
 /// simulation time. An objective function that returns negative simulation time
 /// will find the Simulation that completed in the least ticks of `DiscreteTime`.
+///
+/// NaN scores are ignored. This returns `None` when no replications run or
+/// when every replication has a NaN score.
 pub fn monte_carlo_search(
     mut simulation_parameters_generator: impl FnMut() -> SimulationParameters,
     replications_limit: u32,
     objective_function: impl Fn(&Simulation) -> ObjectiveScore,
 ) -> Option<Simulation> {
     let mut approx_optimal_simulation: Option<Simulation> = None;
-    let mut high_score = ObjectiveScore::MIN;
+    let mut high_score: Option<ObjectiveScore> = None;
 
     for _ in 0..replications_limit {
         let mut simulation = Simulation::new(simulation_parameters_generator());
         simulation.run();
 
         let score = objective_function(&simulation);
-        if score > high_score {
+        if !score.is_nan() && high_score.is_none_or(|high_score| score > high_score) {
             approx_optimal_simulation = Some(simulation);
-            high_score = score;
+            high_score = Some(score);
         }
     }
 
@@ -237,6 +240,22 @@ mod tests {
         fn try_fill_bytes(&mut self, _destination: &mut [u8]) -> Result<(), Self::Error> {
             panic!("unexpected random draw")
         }
+    }
+
+    #[test]
+    fn monte_carlo_accepts_extreme_negative_scores() {
+        for score in [ObjectiveScore::MIN, ObjectiveScore::NEG_INFINITY] {
+            let result = monte_carlo_search(SimulationParameters::default, 1, |_| score);
+
+            assert!(result.is_some());
+        }
+    }
+
+    #[test]
+    fn monte_carlo_returns_none_when_every_score_is_nan() {
+        let result = monte_carlo_search(SimulationParameters::default, 2, |_| ObjectiveScore::NAN);
+
+        assert!(result.is_none());
     }
 
     #[test]
