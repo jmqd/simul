@@ -29,7 +29,7 @@ pub use agent::*;
 pub use message::*;
 
 use log::{debug, info, log_enabled, Level};
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 
 /// `DiscreteTime` is a Simulation's internal representation of time.
 pub type DiscreteTime = u64;
@@ -154,9 +154,15 @@ impl Simulation {
         let mut agent_name_handle_map = HashMap::with_capacity(parameters.agent_initializers.len());
 
         for (i, agent_initializer) in parameters.agent_initializers.iter().enumerate() {
-            let name = agent_initializer.options.name.clone();
-            if agent_name_handle_map.insert(name.clone(), i).is_some() {
-                return Err(SimulationError::DuplicateAgentName(name));
+            match agent_name_handle_map.entry(agent_initializer.options.name.clone()) {
+                Entry::Occupied(_) => {
+                    return Err(SimulationError::DuplicateAgentName(
+                        agent_initializer.options.name.clone(),
+                    ));
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(i);
+                }
             }
         }
 
