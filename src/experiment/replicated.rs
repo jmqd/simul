@@ -497,11 +497,6 @@ where
     let (replications, trial_count) =
         checked_trial_count::<WE>(candidates.len(), plan.replications.get())?;
 
-    let mut output = Vec::new();
-    output
-        .try_reserve_exact(trial_count)
-        .map_err(|source| reserve_error(ReplicationAllocation::TrialRecords, None, source))?;
-
     let worker_count =
         capped_worker_count(plan.workers, trial_count, thread::available_parallelism());
     let mut slots = allocate_worker_slots::<W, O, PE, EE, WE>(worker_count, trial_count)?;
@@ -517,7 +512,7 @@ where
         let Some(worker) = slot.worker.take() else {
             return Err(ReplicationError::WorkerFactoryPanic { worker_id: slot.id });
         };
-        let records = catch_unwind(AssertUnwindSafe(|| {
+        return catch_unwind(AssertUnwindSafe(|| {
             run_worker_range(
                 candidates,
                 replications,
@@ -531,10 +526,13 @@ where
                 slot.records,
             )
         }))
-        .map_err(|_| ReplicationError::WorkerWorkloadPanic { worker_id: slot.id })?;
-        output.extend(records);
-        return Ok(output);
+        .map_err(|_| ReplicationError::WorkerWorkloadPanic { worker_id: slot.id });
     }
+
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(trial_count)
+        .map_err(|source| reserve_error(ReplicationAllocation::TrialRecords, None, source))?;
 
     thread::scope(|scope| {
         let mut handles = Vec::new();
