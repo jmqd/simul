@@ -516,6 +516,34 @@ mod tests {
     }
 
     #[test]
+    fn poisson_producer_emits_without_an_input_message() -> Result<(), Box<dyn std::error::Error>> {
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: vec![
+                poisson_distributed_producer(
+                    "producer".to_string(),
+                    Poisson::new(1.0)?,
+                    "consumer".to_string(),
+                ),
+                periodic_consumer("consumer".to_string(), 1),
+            ],
+            halt_check: |simulation| simulation.time == 1,
+            ..Default::default()
+        });
+
+        simulation.run();
+
+        assert_eq!(
+            simulation.calc_produced_len_statistics().get("producer"),
+            Some(&1)
+        );
+        assert_eq!(
+            simulation.calc_queue_len_statistics().get("consumer"),
+            Some(&1)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn sleeping_reactive_agent_preserves_messages_until_wakeup() {
         let mut consumer = periodic_consumer("consumer".to_string(), 1);
         consumer.options.initial_mode = AgentMode::AsleepUntil(3);

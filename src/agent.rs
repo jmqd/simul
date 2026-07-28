@@ -259,8 +259,10 @@ where
     }
 
     impl Agent for PoissonAgent {
+        fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
+
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
+        fn on_tick(&mut self, ctx: &mut AgentContext) {
             // This agent will go to sleep for a "cooldown period",
             // as determined by a poisson distribution function.
             let cooldown_period = self.period.sample(&mut rand::rng()) as u64;
@@ -274,7 +276,12 @@ where
             period: dist,
             target: target.into(),
         }),
-        options: AgentOptions::defaults_with_name(name.into()),
+        options: AgentOptions {
+            initial_mode: AgentMode::Proactive,
+            wake_mode: AgentMode::Proactive,
+            name: name.into(),
+            ..Default::default()
+        },
     }
 }
 
