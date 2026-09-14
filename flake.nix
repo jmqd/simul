@@ -2,6 +2,7 @@
   description = "Rust dev environment";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs-intel-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
   };
@@ -10,6 +11,7 @@
     {
       self,
       nixpkgs,
+      nixpkgs-intel-darwin,
       rust-overlay,
       flake-utils,
       ...
@@ -19,7 +21,9 @@
       let
         overlays = [ (import rust-overlay) ];
 
-        pkgs = import nixpkgs { inherit system overlays; };
+        # 26.05 is the last supported nixpkgs release for Intel macOS.
+        nixpkgsForSystem = if system == "x86_64-darwin" then nixpkgs-intel-darwin else nixpkgs;
+        pkgs = import nixpkgsForSystem { inherit system overlays; };
 
         rustToolchainConfig = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);
         rustToolchainChannel = rustToolchainConfig.toolchain.channel;
