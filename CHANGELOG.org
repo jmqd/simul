@@ -15,6 +15,29 @@ Representable-width intervals retain their existing deterministic samples.
 Scalar reduction reports arithmetic overflow without changing accepted state.
 Aggregation preserves that failure instead of returning non-finite statistics.
 
+* DONE Share retained message contents without deep cloning
+Message histories and delivery share strings and payloads with copy-on-write
+mutation; completion timestamps remain independent. Construct messages with
+=Message::new= or =Message::new_with_payload= instead of struct literals.
+
+* DONE Use one replication result allocation
+Workers fill disjoint output ranges directly; partial results are dropped on
+failure. Worker-count tests cover single-CPU and unavailable-parallelism hosts.
+The obsolete =WorkerChunkRecords= allocation-error variant was removed.
+
+* DONE Preserve optimizer numerical boundaries
+Circular proposals stay in =[0, 1)=, finite sampling and deviation smoothing
+avoid overflow, and annealing preserves acceptance across extreme finite scores.
+
+* DONE Reject simulation time overflow consistently
+Tick advancement is checked before callbacks; sleep requests reject overflowing
+wake times before changing state. Both checks also apply in release builds.
+
+* DONE Protect agent routing identity
+AgentContext exposes its handle through =handle()= instead of a writable field.
+=find_by_name_mut= returns mutable behavior and state, not a replaceable agent.
+Command dispatch uses bounds-checked indexing.
+
 * DONE Add SimulationParams struct and pass it into the constructor.
 * DONE Rename =Ticket= to =Message= or =Packet= for better readability.
 Also considering "Event"

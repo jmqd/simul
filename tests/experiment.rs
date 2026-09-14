@@ -320,4 +320,83 @@ mod parallel {
         ));
         assert_eq!(evaluations.load(Ordering::SeqCst), 2);
     }
+
+    #[derive(Debug)]
+    struct Tracked<'a>(&'a AtomicUsize);
+
+    impl Drop for Tracked<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn successful_output_owns_each_outcome_and_error_exactly_once() {
+        for workers in [1, 4] {
+            let drops: [AtomicUsize; 8] = std::array::from_fn(|_| AtomicUsize::new(0));
+            let result = run_parallel(
+                MASTER_SEED,
+                (0..8).rev().map(|id| trial(id, 0)),
+                ParallelConfig::new(nonzero(workers), nonzero(8)),
+                || Ok::<_, Infallible>(()),
+                |(), id, _| {
+                    let Ok(index) = usize::try_from(*id) else {
+                        panic!("small test identity must fit");
+                    };
+                    let tracked = Tracked(&drops[index]);
+                    if index == 4 {
+                        Err(tracked)
+                    } else {
+                        Ok(tracked)
+                    }
+                },
+            );
+            let records = result.unwrap_or_else(|error| panic!("run failed: {error:?}"));
+            assert_eq!(
+                records
+                    .iter()
+                    .map(|record| record.key.candidate().value())
+                    .collect::<Vec<_>>(),
+                (0..8).collect::<Vec<_>>()
+            );
+            assert!(records[4].result.is_err());
+            assert!(drops.iter().all(|count| count.load(Ordering::SeqCst) == 0));
+            drop(records);
+            assert!(drops.iter().all(|count| count.load(Ordering::SeqCst) == 1));
+        }
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn failed_output_drops_partial_and_completed_shards_exactly_once() {
+        for workers in [1, 4] {
+            let drops: [AtomicUsize; 8] = std::array::from_fn(|_| AtomicUsize::new(0));
+            let created: [AtomicUsize; 8] = std::array::from_fn(|_| AtomicUsize::new(0));
+            let result = run_parallel(
+                MASTER_SEED,
+                (0..8).map(|id| trial(id, 0)),
+                ParallelConfig::new(nonzero(workers), nonzero(8)),
+                || Ok::<_, Infallible>(()),
+                |(), id, _| {
+                    let Ok(index) = usize::try_from(*id) else {
+                        panic!("small test identity must fit");
+                    };
+                    assert_ne!(index, 1, "panic after one initialized record");
+                    created[index].fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, Infallible>(Tracked(&drops[index]))
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(ParallelRunError::WorkerWorkloadPanic { worker: 0 })
+            ));
+            assert_eq!(created[0].load(Ordering::SeqCst), 1);
+            for (created, dropped) in created.iter().zip(&drops) {
+                assert_eq!(
+                    created.load(Ordering::SeqCst),
+                    dropped.load(Ordering::SeqCst)
+                );
+            }
+        }
+    }
 }

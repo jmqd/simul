@@ -99,9 +99,18 @@ pub enum MessageProcessingStatus {
 }
 
 // The Context holds the capability for Agents to act on the world
+///
+/// Routing handles are read-only to callbacks.
+///
+/// ```compile_fail
+/// use simul::agent::AgentContext;
+/// fn change_identity(ctx: &mut AgentContext<'_>) {
+///     ctx.handle = usize::MAX;
+/// }
+/// ```
 pub struct AgentContext<'a> {
     /// The handle id of the Agent.
-    pub handle: usize,
+    pub(crate) handle: usize,
 
     /// The name of the Agent.
     pub name: &'a str,
@@ -124,19 +133,21 @@ pub struct AgentContext<'a> {
 }
 
 impl AgentContext<'_> {
+    /// Returns the agent's immutable routing handle.
+    #[must_use]
+    pub const fn handle(&self) -> usize {
+        self.handle
+    }
+
     /// Queues a message for end-of-tick delivery.
     ///
     /// Multiple messages sent by one callback are delivered in call order.
     #[inline]
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
         self.commands.push(AgentCommand {
-            ty: AgentCommandType::SendMessage(Message {
-                source: self.name.to_string(),
-                destination: target.to_string(),
-                queued_time: self.time,
-                custom_payload: payload,
-                ..Default::default()
-            }),
+            ty: AgentCommandType::SendMessage(Message::new_with_payload(
+                self.time, self.name, target, payload,
+            )),
             agent_handle: self.handle,
             receiver_handle: self.agent_name_handle_map.get(target).copied(),
         });
@@ -153,9 +164,16 @@ impl AgentContext<'_> {
     }
 
     /// Sleeps the Agent for a relative amount of time.
+    ///
+    /// # Panics
+    ///
+    /// Panics before changing the sleep request if the wake time exceeds `u64::MAX`.
     #[inline]
     pub const fn sleep_for(&mut self, ticks: DiscreteTime) {
-        *self.requested_sleep_until = Some(self.time + ticks);
+        let Some(wake_time) = self.time.checked_add(ticks) else {
+            panic!("agent wake time exceeds u64::MAX");
+        };
+        *self.requested_sleep_until = Some(wake_time);
     }
 
     /// Records whether the current message remains in progress or finished cleanly.

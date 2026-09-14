@@ -209,11 +209,22 @@ impl Simulation {
             .and_then(|id| self.agents.get(id))
     }
 
-    /// Returns a `SimulationAgent` by name.
+    /// Returns mutable behavior and state, without exposing the routing identity.
+    ///
+    /// ```compile_fail
+    /// use simul::Simulation;
+    /// fn rename(simulation: &mut Simulation) {
+    ///     simulation.find_by_name_mut("worker").unwrap().name = "renamed".into();
+    /// }
+    /// ```
     #[inline]
-    pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut SimulationAgent> {
+    pub fn find_by_name_mut(
+        &mut self,
+        name: &str,
+    ) -> Option<(&mut Box<dyn Agent>, &mut AgentState)> {
         let id = self.find_handle_by_name(name)?;
-        self.agents.get_mut(id)
+        let agent = self.agents.get_mut(id)?;
+        Some((&mut agent.agent, &mut agent.state))
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
@@ -235,12 +246,20 @@ impl Simulation {
     }
 
     /// Runs the simulation. This should only be called after adding all the beginning state.
+    ///
+    /// # Panics
+    ///
+    /// Panics before invoking tick callbacks if advancing time would exceed
+    /// `u64::MAX`. Agent callbacks may also panic.
     pub fn run(&mut self) {
         self.mode = SimulationMode::Running;
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
         let mut requested_sleep_until: Option<DiscreteTime>;
 
         while self.mode == SimulationMode::Running && !(self.halt_check)(self) {
+            let Some(next_time) = self.time.checked_add(1) else {
+                panic!("simulation time exceeds u64::MAX");
+            };
             debug!("Running next tick of simulation at time {}", self.time);
 
             {
@@ -303,10 +322,9 @@ impl Simulation {
                                         agent.state.queue.push_front(msg);
                                     }
                                     MessageProcessingStatus::NoError => {
-                                        agent.state.consumed.push(Message {
-                                            completed_time: Some(self.time),
-                                            ..msg
-                                        });
+                                        let mut msg = msg;
+                                        msg.completed_time = Some(self.time);
+                                        agent.state.consumed.push(msg);
                                     }
                                 }
                             }
@@ -329,7 +347,7 @@ impl Simulation {
             self.process_command_buffer(&mut command_buffer);
 
             debug!("Finished this tick; incrementing time.");
-            self.time += 1;
+            self.time = next_time;
         }
 
         self.mode = SimulationMode::Completed;
@@ -400,11 +418,6 @@ impl Simulation {
         data
     }
 
-    /// SAFETY: The caller must ensure that `handle` is within the bounds of `self.agents`.
-    unsafe fn agent_by_handle_mut_unchecked(&mut self, handle: usize) -> &mut SimulationAgent {
-        unsafe { self.agents.get_unchecked_mut(handle) }
-    }
-
     /// Emits debug logging w/ analytical stats.
     fn emit_completed_simulation_debug_logging(&self) {
         let queue_len_stats = self.calc_queue_len_statistics();
@@ -435,13 +448,11 @@ impl Simulation {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
                     if let Some(receiver_handle) = command.receiver_handle {
-                        let receiver =
-                            unsafe { self.agent_by_handle_mut_unchecked(receiver_handle) };
+                        let receiver = &mut self.agents[receiver_handle];
                         receiver.state.queue.push_back(message.clone());
                     }
 
-                    let commanding_agent =
-                        unsafe { self.agent_by_handle_mut_unchecked(command.agent_handle) };
+                    let commanding_agent = &mut self.agents[command.agent_handle];
 
                     commanding_agent.state.produced.push(message);
                 }
@@ -452,9 +463,10 @@ impl Simulation {
                 }
 
                 AgentCommandType::Sleep(ticks) => {
-                    let sleep_until = self.time + ticks;
-                    let commanding_agent =
-                        unsafe { self.agent_by_handle_mut_unchecked(command.agent_handle) };
+                    let Some(sleep_until) = self.time.checked_add(ticks) else {
+                        panic!("agent wake time exceeds u64::MAX");
+                    };
+                    let commanding_agent = &mut self.agents[command.agent_handle];
 
                     commanding_agent.state.mode = AgentMode::AsleepUntil(sleep_until);
                 }
@@ -577,56 +589,6 @@ mod tests {
             simulation.calc_queue_len_statistics().get("consumer"),
             Some(&3)
         );
-    }
-
-    #[test]
-    fn starbucks_clerk() -> Result<(), Box<dyn std::error::Error>> {
-        #[derive(Debug, Clone)]
-        struct Clerk {}
-
-        impl Agent for Clerk {
-            fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-                debug!("{} looking for a customer.", ctx.name);
-                if let Some(last) = ctx.state.consumed.last() {
-                    if last.completed_time.is_some_and(|t| t + 60 > ctx.time) {
-                        debug!("Sorry, we're still serving the last customer.");
-                    }
-                }
-
-                if let Some(_msg) = ctx.state.queue.front() {
-                    if msg.queued_time + 100 > ctx.time {
-                        debug!("Still making your coffee, sorry!");
-                        ctx.set_processing_status(MessageProcessingStatus::InProgress);
-                    }
-
-                    debug!("Serviced a customer!");
-                }
-            }
-        }
-
-        init();
-
-        let mut simulation = Simulation::new(SimulationParameters {
-            starting_time: 1,
-            enable_queue_depth_metrics: false,
-            enable_agent_asleep_cycles_metric: false,
-            halt_check: |s: &Simulation| s.time > 500,
-            agent_initializers: vec![
-                poisson_distributed_producer(
-                    "Starbucks Customers".to_string(),
-                    Poisson::new(80.0_f64)?,
-                    "Starbucks Clerk".to_string(),
-                ),
-                AgentInitializer {
-                    agent: Box::new(Clerk {}),
-                    options: AgentOptions::defaults_with_name("Starbucks Clerk".to_string()),
-                },
-            ],
-        });
-
-        simulation.run();
-        assert!(Some(simulation).is_some());
-        Ok(())
     }
 
     #[test]

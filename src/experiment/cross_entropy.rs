@@ -395,9 +395,17 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     #[inline]
     fn sample_unchecked(&self, mut standard_normal: impl FnMut(usize) -> f64) -> [f64; N] {
         std::array::from_fn(|dimension| {
-            let value = self.standard_deviation[dimension]
-                .mul_add(standard_normal(dimension), self.mean[dimension]);
-            normalize(value, self.dimensions[dimension])
+            let normal = standard_normal(dimension);
+            let value = self.standard_deviation[dimension].mul_add(normal, self.mean[dimension]);
+            if value.is_infinite() && normal.is_finite() {
+                // Each finite binary64 factor has at most 53 significant bits.
+                // An overflowing exact product is therefore an even integer:
+                // its remainder modulo either domain's period (1 or 2) is zero.
+                // Project the exact product plus the mean without overflow.
+                self.mean[dimension]
+            } else {
+                normalize(value, self.dimensions[dimension])
+            }
         })
     }
 
@@ -445,13 +453,20 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
                 .sum::<f64>()
                 * inverse_elite_count;
             let old_variance = self.standard_deviation[dimension].powi(2);
-            let next_variance =
-                old_variance.mul_add(retained_weight, elite_variance * self.learning_rate);
+            let next_standard_deviation = if old_variance.is_finite() {
+                old_variance
+                    .mul_add(retained_weight, elite_variance * self.learning_rate)
+                    .sqrt()
+            } else {
+                // Weight before combining to avoid squaring a large deviation,
+                // including the zero retained weight of a complete refit.
+                (self.standard_deviation[dimension] * retained_weight.sqrt())
+                    .hypot((elite_variance * self.learning_rate).sqrt())
+            };
 
             self.mean[dimension] = next_mean;
-            self.standard_deviation[dimension] = next_variance
-                .sqrt()
-                .max(self.minimum_standard_deviation[dimension]);
+            self.standard_deviation[dimension] =
+                next_standard_deviation.max(self.minimum_standard_deviation[dimension]);
         }
     }
 }
@@ -601,7 +616,15 @@ fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
                 2.0 - reflected
             }
         }
-        CrossEntropyDimension::Circular => value.rem_euclid(1.0),
+        CrossEntropyDimension::Circular => {
+            let wrapped = value.rem_euclid(1.0);
+            // A tiny negative remainder can round up to the excluded endpoint.
+            if wrapped >= 1.0 {
+                0.0
+            } else {
+                wrapped
+            }
+        }
     }
 }
 
@@ -726,6 +749,58 @@ mod tests {
     }
 
     #[test]
+    fn circular_sampling_canonicalizes_a_rounded_upper_endpoint() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.0], [1.0])
+                .with_dimensions([CrossEntropyDimension::Circular]),
+        );
+        let Ok(point) = search.ask_with_standard_normal(|_| -1.0e-20) else {
+            panic!("finite standard-normal value must sample successfully");
+        };
+        assert_eq!(point.map(f64::to_bits), [0.0_f64.to_bits()]);
+
+        let mut samples = [CrossEntropySample::new(point, 1.0)];
+        assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+    }
+
+    #[test]
+    fn sampling_projects_overflowing_finite_products_into_both_domains() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.25, 0.75], [f64::MAX; 2])
+                .with_dimensions([
+                    CrossEntropyDimension::Linear,
+                    CrossEntropyDimension::Circular,
+                ])
+                .with_learning_rate(0.0),
+        );
+        for normal in [2.0, -2.0, f64::MAX, -f64::MAX] {
+            let Ok(point) = search.ask_with_standard_normal(|_| normal) else {
+                panic!("finite standard-normal values must sample successfully");
+            };
+            // The exact product is divisible by both periods, leaving the mean.
+            assert_eq!(point.map(f64::to_bits), [0.25_f64, 0.75].map(f64::to_bits));
+            let mut samples = [CrossEntropySample::new(point, 1.0)];
+            assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+        }
+    }
+
+    #[test]
+    fn ordinary_sampling_with_maximum_deviations_stays_in_domain() {
+        let search = optimizer(
+            CrossEntropyConfig::new([0.25, 0.75], [f64::MAX; 2]).with_dimensions([
+                CrossEntropyDimension::Linear,
+                CrossEntropyDimension::Circular,
+            ]),
+        );
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        for _ in 0..64 {
+            let point = search.ask(&mut rng);
+            assert!(point[0].is_finite() && (0.0..=1.0).contains(&point[0]));
+            assert!(point[1].is_finite() && (0.0..1.0).contains(&point[1]));
+        }
+    }
+
+    #[test]
     fn circular_delta_wraps_with_a_negative_half_turn_tie() {
         let below_half_turn = f64::from_bits(0.5_f64.to_bits() - 1);
         let above_half_turn = f64::from_bits(0.5_f64.to_bits() + 1);
@@ -799,6 +874,37 @@ mod tests {
 
         assert_close(search.mean()[0], 0.4, 1.0e-12);
         assert_close(search.standard_deviation()[0], 0.3, 1.0e-12);
+    }
+
+    #[test]
+    fn smoothing_large_deviations_keeps_a_finite_weighted_variance() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.5], [1.0e200])
+                .with_elite_fraction(1.0)
+                .with_learning_rate(0.75),
+        );
+        let mut samples = [
+            CrossEntropySample::new([0.25], 1.0),
+            CrossEntropySample::new([0.75], 1.0),
+        ];
+        assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+        assert_close(search.standard_deviation()[0] / 1.0e200, 0.5, f64::EPSILON);
+    }
+
+    #[test]
+    fn complete_refit_replaces_large_deviation_with_nonzero_elite_variance() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.5], [1.0e200])
+                .with_elite_fraction(1.0)
+                .with_learning_rate(1.0),
+        );
+        let mut samples = [
+            CrossEntropySample::new([0.25], 1.0),
+            CrossEntropySample::new([0.75], 1.0),
+        ];
+        assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+        assert_close(search.standard_deviation()[0], 0.25, f64::EPSILON);
+        assert_eq!(search.ask_with_standard_normal(|_| 1.0), Ok([0.75]));
     }
 
     #[test]

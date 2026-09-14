@@ -320,13 +320,7 @@ fn ensure_self_tick(ctx: &mut AgentContext) {
 }
 
 fn initial_tick(destination: &str) -> Message {
-    Message {
-        queued_time: 0,
-        source: "clock".to_string(),
-        destination: destination.to_string(),
-        custom_payload: Some(Payload::Tick.encode()),
-        ..Default::default()
-    }
+    Message::new_with_payload(0, "clock", destination, Some(Payload::Tick.encode()))
 }
 
 const fn discrete_multiple(value: DiscreteTime, divisor: DiscreteTime) -> bool {

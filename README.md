@@ -46,6 +46,8 @@ available in this checkout; it has not been published as a new crates.io release
   before evaluation starts. Requested workers are capped by work and available
   parallelism. Evaluators must use only their inputs, context, immutable
   configuration, and unobservable scratch for worker-count-independent results.
+  Shards write directly into disjoint ranges of one final result allocation;
+  initialization guards drop partial results on failure without a second buffer.
 - Setup failures are run-level errors; evaluator `Err` values remain ordered
   trial records. With unwinding enabled, callback panics discard partial output
   and return a run-level error without retries. This does not roll back callback
@@ -126,6 +128,11 @@ The simulation runs all the logic of calling `process()`, distributing messages,
 tracking metrics, incrementing time, and when to halt. A `Simulation` is
 finished when the provided `halt_check` function returns `true`, or if an
 `Agent` responds with a special `Interrupt` to halt the `Simulation`.
+
+Create initial messages with `Message::new` or `Message::new_with_payload`, not
+struct literals. Message clones share strings and payloads until modified;
+timestamps remain independent. Field reads and copy-on-write field updates keep
+their ordinary value semantics.
 
 ## Poisson-distributed example w/ Plotting
 

@@ -821,10 +821,39 @@ impl<WE: std::error::Error + 'static> std::error::Error for ParallelRunError<WE>
 struct ParallelShard<'a, C, O, E> {
     /// Borrowed canonical input, never cloned or redistributed during evaluation.
     trials: &'a [TrialSpec<C>],
-    /// Preallocated output for every trial in this shard.
-    records: Vec<TrialRecord<O, E>>,
+    /// Guard for the initialized prefix of one disjoint output range.
+    records: RecordRange<'a, TrialRecord<O, E>>,
     /// Whether evaluation unwound before the shard completed.
     panicked: bool,
+}
+
+/// Owns destruction of partially initialized output until the run succeeds.
+#[cfg(feature = "parallel")]
+struct RecordRange<'a, T> {
+    /// Disjoint portion of the final output vector's spare capacity.
+    storage: &'a mut [std::mem::MaybeUninit<T>],
+    /// Exactly this prefix contains live values owned by the guard.
+    initialized: usize,
+}
+
+#[cfg(feature = "parallel")]
+impl<T> RecordRange<'_, T> {
+    /// Writes a value before taking ownership of its destruction.
+    fn push(&mut self, value: T) {
+        self.storage[self.initialized].write(value);
+        self.initialized += 1;
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl<T> Drop for RecordRange<'_, T> {
+    fn drop(&mut self) {
+        for record in &mut self.storage[..self.initialized] {
+            // SAFETY: push initializes before extending the exclusively owned
+            // prefix. Success disarms this guard before the Vec takes ownership.
+            unsafe { record.assume_init_drop() };
+        }
+    }
 }
 
 /// Runs a bounded batch in a dedicated Rayon pool with worker-local state.
@@ -881,17 +910,19 @@ where
     let base_size = ordered.len().div_euclid(workers);
     let remainder = ordered.len().rem_euclid(workers);
     let mut remaining = ordered.as_slice();
+    let mut remaining_output = &mut records.spare_capacity_mut()[..ordered.len()];
     for worker in 0..workers {
         let size = base_size + usize::from(worker < remainder);
         let (trials, rest) = remaining.split_at(size);
         remaining = rest;
-        let mut shard_records = Vec::new();
-        shard_records
-            .try_reserve_exact(size)
-            .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
+        let (storage, rest) = remaining_output.split_at_mut(size);
+        remaining_output = rest;
         shards.push(ParallelShard {
             trials,
-            records: shard_records,
+            records: RecordRange {
+                storage,
+                initialized: 0,
+            },
             panicked: false,
         });
     }
@@ -930,9 +961,14 @@ where
     if let Some(worker) = shards.iter().position(|shard| shard.panicked) {
         return Err(ParallelRunError::WorkerWorkloadPanic { worker });
     }
-    for mut shard in shards {
-        records.append(&mut shard.records);
+    for shard in &mut shards {
+        shard.records.initialized = 0;
     }
+    drop(shards);
+    // SAFETY: successful evaluation initialized every element in the disjoint
+    // ranges covering ordered.len() reserved slots, and all parallel work joined.
+    // Guards are disarmed and no mutable slices remain; records is sole owner.
+    unsafe { records.set_len(ordered.len()) };
     Ok(records)
 }
 

@@ -196,3 +196,153 @@ fn queue_depth_metrics_record_every_tick() {
         Some(5)
     );
 }
+
+#[test]
+fn mutable_agent_access_preserves_identity_and_routing() {
+    for count in [2, 9] {
+        let mut agents = vec![proactive_agent("sender", MissingTargetSender)];
+        agents.extend((1..count).map(|i| periodic_consumer(format!("receiver-{i}"), 1)));
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: agents,
+            halt_check: |simulation| simulation.time() == 2,
+            ..Default::default()
+        });
+        let Some((behavior, state)) = simulation.find_by_name_mut("sender") else {
+            panic!("sender must exist");
+        };
+        *behavior = periodic_producer("replacement", 1, "receiver-1").agent;
+        state.mode = AgentMode::Proactive;
+        simulation.run();
+
+        assert_eq!(
+            simulation
+                .consumed_for_agent("receiver-1")
+                .map(|messages| messages[0].source.as_str()),
+            Some("sender")
+        );
+        assert!(simulation.find_by_name("replacement").is_none());
+        assert_eq!(
+            simulation
+                .produced_for_agent("sender")
+                .map(<[Message]>::len),
+            Some(2)
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BoundaryCallback(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Agent for BoundaryCallback {
+    fn on_message(&mut self, _: &mut AgentContext, _: &Message) {}
+
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        ctx.send_halt_interrupt("done");
+    }
+}
+
+#[test]
+fn time_overflow_fails_before_callbacks() {
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![proactive_agent("worker", BoundaryCallback(called.clone()))],
+        starting_time: u64::MAX,
+        halt_check: |_| false,
+        ..Default::default()
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
+    assert!(result.is_err());
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(simulation.time(), u64::MAX);
+}
+
+#[test]
+fn sleep_overflow_does_not_wrap_or_change_mode() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![periodic_producer("sender", u64::MAX, "missing")],
+        starting_time: 1,
+        halt_check: |simulation| simulation.time() == 2,
+        ..Default::default()
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
+    assert!(result.is_err());
+    assert_eq!(simulation.time(), 1);
+    assert_eq!(
+        simulation
+            .find_by_name("sender")
+            .map(|agent| agent.state.mode),
+        Some(AgentMode::Proactive)
+    );
+}
+
+#[test]
+fn final_representable_tick_and_wake_time_are_allowed() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![periodic_producer("sender", 1, "missing")],
+        starting_time: u64::MAX - 1,
+        halt_check: |simulation| simulation.time() == u64::MAX,
+        ..Default::default()
+    });
+    simulation.run();
+    assert_eq!(simulation.time(), u64::MAX);
+    assert_eq!(
+        simulation
+            .find_by_name("sender")
+            .map(|agent| agent.state.mode),
+        Some(AgentMode::AsleepUntil(u64::MAX))
+    );
+    assert_eq!(
+        simulation
+            .produced_for_agent("sender")
+            .map(<[Message]>::len),
+        Some(1)
+    );
+}
+
+#[test]
+fn cloned_messages_keep_independent_contents_and_timestamps() {
+    let original = Message::new_with_payload(7, "sender", "receiver", Some(vec![1, 2]));
+    let mut edited = original.clone();
+    edited.queued_time = 8;
+    edited.completed_time = Some(9);
+    edited.source.push_str("-edited");
+    edited.destination.push_str("-edited");
+    let Some(payload) = &mut edited.custom_payload else {
+        panic!("payload must exist");
+    };
+    payload[0] = 3;
+    edited.interrupt = Some(simul::message::Interrupt::HaltSimulation("done".into()));
+
+    assert_eq!(original.queued_time, 7);
+    assert_eq!(original.completed_time, None);
+    assert_eq!(original.source, "sender");
+    assert_eq!(original.destination, "receiver");
+    assert_eq!(original.custom_payload.as_deref(), Some([1, 2].as_slice()));
+    assert!(original.interrupt.is_none());
+    assert_eq!(edited.custom_payload.as_deref(), Some([3, 2].as_slice()));
+    assert_eq!(edited.completed_time, Some(9));
+}
+
+#[test]
+fn consumed_message_completion_does_not_change_sender_history() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            proactive_agent("sender", BurstSender),
+            periodic_consumer("receiver", 1),
+        ],
+        halt_check: |simulation| simulation.time() == 2,
+        ..Default::default()
+    });
+    simulation.run();
+    let Some(produced) = simulation.produced_for_agent("sender") else {
+        panic!("sender must exist");
+    };
+    let Some(consumed) = simulation.consumed_for_agent("receiver") else {
+        panic!("receiver must exist");
+    };
+    assert_eq!(produced[0].completed_time, None);
+    assert_eq!(consumed[0].completed_time, Some(1));
+    assert_eq!(produced[0].custom_payload, consumed[0].custom_payload);
+    assert_eq!(produced[0].queued_time, consumed[0].queued_time);
+}
