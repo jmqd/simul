@@ -346,7 +346,7 @@ mod tests {
             5,
         );
 
-        assert_eq!(result, Some(NonClone(10)));
+        assert_eq!(Some(NonClone(10)), result);
     }
 
     #[test]
