@@ -1575,7 +1575,6 @@ mod tests {
             seed_hex(trial.independent_seed(TrialStream::ValidationHoldout, "aim")),
         ];
         assert_eq!(
-            vectors,
             [
                 "5120e76b71a9dce5818abc500e97e2fea8255c653dbda13e9faccbe8792eb46b",
                 "33c2bbd693b06c7c2b00dabc21df8deadc54beee50cb0c83c76ee74485953342",
@@ -1583,7 +1582,8 @@ mod tests {
                 "df7f9525e41471699734d85ae21acd50305b3ec8814ce422fb9b669e6594b6af",
                 "6302bbefbd0a99a1cd8a268a43d4d09b14a6254c8ec0b71655a06ac681b82c07",
                 "e7afea42c51a0e8bda0ff50b9f769e447ddce59374ab45735005836640fde0f8",
-            ]
+            ],
+            vectors
         );
     }
 
