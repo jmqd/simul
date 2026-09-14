@@ -1810,13 +1810,13 @@ mod tests {
             },
         ];
         assert_eq!(
+            Err(AggregateError::EvaluationFailed { failures: 1 }),
             aggregate_scalar(
                 &records,
                 |value| *value,
                 FailurePolicy::RejectCandidate,
                 NonFinitePolicy::RejectCandidate,
-            ),
-            Err(AggregateError::EvaluationFailed { failures: 1 })
+            )
         );
         let penalty = FiniteValue::new(-3.0).expect("fixture penalty should be finite");
         let summary = aggregate_scalar(
