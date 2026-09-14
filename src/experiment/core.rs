@@ -1699,7 +1699,7 @@ mod tests {
         let one = ScalarReducer::from_results([5.0]).expect("single finite scalar should reduce");
         assert_eq!(None, one.sample_variance);
         assert_eq!(None, one.standard_error);
-        assert_eq!(ScalarReducer::from_results([]), Err(ReduceError::Empty));
+        assert_eq!(Err(ReduceError::Empty), ScalarReducer::from_results([]));
     }
 
     #[test]
