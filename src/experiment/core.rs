@@ -839,7 +839,7 @@ struct RecordRange<'a, T> {
 #[cfg(feature = "parallel")]
 impl<T> RecordRange<'_, T> {
     /// Writes a value before taking ownership of its destruction.
-    fn push(&mut self, value: T) {
+    const fn push(&mut self, value: T) {
         self.storage[self.initialized].write(value);
         self.initialized += 1;
     }
