@@ -1883,8 +1883,8 @@ mod tests {
         let failures = retain_records(records, RetentionPolicy::FailuresOnly);
         assert_eq!(1, failures.len());
         assert_eq!(
-            failures[0].key,
-            TrialId::new(CandidateId::new(4), ReplicationId::new(1))
+            TrialId::new(CandidateId::new(4), ReplicationId::new(1)),
+            failures[0].key
         );
         assert_eq!(failures[0].result, Err("failed"));
     }
