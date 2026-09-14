@@ -428,7 +428,7 @@ mod tests {
         );
 
         assert_eq!(Some(NonClone(3)), annealed);
-        assert_eq!(greedy, Some(NonClone(0)));
+        assert_eq!(Some(NonClone(0)), greedy);
     }
 
     #[test]
