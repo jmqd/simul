@@ -1634,7 +1634,7 @@ mod tests {
             records.iter().map(|record| record.key).collect::<Vec<_>>()
         );
         assert_eq!(Ok(20), records[0].result);
-        assert_eq!(records[1].result, Err("negative"));
+        assert_eq!(Err("negative"), records[1].result);
         assert_eq!(records[2].result, Ok(40));
     }
 
