@@ -1,5 +1,18 @@
 #+title: Changelog
 
+* DONE Refresh dependencies and tooling (September 2026)
+Pin Rust 1.98.1 and update BLAKE3 to 1.8.7, Criterion to 0.8.2, log to 0.4.34,
+and compatible Cargo lockfile dependencies, replacing yanked chacha20 0.10.1.
+Keep the library MSRV at 1.85; tests and benchmarks require 1.86.
+Frozen V1 seed vectors and a before/after replay comparison remain unchanged.
+Update rust-overlay and nixpkgs; retain Intel macOS on the supported 26.05 branch.
+Update Dylint to 6.0.4 with nightly-2026-05-28, native zlib, and published-driver
+resolution so the Nix package does not reference a deleted build directory.
+Verify native tests, Clippy, formatting, audit, docs, licenses, unused dependencies,
+examples, an optimized benchmark, and the Nix build on Apple Silicon.
+All four Nix platforms evaluate; Intel macOS and Linux builds were not exercised.
+Dylint completes with non-fatal assertion-order and crate-wide-allow warnings.
+
 * DONE Consolidate typed experiments and eager worker setup
 Use one trial/replay protocol with bounded canonical serial and parallel runners.
 Worker initialization is fallible and eager; explicit storage is allocated before
