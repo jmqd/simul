@@ -208,11 +208,22 @@ impl Simulation {
             .and_then(|id| self.agents.get(id))
     }
 
-    /// Returns a `SimulationAgent` by name.
+    /// Returns mutable behavior and state, without exposing the routing identity.
+    ///
+    /// ```compile_fail
+    /// use simul::Simulation;
+    /// fn rename(simulation: &mut Simulation) {
+    ///     simulation.find_by_name_mut("worker").unwrap().name = "renamed".into();
+    /// }
+    /// ```
     #[inline]
-    pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut SimulationAgent> {
+    pub fn find_by_name_mut(
+        &mut self,
+        name: &str,
+    ) -> Option<(&mut Box<dyn Agent>, &mut AgentState)> {
         let id = self.find_handle_by_name(name)?;
-        self.agents.get_mut(id)
+        let agent = self.agents.get_mut(id)?;
+        Some((&mut agent.agent, &mut agent.state))
     }
 
     /// Returns the produced messages for a given Agent during the Simulation.
@@ -399,11 +410,6 @@ impl Simulation {
         data
     }
 
-    /// SAFETY: The caller must ensure that `handle` is within the bounds of `self.agents`.
-    unsafe fn agent_by_handle_mut_unchecked(&mut self, handle: usize) -> &mut SimulationAgent {
-        unsafe { self.agents.get_unchecked_mut(handle) }
-    }
-
     /// Emits debug logging w/ analytical stats.
     fn emit_completed_simulation_debug_logging(&self) {
         let queue_len_stats = self.calc_queue_len_statistics();
@@ -434,13 +440,11 @@ impl Simulation {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
                     if let Some(receiver_handle) = command.receiver_handle {
-                        let receiver =
-                            unsafe { self.agent_by_handle_mut_unchecked(receiver_handle) };
+                        let receiver = &mut self.agents[receiver_handle];
                         receiver.state.queue.push_back(message.clone());
                     }
 
-                    let commanding_agent =
-                        unsafe { self.agent_by_handle_mut_unchecked(command.agent_handle) };
+                    let commanding_agent = &mut self.agents[command.agent_handle];
 
                     commanding_agent.state.produced.push(message);
                 }
@@ -452,8 +456,7 @@ impl Simulation {
 
                 AgentCommandType::Sleep(ticks) => {
                     let sleep_until = self.time + ticks;
-                    let commanding_agent =
-                        unsafe { self.agent_by_handle_mut_unchecked(command.agent_handle) };
+                    let commanding_agent = &mut self.agents[command.agent_handle];
 
                     commanding_agent.state.mode = AgentMode::AsleepUntil(sleep_until);
                 }

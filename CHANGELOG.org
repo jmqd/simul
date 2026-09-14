@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Protect agent routing identity
+AgentContext exposes its handle through =handle()= instead of a writable field.
+=find_by_name_mut= returns mutable behavior and state, not a replaceable agent.
+Command dispatch uses bounds-checked indexing.
+
 * DONE Add SimulationParams struct and pass it into the constructor.
 * DONE Rename =Ticket= to =Message= or =Packet= for better readability.
 Also considering "Event"

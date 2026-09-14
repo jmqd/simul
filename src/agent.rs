@@ -99,9 +99,18 @@ pub enum MessageProcessingStatus {
 }
 
 // The Context holds the capability for Agents to act on the world
+///
+/// Routing handles are read-only to callbacks.
+///
+/// ```compile_fail
+/// use simul::agent::AgentContext;
+/// fn change_identity(ctx: &mut AgentContext<'_>) {
+///     ctx.handle = usize::MAX;
+/// }
+/// ```
 pub struct AgentContext<'a> {
     /// The handle id of the Agent.
-    pub handle: usize,
+    pub(crate) handle: usize,
 
     /// The name of the Agent.
     pub name: &'a str,
@@ -124,6 +133,12 @@ pub struct AgentContext<'a> {
 }
 
 impl AgentContext<'_> {
+    /// Returns the agent's immutable routing handle.
+    #[must_use]
+    pub const fn handle(&self) -> usize {
+        self.handle
+    }
+
     /// Queues a message for end-of-tick delivery.
     ///
     /// Multiple messages sent by one callback are delivered in call order.

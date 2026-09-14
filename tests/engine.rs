@@ -196,3 +196,36 @@ fn queue_depth_metrics_record_every_tick() {
         Some(5)
     );
 }
+
+#[test]
+fn mutable_agent_access_preserves_identity_and_routing() {
+    for count in [2, 9] {
+        let mut agents = vec![proactive_agent("sender", MissingTargetSender)];
+        agents.extend((1..count).map(|i| periodic_consumer(format!("receiver-{i}"), 1)));
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: agents,
+            halt_check: |simulation| simulation.time() == 2,
+            ..Default::default()
+        });
+        let Some((behavior, state)) = simulation.find_by_name_mut("sender") else {
+            panic!("sender must exist");
+        };
+        *behavior = periodic_producer("replacement", 1, "receiver-1").agent;
+        state.mode = AgentMode::Proactive;
+        simulation.run();
+
+        assert_eq!(
+            simulation
+                .consumed_for_agent("receiver-1")
+                .map(|messages| messages[0].source.as_str()),
+            Some("sender")
+        );
+        assert!(simulation.find_by_name("replacement").is_none());
+        assert_eq!(
+            simulation
+                .produced_for_agent("sender")
+                .map(<[Message]>::len),
+            Some(2)
+        );
+    }
+}
