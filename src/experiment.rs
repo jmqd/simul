@@ -365,7 +365,7 @@ mod tests {
             |_| 1.0,
             1,
         );
-        assert_eq!(rejected, Some(NonClone(0)));
+        assert_eq!(Some(NonClone(0)), rejected);
 
         let recovered = simulated_annealing_search_with_rng(
             &mut PanicRng,
