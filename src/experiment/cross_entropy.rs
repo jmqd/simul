@@ -757,7 +757,7 @@ mod tests {
         let Ok(point) = search.ask_with_standard_normal(|_| -1.0e-20) else {
             panic!("finite standard-normal value must sample successfully");
         };
-        assert_eq!(point.map(f64::to_bits), [0.0_f64.to_bits()]);
+        assert_eq!([0.0_f64.to_bits()], point.map(f64::to_bits));
 
         let mut samples = [CrossEntropySample::new(point, 1.0)];
         assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
