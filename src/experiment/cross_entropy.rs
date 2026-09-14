@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn elite_count_rounds_up_and_clamps_to_the_population() {
         assert_eq!(1, elite_count(10, 0.01));
-        assert_eq!(elite_count(10, 0.2), 2);
+        assert_eq!(2, elite_count(10, 0.2));
         assert_eq!(elite_count(10, 0.21), 3);
         assert_eq!(elite_count(10, 1.0), 10);
         assert_eq!(elite_count(usize::MAX, 1.0), usize::MAX);
