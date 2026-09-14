@@ -1770,13 +1770,13 @@ mod tests {
             )
         );
         assert_eq!(
+            Err(AggregateError::NonFinite { observations: 1 }),
             aggregate_scalar(
                 &records,
                 |value| *value,
                 FailurePolicy::Ignore,
                 NonFinitePolicy::RejectCandidate,
-            ),
-            Err(AggregateError::NonFinite { observations: 1 })
+            )
         );
         assert_eq!(
             aggregate_scalar(
