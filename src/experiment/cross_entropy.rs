@@ -757,7 +757,7 @@ mod tests {
         let Ok(point) = search.ask_with_standard_normal(|_| -1.0e-20) else {
             panic!("finite standard-normal value must sample successfully");
         };
-        assert_eq!(point, [0.0]);
+        assert_eq!(point.map(f64::to_bits), [0.0_f64.to_bits()]);
 
         let mut samples = [CrossEntropySample::new(point, 1.0)];
         assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
@@ -778,7 +778,7 @@ mod tests {
                 panic!("finite standard-normal values must sample successfully");
             };
             // The exact product is divisible by both periods, leaving the mean.
-            assert_eq!(point, [0.25, 0.75]);
+            assert_eq!(point.map(f64::to_bits), [0.25_f64, 0.75].map(f64::to_bits));
             let mut samples = [CrossEntropySample::new(point, 1.0)];
             assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
         }
