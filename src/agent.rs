@@ -145,13 +145,9 @@ impl AgentContext<'_> {
     #[inline]
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
         self.commands.push(AgentCommand {
-            ty: AgentCommandType::SendMessage(Message {
-                source: self.name.to_string(),
-                destination: target.to_string(),
-                queued_time: self.time,
-                custom_payload: payload,
-                ..Default::default()
-            }),
+            ty: AgentCommandType::SendMessage(Message::new_with_payload(
+                self.time, self.name, target, payload,
+            )),
             agent_handle: self.handle,
             receiver_handle: self.agent_name_handle_map.get(target).copied(),
         });

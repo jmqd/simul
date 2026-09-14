@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Share retained message contents without deep cloning
+Message histories and delivery share strings and payloads with copy-on-write
+mutation; completion timestamps remain independent. Construct messages with
+=Message::new= or =Message::new_with_payload= instead of struct literals.
+
 * DONE Use one replication result allocation
 Workers fill disjoint output ranges directly; partial results are dropped on
 failure. Worker-count tests cover single-CPU and unavailable-parallelism hosts.

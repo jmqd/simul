@@ -299,3 +299,50 @@ fn final_representable_tick_and_wake_time_are_allowed() {
         Some(1)
     );
 }
+
+#[test]
+fn cloned_messages_keep_independent_contents_and_timestamps() {
+    let original = Message::new_with_payload(7, "sender", "receiver", Some(vec![1, 2]));
+    let mut edited = original.clone();
+    edited.queued_time = 8;
+    edited.completed_time = Some(9);
+    edited.source.push_str("-edited");
+    edited.destination.push_str("-edited");
+    let Some(payload) = &mut edited.custom_payload else {
+        panic!("payload must exist");
+    };
+    payload[0] = 3;
+    edited.interrupt = Some(simul::message::Interrupt::HaltSimulation("done".into()));
+
+    assert_eq!(original.queued_time, 7);
+    assert_eq!(original.completed_time, None);
+    assert_eq!(original.source, "sender");
+    assert_eq!(original.destination, "receiver");
+    assert_eq!(original.custom_payload.as_deref(), Some([1, 2].as_slice()));
+    assert!(original.interrupt.is_none());
+    assert_eq!(edited.custom_payload.as_deref(), Some([3, 2].as_slice()));
+    assert_eq!(edited.completed_time, Some(9));
+}
+
+#[test]
+fn consumed_message_completion_does_not_change_sender_history() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            proactive_agent("sender", BurstSender),
+            periodic_consumer("receiver", 1),
+        ],
+        halt_check: |simulation| simulation.time() == 2,
+        ..Default::default()
+    });
+    simulation.run();
+    let Some(produced) = simulation.produced_for_agent("sender") else {
+        panic!("sender must exist");
+    };
+    let Some(consumed) = simulation.consumed_for_agent("receiver") else {
+        panic!("receiver must exist");
+    };
+    assert_eq!(produced[0].completed_time, None);
+    assert_eq!(consumed[0].completed_time, Some(1));
+    assert_eq!(produced[0].custom_payload, consumed[0].custom_payload);
+    assert_eq!(produced[0].queued_time, consumed[0].queued_time);
+}

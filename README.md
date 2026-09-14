@@ -91,6 +91,11 @@ tracking metrics, incrementing time, and when to halt. A `Simulation` is
 finished when the provided `halt_check` function returns `true`, or if an
 `Agent` responds with a special `Interrupt` to halt the `Simulation`.
 
+Create initial messages with `Message::new` or `Message::new_with_payload`, not
+struct literals. Message clones share strings and payloads until modified;
+timestamps remain independent. Field reads and copy-on-write field updates keep
+their ordinary value semantics.
+
 ## Poisson-distributed example w/ Plotting
 
 Here's an example of an outputted graph from a simulation run. In this

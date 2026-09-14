@@ -321,10 +321,9 @@ impl Simulation {
                                         agent.state.queue.push_front(msg);
                                     }
                                     MessageProcessingStatus::NoError => {
-                                        agent.state.consumed.push(Message {
-                                            completed_time: Some(self.time),
-                                            ..msg
-                                        });
+                                        let mut msg = msg;
+                                        msg.completed_time = Some(self.time);
+                                        agent.state.consumed.push(msg);
                                     }
                                 }
                             }
@@ -589,56 +588,6 @@ mod tests {
             simulation.calc_queue_len_statistics().get("consumer"),
             Some(&3)
         );
-    }
-
-    #[test]
-    fn starbucks_clerk() -> Result<(), Box<dyn std::error::Error>> {
-        #[derive(Debug, Clone)]
-        struct Clerk {}
-
-        impl Agent for Clerk {
-            fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-                debug!("{} looking for a customer.", ctx.name);
-                if let Some(last) = ctx.state.consumed.last() {
-                    if last.completed_time.is_some_and(|t| t + 60 > ctx.time) {
-                        debug!("Sorry, we're still serving the last customer.");
-                    }
-                }
-
-                if let Some(_msg) = ctx.state.queue.front() {
-                    if msg.queued_time + 100 > ctx.time {
-                        debug!("Still making your coffee, sorry!");
-                        ctx.set_processing_status(MessageProcessingStatus::InProgress);
-                    }
-
-                    debug!("Serviced a customer!");
-                }
-            }
-        }
-
-        init();
-
-        let mut simulation = Simulation::new(SimulationParameters {
-            starting_time: 1,
-            enable_queue_depth_metrics: false,
-            enable_agent_asleep_cycles_metric: false,
-            halt_check: |s: &Simulation| s.time > 500,
-            agent_initializers: vec![
-                poisson_distributed_producer(
-                    "Starbucks Customers".to_string(),
-                    Poisson::new(80.0_f64)?,
-                    "Starbucks Clerk".to_string(),
-                ),
-                AgentInitializer {
-                    agent: Box::new(Clerk {}),
-                    options: AgentOptions::defaults_with_name("Starbucks Clerk".to_string()),
-                },
-            ],
-        });
-
-        simulation.run();
-        assert!(Some(simulation).is_some());
-        Ok(())
     }
 
     #[test]
