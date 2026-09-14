@@ -1,5 +1,12 @@
 #+title: Changelog
 
+* DONE Consolidate typed experiments and eager worker setup
+Use one trial/replay protocol with bounded canonical serial and parallel runners.
+Worker initialization is fallible and eager; explicit storage is allocated before
+callbacks, and callback unwinding yields run-level errors without retries.
+Remove the duplicate replicated runner, TrialKey alias, and simulation-coupled
+search wrappers. Retain generic annealing and cross-entropy optimization.
+
 * DONE Sample finite bounds without interval-width overflow
 Opposite-sign extreme endpoints use a finite convex combination.
 Representable-width intervals retain their existing deterministic samples.

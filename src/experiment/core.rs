@@ -96,9 +96,6 @@ impl TrialId {
     }
 }
 
-/// Backward-readable name for a [`TrialId`] used as an ordered key.
-pub type TrialKey = TrialId;
-
 /// The frozen seed derivation protocol used by this release.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SeedProtocolVersion {
@@ -253,7 +250,7 @@ impl SeedDeriver {
     /// Derives a candidate-specific or common-random trial stream.
     fn trial_seed(
         self,
-        key: TrialKey,
+        key: TrialId,
         common_random_group: u64,
         stream: TrialStream,
         tag: &str,
@@ -315,7 +312,7 @@ pub struct ReplayKey {
     /// Root seed from which the trial streams are derived.
     master_seed: MasterSeed,
     /// Stable identity of the evaluated replication.
-    trial: TrialKey,
+    trial: TrialId,
     /// Group identifying candidates that share common randomness.
     common_random_group: u64,
 }
@@ -335,7 +332,7 @@ impl ReplayKey {
 
     /// Returns the trial identity.
     #[must_use]
-    pub const fn trial(self) -> TrialKey {
+    pub const fn trial(self) -> TrialId {
         self.trial
     }
 
@@ -355,7 +352,7 @@ pub struct TrialContext {
 
 impl TrialContext {
     /// Creates the context for a scheduled trial.
-    const fn new(master_seed: MasterSeed, key: TrialKey, common_random_group: u64) -> Self {
+    const fn new(master_seed: MasterSeed, key: TrialId, common_random_group: u64) -> Self {
         Self {
             replay: ReplayKey {
                 version: SeedProtocolVersion::V1,
@@ -368,7 +365,7 @@ impl TrialContext {
 
     /// Returns this trial's stable identity.
     #[must_use]
-    pub const fn key(self) -> TrialKey {
+    pub const fn key(self) -> TrialId {
         self.replay.trial
     }
 
@@ -432,7 +429,7 @@ impl TrialContext {
 #[derive(Clone, Debug)]
 pub struct TrialSpec<C> {
     /// Stable trial identity.
-    key: TrialKey,
+    key: TrialId,
     /// Group identifying candidates that share common randomness.
     common_random_group: u64,
     /// Candidate value supplied to the evaluator.
@@ -449,7 +446,7 @@ impl<C> TrialSpec<C> {
         value: C,
     ) -> Self {
         Self {
-            key: TrialKey::new(candidate, replication),
+            key: TrialId::new(candidate, replication),
             common_random_group,
             candidate: value,
         }
@@ -457,7 +454,7 @@ impl<C> TrialSpec<C> {
 
     /// Returns the trial identity.
     #[must_use]
-    pub const fn key(&self) -> TrialKey {
+    pub const fn key(&self) -> TrialId {
         self.key
     }
 
@@ -526,7 +523,7 @@ impl FixedReplications {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrialRecord<O, E> {
     /// Stable trial identity.
-    pub key: TrialKey,
+    pub key: TrialId,
     /// Exact key for recreating named random streams.
     pub replay: ReplayKey,
     /// Evaluator outcome or typed evaluator failure.
@@ -549,7 +546,7 @@ pub enum RetentionPolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetainedTrialRecord<O, E> {
     /// Stable trial identity.
-    pub key: TrialKey,
+    pub key: TrialId,
     /// Exact replay key.
     pub replay: ReplayKey,
     /// Retained typed outcome or failure.
@@ -588,16 +585,42 @@ pub fn retain_records<O, E>(
     }
 }
 
-/// Invalid batch input detected before evaluation begins.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Batch validation, allocation, or evaluator-panic failure.
+#[derive(Debug)]
 pub enum RunError {
     /// A trial identity occurred more than once.
-    DuplicateTrial(TrialKey),
+    DuplicateTrial(TrialId),
     /// The supplied iterator exceeded the declared memory bound.
     BatchLimitExceeded {
         /// Maximum permitted retained records.
         limit: usize,
     },
+    /// Explicit batch storage could not be allocated.
+    Allocation(std::collections::TryReserveError),
+    /// The serial evaluator panicked; partial output was discarded.
+    WorkloadPanic,
+}
+
+impl fmt::Display for RunError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateTrial(trial) => write!(formatter, "duplicate trial: {trial:?}"),
+            Self::BatchLimitExceeded { limit } => {
+                write!(formatter, "batch exceeds the record limit of {limit}")
+            }
+            Self::Allocation(source) => write!(formatter, "batch allocation failed: {source}"),
+            Self::WorkloadPanic => formatter.write_str("serial evaluator panicked"),
+        }
+    }
+}
+
+impl std::error::Error for RunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Allocation(source) => Some(source),
+            Self::DuplicateTrial(_) | Self::BatchLimitExceeded { .. } | Self::WorkloadPanic => None,
+        }
+    }
 }
 
 /// Runs a finite batch serially and returns records in canonical trial order.
@@ -607,8 +630,8 @@ pub enum RunError {
 ///
 /// # Errors
 ///
-/// Returns [`RunError::DuplicateTrial`] when a trial identity occurs more than
-/// once.
+/// Returns an error for duplicate identities, allocation failure, or an evaluator
+/// panic when unwinding is enabled. Partial output is discarded without retries.
 pub fn run_serial<C, O, E>(
     master_seed: MasterSeed,
     trials: impl IntoIterator<Item = TrialSpec<C>>,
@@ -626,36 +649,69 @@ pub fn run_serial<C, O, E>(
 ///
 /// # Errors
 ///
-/// Returns [`RunError::BatchLimitExceeded`] when the input exceeds `limit`, or
-/// [`RunError::DuplicateTrial`] when a trial identity occurs more than once.
+/// Returns an error if input exceeds `limit`, repeats an identity, or batch
+/// storage cannot be allocated. These failures precede evaluation. An evaluator
+/// panic is caught when unwinding is enabled and discards partial output.
 pub fn run_serial_bounded<C, O, E>(
     master_seed: MasterSeed,
     trials: impl IntoIterator<Item = TrialSpec<C>>,
     limit: NonZeroUsize,
     mut evaluate: impl FnMut(&C, &TrialContext) -> Result<O, E>,
 ) -> Result<Vec<TrialRecord<O, E>>, RunError> {
+    let ordered = collect_canonical(trials, limit)?;
+    let mut records = Vec::new();
+    records
+        .try_reserve_exact(ordered.len())
+        .map_err(RunError::Allocation)?;
+    catch_callback(|| {
+        for trial in ordered {
+            let context = TrialContext::new(master_seed, trial.key, trial.common_random_group);
+            let result = evaluate(&trial.candidate, &context);
+            records.push(TrialRecord {
+                key: trial.key,
+                replay: context.replay_key(),
+                result,
+            });
+        }
+    })
+    .map_err(|()| RunError::WorkloadPanic)?;
+    Ok(records)
+}
+
+/// Collects a bounded batch and validates its allocation-free canonical ordering.
+fn collect_canonical<C>(
+    trials: impl IntoIterator<Item = TrialSpec<C>>,
+    limit: NonZeroUsize,
+) -> Result<Vec<TrialSpec<C>>, RunError> {
+    let trials = trials.into_iter();
     let mut ordered = Vec::new();
+    ordered
+        .try_reserve(trials.size_hint().0.min(limit.get()))
+        .map_err(RunError::Allocation)?;
     for trial in trials {
         if ordered.len() == limit.get() {
             return Err(RunError::BatchLimitExceeded { limit: limit.get() });
         }
+        if ordered.len() == ordered.capacity() {
+            ordered.try_reserve(1).map_err(RunError::Allocation)?;
+        }
         ordered.push(trial);
     }
-    ordered.sort_by_key(TrialSpec::key);
+    ordered.sort_unstable_by_key(TrialSpec::key);
     ensure_unique(&ordered)?;
+    Ok(ordered)
+}
 
-    Ok(ordered
-        .into_iter()
-        .map(|trial| {
-            let context = TrialContext::new(master_seed, trial.key, trial.common_random_group);
-            let result = evaluate(&trial.candidate, &context);
-            TrialRecord {
-                key: trial.key,
-                replay: context.replay_key(),
-                result,
-            }
-        })
-        .collect())
+/// Contains callback unwinding; caller-owned mutable state is never retried.
+fn catch_callback<T>(callback: impl FnOnce() -> T) -> Result<T, ()> {
+    #[cfg(panic = "unwind")]
+    {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)).map_err(|_| ())
+    }
+    #[cfg(not(panic = "unwind"))]
+    {
+        Ok(callback())
+    }
 }
 
 /// Rejects adjacent duplicate trial identities in a canonically ordered batch.
@@ -672,7 +728,7 @@ fn ensure_unique<C>(ordered: &[TrialSpec<C>]) -> Result<(), RunError> {
 #[cfg(feature = "parallel")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ParallelConfig {
-    /// Number of worker threads in the dedicated pool.
+    /// Requested worker count, capped by batch size and available parallelism.
     workers: NonZeroUsize,
     /// Maximum number of records retained by one batch.
     batch_limit: NonZeroUsize,
@@ -705,32 +761,95 @@ impl ParallelConfig {
 /// Failure to configure or run the optional parallel executor.
 #[cfg(feature = "parallel")]
 #[derive(Debug)]
-pub enum ParallelRunError {
-    /// Batch validation failed before workers ran.
+pub enum ParallelRunError<WE> {
+    /// Batch validation or explicit storage allocation failed before callbacks.
     Batch(RunError),
-    /// Rayon could not construct the dedicated outer worker pool.
+    /// Rayon could not construct the dedicated worker pool.
     Pool(rayon::ThreadPoolBuildError),
+    /// A caller-thread workspace factory returned a typed error.
+    WorkerInitialization {
+        /// Zero-based contiguous shard identity.
+        worker: usize,
+        /// Original workspace initialization error.
+        source: WE,
+    },
+    /// A caller-thread workspace factory panicked.
+    WorkerFactoryPanic {
+        /// Zero-based contiguous shard identity.
+        worker: usize,
+    },
+    /// An evaluator panicked; all shards joined and partial output was discarded.
+    WorkerWorkloadPanic {
+        /// Lowest zero-based contiguous shard identity whose evaluator panicked.
+        worker: usize,
+    },
+}
+
+#[cfg(feature = "parallel")]
+impl<WE: fmt::Display> fmt::Display for ParallelRunError<WE> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Batch(source) => write!(formatter, "invalid parallel batch: {source}"),
+            Self::Pool(source) => write!(formatter, "worker pool construction failed: {source}"),
+            Self::WorkerInitialization { worker, source } => {
+                write!(formatter, "worker {worker} initialization failed: {source}")
+            }
+            Self::WorkerFactoryPanic { worker } => {
+                write!(formatter, "worker {worker} factory panicked")
+            }
+            Self::WorkerWorkloadPanic { worker } => {
+                write!(formatter, "worker {worker} evaluator panicked")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl<WE: std::error::Error + 'static> std::error::Error for ParallelRunError<WE> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Batch(source) => Some(source),
+            Self::Pool(source) => Some(source),
+            Self::WorkerInitialization { source, .. } => Some(source),
+            Self::WorkerFactoryPanic { .. } | Self::WorkerWorkloadPanic { .. } => None,
+        }
+    }
+}
+
+/// A contiguous canonical input shard with output storage reserved before callbacks.
+#[cfg(feature = "parallel")]
+struct ParallelShard<'a, C, O, E> {
+    /// Borrowed canonical input, never cloned or redistributed during evaluation.
+    trials: &'a [TrialSpec<C>],
+    /// Preallocated output for every trial in this shard.
+    records: Vec<TrialRecord<O, E>>,
+    /// Whether evaluation unwound before the shard completed.
+    panicked: bool,
 }
 
 /// Runs a bounded batch in a dedicated Rayon pool with worker-local state.
 ///
 /// Conforming evaluators must depend only on the candidate, context, immutable
 /// configuration, and unobservable worker-local scratch. Output order is always
-/// canonical and independent of scheduling or worker count.
-#[cfg(feature = "parallel")]
+/// canonical and independent of scheduling or worker count. Each contiguous
+/// canonical shard owns exactly one mutable workspace, initialized on the caller
+/// thread. All storage and the dedicated pool are prepared before factories run;
+/// all factories succeed before any evaluation begins. Empty input needs neither.
 ///
 /// # Errors
 ///
-/// Returns [`ParallelRunError::Batch`] when the input exceeds the configured
-/// limit or repeats a trial identity. Returns [`ParallelRunError::Pool`] when
-/// the dedicated Rayon pool cannot be constructed.
-pub fn run_parallel<C, O, E, W>(
+/// Returns typed batch, pool, or workspace-initialization failures before any
+/// evaluations. When unwinding is enabled, factory and evaluator panics become
+/// typed errors. Evaluator panics join all shards, select the lowest failing shard
+/// identity, and discard partial output without retrying callbacks.
+#[cfg(feature = "parallel")]
+pub fn run_parallel<C, O, E, W, WE>(
     master_seed: MasterSeed,
     trials: impl IntoIterator<Item = TrialSpec<C>>,
     config: ParallelConfig,
-    init_worker: impl Fn() -> W + Send + Sync,
+    mut init_worker: impl FnMut() -> Result<W, WE>,
     evaluate: impl Fn(&mut W, &C, &TrialContext) -> Result<O, E> + Send + Sync,
-) -> Result<Vec<TrialRecord<O, E>>, ParallelRunError>
+) -> Result<Vec<TrialRecord<O, E>>, ParallelRunError<WE>>
 where
     C: Send + Sync,
     O: Send,
@@ -739,36 +858,82 @@ where
 {
     use rayon::prelude::*;
 
-    let mut ordered = Vec::new();
-    for trial in trials {
-        if ordered.len() == config.batch_limit.get() {
-            return Err(ParallelRunError::Batch(RunError::BatchLimitExceeded {
-                limit: config.batch_limit.get(),
-            }));
-        }
-        ordered.push(trial);
+    let ordered = collect_canonical(trials, config.batch_limit).map_err(ParallelRunError::Batch)?;
+    let mut records = Vec::new();
+    if ordered.is_empty() {
+        return Ok(records);
     }
-    ordered.sort_by_key(TrialSpec::key);
-    ensure_unique(&ordered).map_err(ParallelRunError::Batch)?;
+    records
+        .try_reserve_exact(ordered.len())
+        .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
+
+    let available = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    let workers = config.workers.get().min(ordered.len()).min(available.get());
+    let mut workspaces = Vec::new();
+    workspaces
+        .try_reserve_exact(workers)
+        .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
+    let mut shards = Vec::new();
+    shards
+        .try_reserve_exact(workers)
+        .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
+
+    let base_size = ordered.len().div_euclid(workers);
+    let remainder = ordered.len().rem_euclid(workers);
+    let mut remaining = ordered.as_slice();
+    for worker in 0..workers {
+        let size = base_size + usize::from(worker < remainder);
+        let (trials, rest) = remaining.split_at(size);
+        remaining = rest;
+        let mut shard_records = Vec::new();
+        shard_records
+            .try_reserve_exact(size)
+            .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
+        shards.push(ParallelShard {
+            trials,
+            records: shard_records,
+            panicked: false,
+        });
+    }
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.workers.get())
+        .num_threads(workers)
         .build()
         .map_err(ParallelRunError::Pool)?;
-    Ok(pool.install(|| {
-        ordered
-            .into_par_iter()
-            .map_init(init_worker, |worker, trial| {
-                let context = TrialContext::new(master_seed, trial.key, trial.common_random_group);
-                let result = evaluate(worker, &trial.candidate, &context);
-                TrialRecord {
-                    key: trial.key,
-                    replay: context.replay_key(),
-                    result,
-                }
-            })
-            .collect()
-    }))
+    for worker in 0..workers {
+        let workspace = catch_callback(&mut init_worker)
+            .map_err(|()| ParallelRunError::WorkerFactoryPanic { worker })?
+            .map_err(|source| ParallelRunError::WorkerInitialization { worker, source })?;
+        workspaces.push(workspace);
+    }
+
+    pool.install(|| {
+        shards
+            .par_iter_mut()
+            .zip(workspaces.par_iter_mut())
+            .for_each(|(shard, workspace)| {
+                shard.panicked = catch_callback(|| {
+                    for trial in shard.trials {
+                        let context =
+                            TrialContext::new(master_seed, trial.key, trial.common_random_group);
+                        let result = evaluate(workspace, &trial.candidate, &context);
+                        shard.records.push(TrialRecord {
+                            key: trial.key,
+                            replay: context.replay_key(),
+                            result,
+                        });
+                    }
+                })
+                .is_err();
+            });
+    });
+    if let Some(worker) = shards.iter().position(|shard| shard.panicked) {
+        return Err(ParallelRunError::WorkerWorkloadPanic { worker });
+    }
+    for mut shard in shards {
+        records.append(&mut shard.records);
+    }
+    Ok(records)
 }
 
 /// A finite floating-point value accepted for ranking or replacement policies.
@@ -1355,7 +1520,7 @@ mod tests {
     fn context(master: MasterSeed, candidate: u64, replication: u32, group: u64) -> TrialContext {
         TrialContext::new(
             master,
-            TrialKey::new(CandidateId::new(candidate), ReplicationId::new(replication)),
+            TrialId::new(CandidateId::new(candidate), ReplicationId::new(replication)),
             group,
         )
     }
@@ -1427,9 +1592,9 @@ mod tests {
         assert_eq!(
             records.iter().map(|record| record.key).collect::<Vec<_>>(),
             vec![
-                TrialKey::new(CandidateId::new(1), ReplicationId::new(0)),
-                TrialKey::new(CandidateId::new(1), ReplicationId::new(1)),
-                TrialKey::new(CandidateId::new(2), ReplicationId::new(1)),
+                TrialId::new(CandidateId::new(1), ReplicationId::new(0)),
+                TrialId::new(CandidateId::new(1), ReplicationId::new(1)),
+                TrialId::new(CandidateId::new(2), ReplicationId::new(1)),
             ]
         );
         assert_eq!(records[0].result, Ok(20));
@@ -1445,13 +1610,11 @@ mod tests {
         ];
         let duplicate_result =
             run_serial(MasterSeed::from_u64(0), duplicate, |(), _| Ok::<_, ()>(()));
-        assert_eq!(
+        assert!(matches!(
             duplicate_result,
-            Err(RunError::DuplicateTrial(TrialKey::new(
-                CandidateId::new(1),
-                ReplicationId::new(0)
-            )))
-        );
+            Err(RunError::DuplicateTrial(trial))
+                if trial == TrialId::new(CandidateId::new(1), ReplicationId::new(0))
+        ));
 
         let bounded = [
             TrialSpec::new(CandidateId::new(1), ReplicationId::new(0), 0, ()),
@@ -1463,10 +1626,10 @@ mod tests {
             NonZeroUsize::MIN,
             |(), _| Ok::<_, ()>(()),
         );
-        assert_eq!(
+        assert!(matches!(
             bounded_result,
             Err(RunError::BatchLimitExceeded { limit: 1 })
-        );
+        ));
     }
 
     #[test]
@@ -1521,7 +1684,9 @@ mod tests {
         let mut reducer = ScalarReducer::default();
         reducer.observe(1.0).expect("finite observation should fit");
         reducer.observe(3.0).expect("finite observation should fit");
-        let before = reducer.finish().expect("accepted observations should reduce");
+        let before = reducer
+            .finish()
+            .expect("accepted observations should reduce");
         assert_eq!(
             reducer.observe(f64::MAX),
             Err(ReduceError::ArithmeticOverflow)
@@ -1538,7 +1703,7 @@ mod tests {
     fn scalar_aggregation_reports_overflow_independently_of_non_finite_policy() {
         let master = MasterSeed::from_u64(9);
         let records = [f64::MAX, -f64::MAX].map(|value| TrialRecord {
-            key: TrialKey::new(CandidateId::new(1), ReplicationId::new(0)),
+            key: TrialId::new(CandidateId::new(1), ReplicationId::new(0)),
             replay: context(master, 1, 0, 0).replay_key(),
             result: Ok::<f64, &str>(value),
         });
@@ -1553,9 +1718,9 @@ mod tests {
     #[test]
     fn scalar_aggregation_rejection_precedes_arithmetic_overflow() {
         let master = MasterSeed::from_u64(9);
-        let records = [Ok(f64::MAX), Ok(-f64::MAX), Ok(f64::NAN), Err("physics")]
-            .map(|result| TrialRecord {
-                key: TrialKey::new(CandidateId::new(1), ReplicationId::new(0)),
+        let records =
+            [Ok(f64::MAX), Ok(-f64::MAX), Ok(f64::NAN), Err("physics")].map(|result| TrialRecord {
+                key: TrialId::new(CandidateId::new(1), ReplicationId::new(0)),
                 replay: context(master, 1, 0, 0).replay_key(),
                 result,
             });
@@ -1593,17 +1758,17 @@ mod tests {
         let master = MasterSeed::from_u64(9);
         let records = vec![
             TrialRecord {
-                key: TrialKey::new(CandidateId::new(1), ReplicationId::new(0)),
+                key: TrialId::new(CandidateId::new(1), ReplicationId::new(0)),
                 replay: context(master, 1, 0, 0).replay_key(),
                 result: Ok::<f64, &str>(1.0),
             },
             TrialRecord {
-                key: TrialKey::new(CandidateId::new(1), ReplicationId::new(1)),
+                key: TrialId::new(CandidateId::new(1), ReplicationId::new(1)),
                 replay: context(master, 1, 1, 0).replay_key(),
                 result: Ok(f64::NAN),
             },
             TrialRecord {
-                key: TrialKey::new(CandidateId::new(1), ReplicationId::new(2)),
+                key: TrialId::new(CandidateId::new(1), ReplicationId::new(2)),
                 replay: context(master, 1, 2, 0).replay_key(),
                 result: Err("physics"),
             },
@@ -1683,7 +1848,7 @@ mod tests {
         assert_eq!(failures.len(), 1);
         assert_eq!(
             failures[0].key,
-            TrialKey::new(CandidateId::new(4), ReplicationId::new(1))
+            TrialId::new(CandidateId::new(4), ReplicationId::new(1))
         );
         assert_eq!(failures[0].result, Err("failed"));
     }
@@ -1718,7 +1883,7 @@ mod tests {
                     NonZeroUsize::new(workers).expect("worker fixture values are nonzero"),
                     NonZeroUsize::new(16).expect("batch-limit fixture is nonzero"),
                 ),
-                Vec::<u8>::new,
+                || Ok::<_, ()>(Vec::<u8>::new()),
                 |scratch, value, context| {
                     scratch.push(0);
                     Ok::<_, ()>((*value, context.sample_common_f64("noise")))

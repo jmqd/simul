@@ -1,90 +1,25 @@
+//! Typed deterministic trials, reduction, and engine-independent optimizers.
+//!
+//! Use [`run_serial_bounded`](crate::experiment::run_serial_bounded) or
+//! `run_parallel` (with the `parallel` feature) for replicated evaluations,
+//! and [`search`](crate::experiment::search) for tokenized candidate search.
+//! The `Simulation` agent engine is one possible evaluator, not a requirement.
+//!
+//! Trial identity and replay use one V1 keyed BLAKE3/ChaCha12 protocol.
+
 pub mod cross_entropy;
 
 pub use cross_entropy::*;
-pub mod replicated;
 mod core;
+pub use core::*;
 
 /// Tokenized deterministic search strategies.
 pub mod search;
 
-use crate::Simulation;
-use crate::SimulationParameters;
 use rand::{Rng, RngExt};
 
-/// `ObjectiveScore` is a measure of how a Simulation performed according to an
-/// objective function. This is used to find approximate global optimizations.
+/// A maximized objective score for the generic annealing and cross-entropy optimizers.
 pub type ObjectiveScore = f64;
-
-/// Monte carlo search of simulations.
-///
-/// Given a function that generates various configurations of
-/// `SimulationParameters`, run many simulation replications with varying
-/// `SimulationParameters`. The parameters are varied by calling the generator.
-/// The generator may, for example, randomly vary multiple fields of the
-/// parameters. This function tries to approximate the globally optimal
-/// parameters by running the simulation as many times as you specify
-/// (`replications_limit`), and finds the Simulation that yielded the highest
-/// score from the provided `objective_function`.
-///
-/// The simplest and most common objective function is to return negative
-/// simulation time. An objective function that returns negative simulation time
-/// will find the Simulation that completed in the least ticks of `DiscreteTime`.
-///
-/// NaN scores are ignored. This returns `None` when no replications run or
-/// when every replication has a NaN score.
-pub fn monte_carlo_search(
-    mut simulation_parameters_generator: impl FnMut() -> SimulationParameters,
-    replications_limit: u32,
-    objective_function: impl Fn(&Simulation) -> ObjectiveScore,
-) -> Option<Simulation> {
-    let mut approx_optimal_simulation: Option<Simulation> = None;
-    let mut high_score: Option<ObjectiveScore> = None;
-
-    for _ in 0..replications_limit {
-        let mut simulation = Simulation::new(simulation_parameters_generator());
-        simulation.run();
-
-        let score = objective_function(&simulation);
-        if !score.is_nan() && high_score.is_none_or(|high_score| score > high_score) {
-            approx_optimal_simulation = Some(simulation);
-            high_score = Some(score);
-        }
-    }
-
-    approx_optimal_simulation
-}
-
-/// Searches for simulation parameters that maximize `objective_function`.
-///
-/// The initial parameters are evaluated once, followed by `replications_limit`
-/// proposals. The temperature schedule receives zero-based proposal indices.
-/// Returns `None` only when the initial score and every proposal score are NaN.
-///
-/// This convenience function evaluates every proposal with one simulation run.
-/// If simulation outcomes are stochastic, prefer
-/// [`simulated_annealing_search_with_rng`] and aggregate deterministic
-/// replications in its objective function.
-pub fn simulated_annealing_search(
-    initial_parameters_generator: impl FnOnce() -> SimulationParameters,
-    mut perturb_function: impl FnMut(&SimulationParameters) -> SimulationParameters,
-    mut objective_function: impl FnMut(&Simulation) -> ObjectiveScore,
-    summon_chaotic_flux: impl FnMut(u32) -> f64,
-    replications_limit: u32,
-) -> Option<SimulationParameters> {
-    let mut rng = rand::rng();
-    simulated_annealing_search_with_rng(
-        &mut rng,
-        |_| initial_parameters_generator(),
-        |parameters, _| perturb_function(parameters),
-        |parameters| {
-            let mut simulation = Simulation::new(parameters.clone());
-            simulation.run();
-            objective_function(&simulation)
-        },
-        summon_chaotic_flux,
-        replications_limit,
-    )
-}
 
 /// Searches for a state that maximizes an objective using simulated annealing.
 ///
@@ -103,7 +38,7 @@ pub fn simulated_annealing_search(
 /// from `rng`. Reproducible results additionally require a deterministic
 /// objective function. For noisy objectives, aggregate deterministic
 /// replications inside `objective_function` (for example with
-/// [`replicated::run_replicated`]) rather than optimizing one noisy sample.
+/// [`run_serial_bounded`]) rather than optimizing one noisy sample.
 pub fn simulated_annealing_search_with_rng<State, Random>(
     rng: &mut Random,
     initial_state_generator: impl FnOnce(&mut Random) -> State,
@@ -242,22 +177,6 @@ mod tests {
         fn try_fill_bytes(&mut self, _destination: &mut [u8]) -> Result<(), Self::Error> {
             panic!("unexpected random draw")
         }
-    }
-
-    #[test]
-    fn monte_carlo_accepts_extreme_negative_scores() {
-        for score in [ObjectiveScore::MIN, ObjectiveScore::NEG_INFINITY] {
-            let result = monte_carlo_search(SimulationParameters::default, 1, |_| score);
-
-            assert!(result.is_some());
-        }
-    }
-
-    #[test]
-    fn monte_carlo_returns_none_when_every_score_is_nan() {
-        let result = monte_carlo_search(SimulationParameters::default, 2, |_| ObjectiveScore::NAN);
-
-        assert!(result.is_none());
     }
 
     #[test]
@@ -468,4 +387,3 @@ mod tests {
         assert_eq!(run(42), run(42));
     }
 }
-pub use core::*;

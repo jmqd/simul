@@ -28,6 +28,43 @@ Use-cases:
   implement `Agent`, and pass your agents into `Simulation` via constructing
   `AgentInitializers`.
 
+## Typed experiments (source checkout)
+
+`experiment` is independent of the agent engine. The consolidated API below is
+available in this checkout; it has not been published as a new crates.io release.
+
+- Schedule explicit `TrialSpec` values with `CandidateId` and `ReplicationId`.
+  `run_serial_bounded` rejects duplicate identities and oversized batches before
+  evaluation, and returns records ordered by `TrialId`.
+- Replay uses the unchanged V1 keyed BLAKE3/ChaCha12 protocol. Retain `ReplayKey`,
+  candidate inputs, and evaluator configuration. Named common-random streams
+  share noise across candidates; `ValidationHoldout` separates validation noise.
+- With `parallel`, `run_parallel` uses a dedicated bounded Rayon pool and one
+  mutable workspace per contiguous shard. Its factory is
+  `FnMut() -> Result<W, WE>`, called on the caller thread. Explicit batch/output
+  storage and the pool are prepared before factories, and every factory succeeds
+  before evaluation starts. Requested workers are capped by work and available
+  parallelism. Evaluators must use only their inputs, context, immutable
+  configuration, and unobservable scratch for worker-count-independent results.
+- Setup failures are run-level errors; evaluator `Err` values remain ordered
+  trial records. With unwinding enabled, callback panics discard partial output
+  and return a run-level error without retries. This does not roll back callback
+  side effects, and cannot catch panics in `panic = "abort"` builds.
+- `aggregate_scalar` and `aggregate_bernoulli` apply explicit failure policies.
+  Unrepresentable scalar arithmetic returns `ArithmeticOverflow`, never a
+  successful non-finite summary.
+- `search::SeededRandomSearch` provides tokenized ask/tell search.
+  `CrossEntropyOptimizer` and `simulated_annealing_search_with_rng` remain
+  engine-independent optimizer alternatives; aggregate noisy trials inside their
+  objective rather than ranking a lucky single run.
+
+The duplicate `experiment::replicated` API and its SplitMix64/Box–Muller replay
+protocol are removed, not aliased. Old replay keys are not interchangeable with
+V1 BLAKE3/ChaCha12 keys. The `TrialKey` alias is removed in favor of `TrialId`;
+the simulation-coupled `monte_carlo_search` and `simulated_annealing_search`
+wrappers are removed. See `examples/simple_experiment.rs` and
+`benches/deterministic_search_benchmark.rs` for the typed replacement.
+
 ## Basic usage
 
 ``` toml
