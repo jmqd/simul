@@ -1626,12 +1626,12 @@ mod tests {
         })
         .expect("valid unique fixture trials should run serially");
         assert_eq!(
-            records.iter().map(|record| record.key).collect::<Vec<_>>(),
             vec![
                 TrialId::new(CandidateId::new(1), ReplicationId::new(0)),
                 TrialId::new(CandidateId::new(1), ReplicationId::new(1)),
                 TrialId::new(CandidateId::new(2), ReplicationId::new(1)),
-            ]
+            ],
+            records.iter().map(|record| record.key).collect::<Vec<_>>()
         );
         assert_eq!(records[0].result, Ok(20));
         assert_eq!(records[1].result, Err("negative"));
