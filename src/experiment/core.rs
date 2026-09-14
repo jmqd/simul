@@ -1886,7 +1886,7 @@ mod tests {
             TrialId::new(CandidateId::new(4), ReplicationId::new(1)),
             failures[0].key
         );
-        assert_eq!(failures[0].result, Err("failed"));
+        assert_eq!(Err("failed"), failures[0].result);
     }
 
     #[cfg(feature = "parallel")]
