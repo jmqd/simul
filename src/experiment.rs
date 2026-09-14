@@ -325,7 +325,7 @@ mod tests {
             );
 
             assert_eq!(&[1, 1], visited.as_slice());
-            assert_eq!(result, Some(NonClone(1)));
+            assert_eq!(Some(NonClone(1)), result);
         }
     }
 
