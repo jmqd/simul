@@ -7,6 +7,7 @@ use std::collections::{HashSet, TryReserveError};
 use std::error::Error;
 use std::fmt;
 use std::io;
+use std::mem::MaybeUninit;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread;
@@ -313,8 +314,6 @@ pub enum ReplicationAllocation {
     CandidateIds,
     /// Parent-owned worker slots.
     WorkerSlots,
-    /// Records for one contiguous worker range.
-    WorkerChunkRecords,
     /// Scoped thread handles.
     ThreadHandles,
 }
@@ -325,7 +324,6 @@ impl fmt::Display for ReplicationAllocation {
             Self::TrialRecords => "trial records",
             Self::CandidateIds => "candidate IDs",
             Self::WorkerSlots => "worker slots",
-            Self::WorkerChunkRecords => "worker chunk records",
             Self::ThreadHandles => "thread handles",
         };
         formatter.write_str(name)
@@ -356,7 +354,7 @@ pub enum ReplicationError<WorkerError> {
     TryReserve {
         /// Allocation being attempted.
         allocation: ReplicationAllocation,
-        /// Worker associated with a chunk allocation, when applicable.
+        /// Worker associated with the allocation, when applicable.
         worker_id: Option<WorkerId>,
         /// Standard allocation failure.
         source: TryReserveError,
@@ -472,13 +470,40 @@ where
 /// Returns [`ReplicationError`] when IDs or sizes are invalid, a prerequisite
 /// allocation fails, worker construction or spawning fails, or a callback
 /// workload panics. Prepare and evaluation errors remain trial-local records.
-#[allow(clippy::too_many_lines)]
 pub fn run_replicated<C, P, W, O, PE, EE, WE>(
     candidates: &[Candidate<C>],
     plan: ReplicationPlan,
     make_worker: impl Fn(WorkerId) -> Result<W, WE>,
     prepare: impl Fn(&C, TrialContext) -> Result<P, PE> + Sync,
     evaluate: impl Fn(&W, &P) -> Result<O, EE> + Sync,
+) -> Result<Vec<TrialRecord<O, PE, EE>>, ReplicationError<WE>>
+where
+    C: Sync,
+    P: Send,
+    W: Send,
+    O: Send,
+    PE: Send,
+    EE: Send,
+{
+    run_replicated_with_parallelism(
+        candidates,
+        plan,
+        make_worker,
+        prepare,
+        evaluate,
+        thread::available_parallelism(),
+    )
+}
+
+/// Keeps the production parallelism cap injectable for host-independent tests.
+#[allow(clippy::too_many_lines)]
+fn run_replicated_with_parallelism<C, P, W, O, PE, EE, WE>(
+    candidates: &[Candidate<C>],
+    plan: ReplicationPlan,
+    make_worker: impl Fn(WorkerId) -> Result<W, WE>,
+    prepare: impl Fn(&C, TrialContext) -> Result<P, PE> + Sync,
+    evaluate: impl Fn(&W, &P) -> Result<O, EE> + Sync,
+    available: io::Result<NonZeroUsize>,
 ) -> Result<Vec<TrialRecord<O, PE, EE>>, ReplicationError<WE>>
 where
     C: Sync,
@@ -497,22 +522,23 @@ where
     let (replications, trial_count) =
         checked_trial_count::<WE>(candidates.len(), plan.replications.get())?;
 
-    let worker_count =
-        capped_worker_count(plan.workers, trial_count, thread::available_parallelism());
-    let mut slots = allocate_worker_slots::<W, O, PE, EE, WE>(worker_count, trial_count)?;
+    let worker_count = capped_worker_count(plan.workers, trial_count, available);
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(trial_count)
+        .map_err(|source| reserve_error(ReplicationAllocation::TrialRecords, None, source))?;
+    let mut slots = allocate_worker_slots::<W, _, WE>(
+        worker_count,
+        &mut output.spare_capacity_mut()[..trial_count],
+    )?;
 
     if worker_count == 1 {
         initialize_workers(&mut slots, &make_worker)?;
-        let Some(mut slot) = slots.pop() else {
-            return Err(ReplicationError::TrialCountOverflow {
-                candidate_count: candidates.len(),
-                replications: plan.replications.get(),
-            });
-        };
+        let slot = &mut slots[0];
         let Some(worker) = slot.worker.take() else {
             return Err(ReplicationError::WorkerFactoryPanic { worker_id: slot.id });
         };
-        return catch_unwind(AssertUnwindSafe(|| {
+        catch_unwind(AssertUnwindSafe(|| {
             run_worker_range(
                 candidates,
                 replications,
@@ -522,93 +548,122 @@ where
                 &prepare,
                 &evaluate,
                 slot.start,
-                slot.end,
-                slot.records,
-            )
+                &mut slot.records,
+            );
         }))
-        .map_err(|_| ReplicationError::WorkerWorkloadPanic { worker_id: slot.id });
-    }
+        .map_err(|_| ReplicationError::WorkerWorkloadPanic { worker_id: slot.id })?;
+    } else {
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            handles.try_reserve_exact(worker_count).map_err(|source| {
+                reserve_error(ReplicationAllocation::ThreadHandles, None, source)
+            })?;
 
-    let mut output = Vec::new();
-    output
-        .try_reserve_exact(trial_count)
-        .map_err(|source| reserve_error(ReplicationAllocation::TrialRecords, None, source))?;
+            initialize_workers(&mut slots, &make_worker)?;
 
-    thread::scope(|scope| {
-        let mut handles = Vec::new();
-        handles
-            .try_reserve_exact(worker_count)
-            .map_err(|source| reserve_error(ReplicationAllocation::ThreadHandles, None, source))?;
-
-        initialize_workers(&mut slots, &make_worker)?;
-
-        for mut slot in slots {
-            let Some(worker) = slot.worker.take() else {
-                join_spawned_handles(handles);
-                return Err(ReplicationError::WorkerFactoryPanic { worker_id: slot.id });
-            };
-            let worker_id = slot.id;
-            let spawn = thread::Builder::new().spawn_scoped(scope, {
-                let prepare = &prepare;
-                let evaluate = &evaluate;
-                move || {
-                    catch_unwind(AssertUnwindSafe(|| {
-                        run_worker_range(
-                            candidates,
-                            replications,
-                            plan.master_seed,
-                            plan.random_domain,
-                            &worker,
-                            prepare,
-                            evaluate,
-                            slot.start,
-                            slot.end,
-                            slot.records,
-                        )
-                    }))
-                }
-            });
-
-            match spawn {
-                Ok(handle) => handles.push((worker_id, handle)),
-                Err(source) => {
+            for slot in &mut slots {
+                let Some(worker) = slot.worker.take() else {
                     join_spawned_handles(handles);
-                    return Err(ReplicationError::ScopedThreadSpawn { worker_id, source });
-                }
-            }
-        }
+                    return Err(ReplicationError::WorkerFactoryPanic { worker_id: slot.id });
+                };
+                let worker_id = slot.id;
+                let spawn = thread::Builder::new().spawn_scoped(scope, {
+                    let prepare = &prepare;
+                    let evaluate = &evaluate;
+                    move || {
+                        catch_unwind(AssertUnwindSafe(|| {
+                            run_worker_range(
+                                candidates,
+                                replications,
+                                plan.master_seed,
+                                plan.random_domain,
+                                &worker,
+                                prepare,
+                                evaluate,
+                                slot.start,
+                                &mut slot.records,
+                            );
+                        }))
+                    }
+                });
 
-        let mut first_panic = None;
-        for (worker_id, handle) in handles {
-            match handle.join() {
-                Ok(Ok(mut records)) => output.append(&mut records),
-                Ok(Err(_)) | Err(_) => {
-                    if first_panic.is_none() {
-                        first_panic = Some(worker_id);
+                match spawn {
+                    Ok(handle) => handles.push((worker_id, handle)),
+                    Err(source) => {
+                        join_spawned_handles(handles);
+                        return Err(ReplicationError::ScopedThreadSpawn { worker_id, source });
                     }
                 }
             }
-        }
 
-        first_panic.map_or_else(
-            || Ok(output),
-            |worker_id| Err(ReplicationError::WorkerWorkloadPanic { worker_id }),
-        )
-    })
+            let mut first_panic = None;
+            for (worker_id, handle) in handles {
+                match handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) | Err(_) => {
+                        if first_panic.is_none() {
+                            first_panic = Some(worker_id);
+                        }
+                    }
+                }
+            }
+            first_panic.map_or_else(
+                || Ok(()),
+                |worker_id| Err(ReplicationError::WorkerWorkloadPanic { worker_id }),
+            )
+        })?;
+    }
+
+    // All ranges completed and all threads joined. Transfer drop ownership from
+    // the guards to the Vec without moving records or allocating another buffer.
+    for slot in &mut slots {
+        slot.records.initialized = 0;
+    }
+    drop(slots);
+    // SAFETY: the disjoint ranges cover exactly `trial_count` reserved elements,
+    // and successful completion initialized every element. No slice borrows or
+    // guards remain, and output now becomes their sole drop owner.
+    unsafe { output.set_len(trial_count) };
+    Ok(output)
 }
 
-/// Parent-owned worker state and preallocated output chunk.
-struct WorkerSlot<W, O, PE, EE> {
+/// Parent-owned worker state and an exclusively borrowed output range.
+struct WorkerSlot<'a, W, T> {
     /// Stable worker identifier.
     id: WorkerId,
     /// Inclusive flat range start.
     start: usize,
-    /// Exclusive flat range end.
-    end: usize,
     /// Worker initialized before any trial callback.
     worker: Option<W>,
-    /// Preallocated records for this worker's range.
-    records: Vec<TrialRecord<O, PE, EE>>,
+    /// Owns destruction of the initialized prefix until the run succeeds.
+    records: RecordRange<'a, T>,
+}
+
+/// Drops partially initialized records on every unsuccessful exit.
+struct RecordRange<'a, T> {
+    /// Disjoint portion of the output Vec's spare capacity.
+    storage: &'a mut [MaybeUninit<T>],
+    /// Exactly this prefix contains live values owned by this guard.
+    initialized: usize,
+}
+
+impl<T> RecordRange<'_, T> {
+    /// Writes the next record before taking ownership of its destruction.
+    fn push(&mut self, value: T) {
+        self.storage[self.initialized].write(value);
+        self.initialized += 1;
+    }
+}
+
+impl<T> Drop for RecordRange<'_, T> {
+    fn drop(&mut self) {
+        for record in &mut self.storage[..self.initialized] {
+            // SAFETY: push initializes an element before extending the prefix.
+            // This guard exclusively owns the prefix, including after a caught
+            // callback panic; successful runs disarm it before Vec takes over.
+            unsafe { record.assume_init_drop() };
+        }
+    }
 }
 
 /// Applies `SplitMix64`'s avalanche function.
@@ -690,46 +745,41 @@ fn capped_worker_count(
     requested.get().min(trial_count).min(available)
 }
 
-/// Parent-owned collection of worker slots.
-type WorkerSlots<W, O, PE, EE> = Vec<WorkerSlot<W, O, PE, EE>>;
-
-/// Allocates all worker slots and exact per-range record buffers.
-fn allocate_worker_slots<W, O, PE, EE, WE>(
+/// Allocates worker metadata and partitions the single output allocation.
+fn allocate_worker_slots<W, T, WE>(
     worker_count: usize,
-    trial_count: usize,
-) -> Result<WorkerSlots<W, O, PE, EE>, ReplicationError<WE>> {
+    mut storage: &mut [MaybeUninit<T>],
+) -> Result<Vec<WorkerSlot<'_, W, T>>, ReplicationError<WE>> {
     let mut slots = Vec::new();
     slots
         .try_reserve_exact(worker_count)
         .map_err(|source| reserve_error(ReplicationAllocation::WorkerSlots, None, source))?;
 
-    let base = trial_count.div_euclid(worker_count);
-    let remainder = trial_count % worker_count;
+    let base = storage.len().div_euclid(worker_count);
+    let remainder = storage.len() % worker_count;
     let mut start = 0;
     for index in 0..worker_count {
-        let id = WorkerId(index);
-        let extra = usize::from(index < remainder);
-        let end = start + base + extra;
-        let mut records = Vec::new();
-        records.try_reserve_exact(end - start).map_err(|source| {
-            reserve_error(ReplicationAllocation::WorkerChunkRecords, Some(id), source)
-        })?;
+        let length = base + usize::from(index < remainder);
+        let (range, remaining) = storage.split_at_mut(length);
+        storage = remaining;
         slots.push(WorkerSlot {
-            id,
+            id: WorkerId(index),
             start,
-            end,
             worker: None,
-            records,
+            records: RecordRange {
+                storage: range,
+                initialized: 0,
+            },
         });
-        start = end;
+        start += length;
     }
 
     Ok(slots)
 }
 
 /// Initializes every worker on the parent thread before any trial runs.
-fn initialize_workers<W, O, PE, EE, WE>(
-    slots: &mut [WorkerSlot<W, O, PE, EE>],
+fn initialize_workers<W, T, WE>(
+    slots: &mut [WorkerSlot<'_, W, T>],
     make_worker: &impl Fn(WorkerId) -> Result<W, WE>,
 ) -> Result<(), ReplicationError<WE>> {
     for slot in slots {
@@ -750,7 +800,7 @@ fn initialize_workers<W, O, PE, EE, WE>(
     Ok(())
 }
 
-/// Evaluates one contiguous flat range into its preallocated buffer.
+/// Evaluates one contiguous flat range directly into output spare capacity.
 #[allow(clippy::too_many_arguments)]
 fn run_worker_range<C, P, W, O, PE, EE>(
     candidates: &[Candidate<C>],
@@ -761,10 +811,9 @@ fn run_worker_range<C, P, W, O, PE, EE>(
     prepare: &impl Fn(&C, TrialContext) -> Result<P, PE>,
     evaluate: &impl Fn(&W, &P) -> Result<O, EE>,
     start: usize,
-    end: usize,
-    mut records: Vec<TrialRecord<O, PE, EE>>,
-) -> Vec<TrialRecord<O, PE, EE>> {
-    for flat_index in start..end {
+    records: &mut RecordRange<'_, TrialRecord<O, PE, EE>>,
+) {
+    for flat_index in start..start + records.storage.len() {
         let candidate = &candidates[flat_index.div_euclid(replications)];
         let replication_index = flat_index % replications;
         let replication_id = match u32::try_from(replication_index) {
@@ -788,7 +837,6 @@ fn run_worker_range<C, P, W, O, PE, EE>(
             result,
         });
     }
-    records
 }
 
 /// Explicitly joins all successfully spawned handles after a spawn failure.
@@ -1011,29 +1059,37 @@ mod tests {
 
     #[test]
     fn all_workers_are_constructed_before_prepare() {
-        let constructed = AtomicUsize::new(0);
-        let candidates = [Candidate { id: 0, value: () }];
-        let records = run_replicated(
-            &candidates,
-            plan(8, 2),
-            |_| {
-                constructed.fetch_add(1, Ordering::SeqCst);
-                Ok::<_, ()>(())
-            },
-            |_, _| {
-                assert_eq!(constructed.load(Ordering::SeqCst), 2);
-                Ok::<_, ()>(())
-            },
-            |_, _| Ok::<_, ()>(()),
-        );
-        assert!(matches!(records, Ok(records) if records.len() == 8));
+        for available in [
+            Ok(nonzero_usize(1)),
+            Ok(nonzero_usize(2)),
+            Err(io::Error::other("availability unavailable")),
+        ] {
+            let expected = available.as_ref().map_or(1, |count| count.get());
+            let constructed = AtomicUsize::new(0);
+            let candidates = [Candidate { id: 0, value: () }];
+            let records = run_replicated_with_parallelism(
+                &candidates,
+                plan(8, 2),
+                |_| {
+                    constructed.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(())
+                },
+                |_, _| {
+                    assert_eq!(constructed.load(Ordering::SeqCst), expected);
+                    Ok::<_, ()>(())
+                },
+                |_, _| Ok::<_, ()>(()),
+                available,
+            );
+            assert!(matches!(records, Ok(records) if records.len() == 8));
+        }
     }
 
     #[test]
     fn factory_error_and_panic_are_typed_and_precede_trials() {
         let prepared = AtomicBool::new(false);
         let candidates = [Candidate { id: 0, value: () }];
-        let error = run_replicated(
+        let error = run_replicated_with_parallelism(
             &candidates,
             plan(4, 2),
             |id| {
@@ -1048,6 +1104,7 @@ mod tests {
                 Ok::<_, ()>(())
             },
             |_, _| Ok::<_, ()>(()),
+            Ok(nonzero_usize(2)),
         );
         assert!(matches!(
             error,
@@ -1058,7 +1115,7 @@ mod tests {
         ));
         assert!(!prepared.load(Ordering::SeqCst));
 
-        let panic = run_replicated(
+        let panic = run_replicated_with_parallelism(
             &candidates,
             plan(4, 2),
             |id| -> Result<(), ()> {
@@ -1072,6 +1129,7 @@ mod tests {
                 Ok::<_, ()>(())
             },
             |_, _| Ok::<_, ()>(()),
+            Ok(nonzero_usize(2)),
         );
         assert!(matches!(
             panic,
@@ -1131,7 +1189,7 @@ mod tests {
             Candidate { id: 0, value: 0_u8 },
             Candidate { id: 1, value: 1_u8 },
         ];
-        let parallel = run_replicated(
+        let parallel = run_replicated_with_parallelism(
             &candidates,
             plan(1, 2),
             |_| Ok::<_, ()>(()),
@@ -1144,6 +1202,7 @@ mod tests {
                 Ok::<_, ()>(())
             },
             |_, _| Ok::<_, ()>(()),
+            Ok(nonzero_usize(2)),
         );
         assert!(matches!(
             parallel,
@@ -1164,12 +1223,13 @@ mod tests {
                 value: 200_u64,
             },
         ];
-        let records = run_replicated(
+        let records = run_replicated_with_parallelism(
             &candidates,
-            plan(3, 2),
+            plan(3, 4),
             |_| Ok::<_, Infallible>(()),
             |value, context| Ok::<_, Infallible>((*value, context.key().replication_id)),
             |_, prepared| Ok::<_, Infallible>(*prepared),
+            Ok(nonzero_usize(4)),
         );
         let records = match records {
             Ok(records) => records,
@@ -1241,7 +1301,7 @@ mod tests {
             },
         ];
         let run = |workers| {
-            run_replicated(
+            run_replicated_with_parallelism(
                 &candidates,
                 plan(8, workers),
                 |_| Ok::<_, Infallible>(5_u64),
@@ -1249,6 +1309,7 @@ mod tests {
                     Ok::<_, Infallible>((*candidate, context.samples().uniform(SPEED).to_bits()))
                 },
                 |evaluator, prepared| Ok::<_, Infallible>(prepared.0 ^ prepared.1 ^ *evaluator),
+                Ok(nonzero_usize(workers)),
             )
         };
         let serial = match run(1) {
@@ -1260,5 +1321,156 @@ mod tests {
             Err(error) => panic!("parallel run failed: {error}"),
         };
         assert_eq!(serial, parallel);
+    }
+
+    struct TrackedResult {
+        index: usize,
+        drops: Arc<[AtomicUsize; 12]>,
+    }
+
+    impl Drop for TrackedResult {
+        fn drop(&mut self) {
+            self.drops[self.index].fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn ordered_results_and_trial_errors_drop_once_after_success() {
+        for workers in [1, 3] {
+            let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+            let candidates = [
+                Candidate { id: 41, value: 0 },
+                Candidate { id: 7, value: 5 },
+            ];
+            let records = run_replicated_with_parallelism(
+                &candidates,
+                plan(5, workers),
+                |_| Ok::<_, Infallible>(()),
+                |offset, context| {
+                    let index = offset
+                        + usize::try_from(context.key().replication_id)
+                            .unwrap_or_else(|error| panic!("invalid test index: {error}"));
+                    if index % 3 == 1 {
+                        Err(TrackedResult {
+                            index,
+                            drops: Arc::clone(&drops),
+                        })
+                    } else {
+                        Ok(index)
+                    }
+                },
+                |_, &index| {
+                    let result = TrackedResult {
+                        index,
+                        drops: Arc::clone(&drops),
+                    };
+                    if index % 3 == 2 {
+                        Err(result)
+                    } else {
+                        Ok(result)
+                    }
+                },
+                Ok(nonzero_usize(workers)),
+            );
+            let records = match records {
+                Ok(records) => records,
+                Err(error) => panic!("tracked run failed: {error}"),
+            };
+            let actual: Vec<_> = records
+                .iter()
+                .map(|record| {
+                    let value = match &record.result {
+                        Ok(value)
+                        | Err(TrialError::Prepare(value) | TrialError::Evaluate(value)) => value,
+                    };
+                    (
+                        record.key.candidate_id,
+                        record.key.replication_id,
+                        value.index,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                actual,
+                [
+                    (41, 0, 0),
+                    (41, 1, 1),
+                    (41, 2, 2),
+                    (41, 3, 3),
+                    (41, 4, 4),
+                    (7, 0, 5),
+                    (7, 1, 6),
+                    (7, 2, 7),
+                    (7, 3, 8),
+                    (7, 4, 9),
+                ]
+            );
+            assert!(drops.iter().all(|count| count.load(Ordering::SeqCst) == 0));
+            drop(records);
+            for (index, count) in drops.iter().enumerate() {
+                assert_eq!(count.load(Ordering::SeqCst), usize::from(index < 10));
+            }
+        }
+    }
+
+    #[test]
+    fn partial_and_completed_worker_results_drop_once_on_panic() {
+        for workers in [1, 3] {
+            for panic_in_prepare in [false, true] {
+                let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+                let candidates = [
+                    Candidate { id: 41, value: 0 },
+                    Candidate { id: 7, value: 6 },
+                ];
+                let result = run_replicated_with_parallelism(
+                    &candidates,
+                    plan(6, workers),
+                    |_| Ok::<_, Infallible>(()),
+                    |offset, context| {
+                        let index = offset
+                            + usize::try_from(context.key().replication_id)
+                                .unwrap_or_else(|error| panic!("invalid test index: {error}"));
+                        if panic_in_prepare && index == 2 {
+                            panic!("prepare panic after two initialized records");
+                        }
+                        if index % 3 == 1 {
+                            Err(TrackedResult {
+                                index,
+                                drops: Arc::clone(&drops),
+                            })
+                        } else {
+                            Ok(index)
+                        }
+                    },
+                    |_, &index| {
+                        if !panic_in_prepare && index == 2 {
+                            panic!("evaluate panic after two initialized records");
+                        }
+                        let result = TrackedResult {
+                            index,
+                            drops: Arc::clone(&drops),
+                        };
+                        if index % 3 == 2 {
+                            Err(result)
+                        } else {
+                            Ok(result)
+                        }
+                    },
+                    Ok(nonzero_usize(workers)),
+                );
+                assert!(matches!(
+                    result,
+                    Err(ReplicationError::WorkerWorkloadPanic { worker_id }) if worker_id.get() == 0
+                ));
+                for (index, count) in drops.iter().enumerate() {
+                    let initialized = index < 2 || (workers > 1 && index >= 4);
+                    assert_eq!(
+                        count.load(Ordering::SeqCst),
+                        usize::from(initialized),
+                        "trial {index}"
+                    );
+                }
+            }
+        }
     }
 }
