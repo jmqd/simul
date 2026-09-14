@@ -1705,8 +1705,8 @@ mod tests {
     #[test]
     fn scalar_reducer_rejects_unrepresentable_statistics() {
         assert_eq!(
-            ScalarReducer::from_results([f64::MAX, -f64::MAX]),
-            Err(ReduceError::ArithmeticOverflow)
+            Err(ReduceError::ArithmeticOverflow),
+            ScalarReducer::from_results([f64::MAX, -f64::MAX])
         );
         // The mean and deltas fit, but the squared deviation does not.
         assert_eq!(
