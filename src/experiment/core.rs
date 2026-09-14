@@ -1672,7 +1672,7 @@ mod tests {
     fn online_reducers_match_small_fixtures() {
         let bernoulli = BernoulliReducer::from_results([true, true, true, false])
             .expect("non-empty Bernoulli fixture should reduce");
-        assert_eq!(bernoulli.attempts, 4);
+        assert_eq!(4, bernoulli.attempts);
         assert_eq!(bernoulli.successes, 3);
         assert_f64_bits_eq(bernoulli.rate, 0.75);
         assert!((bernoulli.wilson_lower - 0.300_641_842_582_401_8).abs() < 1e-15);
