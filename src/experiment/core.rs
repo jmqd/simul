@@ -1724,8 +1724,8 @@ mod tests {
             .finish()
             .expect("accepted observations should reduce");
         assert_eq!(
-            reducer.observe(f64::MAX),
-            Err(ReduceError::ArithmeticOverflow)
+            Err(ReduceError::ArithmeticOverflow),
+            reducer.observe(f64::MAX)
         );
         assert_eq!(reducer.finish(), Ok(before));
         reducer.observe(5.0).expect("reducer should remain usable");
