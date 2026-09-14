@@ -1710,8 +1710,8 @@ mod tests {
         );
         // The mean and deltas fit, but the squared deviation does not.
         assert_eq!(
-            ScalarReducer::from_results([0.0, f64::MAX]),
-            Err(ReduceError::ArithmeticOverflow)
+            Err(ReduceError::ArithmeticOverflow),
+            ScalarReducer::from_results([0.0, f64::MAX])
         );
     }
 
