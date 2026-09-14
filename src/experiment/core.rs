@@ -1827,7 +1827,7 @@ mod tests {
         )
         .expect("replacement policy should produce a scalar summary");
         assert_eq!(3, summary.requested);
-        assert_eq!(summary.completed, 2);
+        assert_eq!(2, summary.completed);
         assert_eq!(summary.failed, 1);
         assert_eq!(summary.statistics.count, 2);
         assert_f64_bits_eq(summary.statistics.mean, -1.0);
