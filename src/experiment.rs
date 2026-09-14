@@ -2,8 +2,10 @@ pub mod cross_entropy;
 
 pub use cross_entropy::*;
 pub mod replicated;
+mod core;
 
-pub use replicated::*;
+/// Tokenized deterministic search strategies.
+pub mod search;
 
 use crate::Simulation;
 use crate::SimulationParameters;
@@ -101,7 +103,7 @@ pub fn simulated_annealing_search(
 /// from `rng`. Reproducible results additionally require a deterministic
 /// objective function. For noisy objectives, aggregate deterministic
 /// replications inside `objective_function` (for example with
-/// [`run_replicated`]) rather than optimizing one noisy sample.
+/// [`replicated::run_replicated`]) rather than optimizing one noisy sample.
 pub fn simulated_annealing_search_with_rng<State, Random>(
     rng: &mut Random,
     initial_state_generator: impl FnOnce(&mut Random) -> State,
@@ -466,3 +468,4 @@ mod tests {
         assert_eq!(run(42), run(42));
     }
 }
+pub use core::*;

@@ -3,15 +3,15 @@
 //!
 //! `simul` is a *discrete-event simulator* using *incremental time
 //! progression*, with [M/M/c queues](https://en.wikipedia.org/wiki/M/M/c_queue)
-//! for interactions between agents. It also supports some forms of
-//! experimentation, simulated annealing, and cross-entropy optimization over
-//! repeated simulation runs with varying parameters.
+//! for interactions between agents. It also supports deterministic typed
+//! experiments and seeded searches over caller-defined candidate spaces.
 //!
 //! Use-cases:
 //! - [Discrete-event simulation](https://en.wikipedia.org/wiki/Discrete-event_simulation)
 //! - [Complex adaptive systems](https://authors.library.caltech.edu/60491/1/MGM%20113.pdf)
 //! - [Simulated annealing](https://en.wikipedia.org/wiki/Simulated_annealing)
 //! - [Cross-entropy method](https://en.wikipedia.org/wiki/Cross-entropy_method)
+//! - [Random search](https://en.wikipedia.org/wiki/Random_search)
 //! - [Job-shop scheduling](https://en.wikipedia.org/wiki/Job-shop_scheduling)
 //! - [Birth-death processes](https://en.wikipedia.org/wiki/Birth%E2%80%93death_process)
 //! - [Computer experiments](https://en.wikipedia.org/wiki/Computer_experiment)
@@ -22,6 +22,7 @@
 
 extern crate self as simul;
 pub mod agent;
+/// Deterministic engine-independent experiment, reduction, and search APIs.
 pub mod experiment;
 pub mod message;
 

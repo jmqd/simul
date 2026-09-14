@@ -6,7 +6,7 @@ edition = "2021"
 authors = ["Jordan McQueen <j@jm.dev>"]
 license = "MIT"
 
-keywords = ["sim", "simulation", "annealing", "experiment"]
+keywords = ["sim", "simulation", "optimization", "experiment"]
 categories = ["mathematics", "science", "development-tools"]
 description = """
 A discrete-event simulation library aimed at high-level use-cases to
@@ -31,6 +31,10 @@ strip = true
 name = "simul"
 path = "src/lib.rs"
 
+[features]
+default = []
+parallel = ["dep:rayon"]
+
 [dev-dependencies]
 env_logger = "0.11.11"
 criterion = "0.7.0"
@@ -40,7 +44,7 @@ name = "benchmarks"
 harness = false
 
 [[bench]]
-name = "simulated_annealing_benchmark"
+name = "deterministic_search_benchmark"
 harness = false
 
 
@@ -49,6 +53,9 @@ name = "cross_entropy_benchmark"
 harness = false
 [dependencies]
 rand = {version = "0.10.2", features = ["alloc"]}
+blake3 = "=1.8.2"
+rand_chacha = "=0.10.0"
+rayon = { version = "1.11.0", optional = true }
 rand_distr = "0.6.0"
 log = "0.4.33"
 dyn-clone = "1.0.20"

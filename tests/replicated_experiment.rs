@@ -1,4 +1,4 @@
-use simul::experiment::{
+use simul::experiment::replicated::{
     run_replicated, Candidate, RandomDomain, ReplayKey, ReplicationError, ReplicationPlan,
     SampleContext, SampleStream, TrialError, TrialKey, SEED_PROTOCOL,
 };

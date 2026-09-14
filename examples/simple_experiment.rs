@@ -1,96 +1,124 @@
-//! A simple experiment example.
+//! A deterministic random-search experiment over a discrete-event simulation.
 #![allow(
     clippy::missing_docs_in_private_items,
     clippy::expect_used,
-    clippy::cast_possible_truncation
+    clippy::cast_precision_loss
 )]
-use simul::agent::{periodic_consumer, periodic_producer};
-use simul::experiment::monte_carlo_search;
-use simul::{AgentInitializer, DiscreteTime, Simulation, SimulationParameters};
 
-/// Given a producer with a fixed period, returns producer-consumer two Agent
-/// configurations (where only the consumer varies).
-///
-/// The consumer randomly varies between 0 and `consumer_max_period`. The two
-/// agents are always named "producer" and "consumer".
-fn periodic_agent_generator_fixed_producer(
-    producer_period: DiscreteTime,
-    consumer_max_period: DiscreteTime,
-) -> impl Fn() -> Vec<AgentInitializer> {
-    move || {
-        let consumer_period = rand::random::<u32>() % (consumer_max_period + 1) as u32;
-        let producer_agent = periodic_producer(
-            "producer".to_string(),
-            producer_period,
-            "consumer".to_string(),
-        );
-        let consumer_agent = periodic_consumer("consumer".to_string(), u64::from(consumer_period));
-        vec![producer_agent, consumer_agent]
+use simul::agent::{periodic_consumer, periodic_producer};
+use simul::experiment::search::{SearchStrategy, SeededRandomSearch, Told};
+use simul::experiment::{
+    aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
+    NonFinitePolicy, ScalarSummary, SelectionPolicy,
+};
+use simul::{Simulation, SimulationParameters};
+use std::cmp::Ordering;
+use std::convert::Infallible;
+
+const PRODUCER_PERIOD: u64 = 2;
+const MAX_CONSUMER_PERIOD: u64 = 10;
+const HALT_CONSUMED_COUNT: usize = 10;
+const CANDIDATE_BUDGET: u64 = 1000;
+const MASTER_SEED: MasterSeed = MasterSeed::from_u64(0x51_4D_50_4C);
+
+/// Selects the candidate with the highest finite mean score.
+#[derive(Clone, Copy, Debug)]
+struct MaximizeMean;
+
+impl SelectionPolicy<ScalarSummary> for MaximizeMean {
+    fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
+        left.mean.total_cmp(&right.mean)
     }
 }
 
-/// Sandbox for running a simulated annealing experiment.
-fn run_experiment() {
-    let halt_condition = |s: &Simulation| {
-        s.find_by_name("consumer")
+/// Creates simulation parameters for one typed consumer-period candidate.
+fn build_simulation_parameters(consumer_period: u64) -> SimulationParameters {
+    let halt_condition = |simulation: &Simulation| {
+        simulation
+            .find_by_name("consumer")
             .expect("consumer to exist")
             .state
             .consumed
             .len()
-            > 10
+            > HALT_CONSUMED_COUNT
     };
 
-    // Creates an agent generator w/ a fixed producer at interval 2 and a
-    // consumer whose period randomly varies between [0, 10]
-    let agent_generator = periodic_agent_generator_fixed_producer(2, 10);
-
-    // SimulationParameters generator that holds all else static except for agents.
-    let simulation_parameters_generator = move || SimulationParameters {
-        agent_initializers: agent_generator(),
+    SimulationParameters {
+        agent_initializers: vec![
+            periodic_producer(
+                "producer".to_string(),
+                PRODUCER_PERIOD,
+                "consumer".to_string(),
+            ),
+            periodic_consumer("consumer".to_string(), consumer_period),
+        ],
         halt_check: halt_condition,
         enable_agent_asleep_cycles_metric: true,
         ..Default::default()
-    };
+    }
+}
 
-    // This is the objective function which we're trying to approximately
-    // optimize via simulated experiment.  This objective function tries to find
-    // the simulation that completed the Simulation in the least time and
-    // doesn't "overuse" consumer period.
-    //
-    // In this specific example, by substracting simulation time, we're
-    // optimizing for the simulation that completes the fastest. If this were
-    // the only parameter, there would be two solutions: 0 and 1. Because the
-    // producer is fixed at a period of 2, a consumer with period 0 or 1 can
-    // sufficiently keep up with that producer.
-    //
-    // By also including the cost of the agent, we also optimize to not waste
-    // resources with an over-eager consumer.
-    let objective_fn = |s: &Simulation| {
-        -(s.time() as f64)
-            - s.find_agent(|a| a.name == "consumer")
-                .expect("consumer to exist")
-                .agent
-                .cost()
-    };
+/// Rewards short completion time while preferring less eager consumers on ties.
+fn objective_score(simulation: &Simulation, consumer_period: u64) -> f64 {
+    -(simulation.time() as f64) + consumer_period as f64
+}
 
-    let replications_limit = 1000;
-
-    // Run the simulation 100 different times, randomly varying the agent
-    // configuration, and return the one that maximized the objective function.
-    let approx_optimal = monte_carlo_search(
-        simulation_parameters_generator,
-        replications_limit,
-        objective_fn,
+/// Runs a deterministic, typed search and retains the selecting simulation.
+fn run_experiment() -> Simulation {
+    let mut search = SeededRandomSearch::new(
+        MASTER_SEED,
+        CANDIDATE_BUDGET,
+        |rng| rng.next_u64() % (MAX_CONSUMER_PERIOD + 1),
+        MaximizeMean,
     );
+    let schedule = FixedReplications::new(1, 0);
+    let mut best_simulation = None;
 
-    println!(
-        "{:#?}",
-        approx_optimal
-            .expect("result to exist")
-            .calc_avg_wait_statistics()
-    );
+    for proposal in search.ask(usize::MAX) {
+        let candidate_id = CandidateId::new(proposal.token.value());
+        let consumer_period = proposal.candidate;
+        let mut records = run_serial(
+            MASTER_SEED,
+            schedule.trials(candidate_id, consumer_period),
+            |period, _context| {
+                let mut simulation = Simulation::new(build_simulation_parameters(*period));
+                simulation.run();
+                Ok::<_, Infallible>(simulation)
+            },
+        )
+        .expect("one unique trial");
+        let summary = aggregate_scalar(
+            &records,
+            |simulation| objective_score(simulation, consumer_period),
+            FailurePolicy::RejectCandidate,
+            NonFinitePolicy::RejectCandidate,
+        )
+        .expect("the simulation produces one finite score");
+
+        search
+            .tell(&[Told {
+                token: proposal.token,
+                candidate: candidate_id,
+                summary,
+            }])
+            .expect("the proposal token is outstanding");
+
+        if search
+            .best()
+            .is_some_and(|best| best.candidate_id == candidate_id)
+        {
+            let selecting_record = records.pop().expect("one trial record");
+            best_simulation = Some(
+                selecting_record
+                    .result
+                    .expect("the simulation evaluator is infallible"),
+            );
+        }
+    }
+
+    best_simulation.expect("the non-zero search budget produces a result")
 }
 
 fn main() {
-    run_experiment();
+    println!("{:#?}", run_experiment().calc_avg_wait_statistics());
 }
