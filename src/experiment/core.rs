@@ -1833,13 +1833,13 @@ mod tests {
         assert_f64_bits_eq(summary.statistics.mean, -1.0);
 
         assert_eq!(
+            Err(AggregateError::NonFinite { observations: 1 }),
             aggregate_scalar(
                 &records[..2],
                 |value| *value,
                 FailurePolicy::Ignore,
                 NonFinitePolicy::RejectCandidate,
-            ),
-            Err(AggregateError::NonFinite { observations: 1 })
+            )
         );
     }
 
