@@ -726,12 +726,12 @@ mod tests {
             search.ask_with_standard_normal(|_| f64::INFINITY)
         );
         assert_eq!(
+            Err(CrossEntropyError::InvalidStandardNormal { dimension: 1 }),
             search.ask_with_standard_normal(|dimension| if dimension == 1 {
                 f64::NAN
             } else {
                 0.0
-            }),
-            Err(CrossEntropyError::InvalidStandardNormal { dimension: 1 })
+            })
         );
 
         let overflowing_search =
