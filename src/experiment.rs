@@ -173,7 +173,16 @@ where
         return false;
     }
 
-    let acceptance_probability = ((candidate_score - current_score) / temperature).exp();
+    let difference = candidate_score - current_score;
+    // Subtract first to retain nearby-score precision. Only finite scores can
+    // recover from an overflowing difference by dividing before subtraction.
+    let scaled_difference =
+        if difference.is_infinite() && candidate_score.is_finite() && current_score.is_finite() {
+            candidate_score / temperature - current_score / temperature
+        } else {
+            difference / temperature
+        };
+    let acceptance_probability = scaled_difference.exp();
     acceptance_probability > 0.0 && rng.random::<f64>() < acceptance_probability
 }
 
@@ -345,6 +354,58 @@ mod tests {
         assert_eq!(visited, [10, 10]);
         assert_eq!(result, Some(NonClone(10)));
         assert!(rng.draws > 0);
+    }
+
+    #[test]
+    fn metropolis_scales_overflowing_finite_score_differences() {
+        // The true probability is exp(-2), between these draws: 0.125 and 0.25.
+        for (word, expected_visited) in [(1_u64 << 61, [1, 0]), (1_u64 << 62, [1, 1])] {
+            let mut rng = FixedRng::new(word);
+            let mut visited = Vec::new();
+            let result = simulated_annealing_search_with_rng(
+                &mut rng,
+                |_| NonClone(1),
+                |current, _| {
+                    visited.push(current.0);
+                    NonClone(0)
+                },
+                |state| if state.0 == 1 { 1.0e308 } else { -1.0e308 },
+                |_| 1.0e308,
+                2,
+            );
+
+            assert_eq!(visited, expected_visited);
+            assert_eq!(result, Some(NonClone(1)));
+        }
+    }
+
+    #[test]
+    fn metropolis_rejects_infinite_downhill_gaps_without_randomness() {
+        for (current_score, candidate_score) in
+            [(f64::INFINITY, 1.0e308), (1.0e308, f64::NEG_INFINITY)]
+        {
+            let mut visited = Vec::new();
+            let result = simulated_annealing_search_with_rng(
+                &mut PanicRng,
+                |_| NonClone(1),
+                |current, _| {
+                    visited.push(current.0);
+                    NonClone(0)
+                },
+                |state| {
+                    if state.0 == 1 {
+                        current_score
+                    } else {
+                        candidate_score
+                    }
+                },
+                |_| 1.0e308,
+                2,
+            );
+
+            assert_eq!(visited, [1, 1]);
+            assert_eq!(result, Some(NonClone(1)));
+        }
     }
 
     #[test]

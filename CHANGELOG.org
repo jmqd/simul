@@ -1,5 +1,9 @@
 #+title: Changelog
 
+* DONE Preserve optimizer numerical boundaries
+Circular proposals stay in =[0, 1)=, finite sampling and deviation smoothing
+avoid overflow, and annealing preserves acceptance across extreme finite scores.
+
 * DONE Reject simulation time overflow consistently
 Tick advancement is checked before callbacks; sleep requests reject overflowing
 wake times before changing state. Both checks also apply in release builds.
