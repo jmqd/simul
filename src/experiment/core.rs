@@ -1745,8 +1745,8 @@ mod tests {
         });
         for policy in [NonFinitePolicy::Ignore, NonFinitePolicy::RejectCandidate] {
             assert_eq!(
-                aggregate_scalar(&records, |value| *value, FailurePolicy::Ignore, policy),
-                Err(AggregateError::ArithmeticOverflow)
+                Err(AggregateError::ArithmeticOverflow),
+                aggregate_scalar(&records, |value| *value, FailurePolicy::Ignore, policy)
             );
         }
     }
