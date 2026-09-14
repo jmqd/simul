@@ -1680,7 +1680,7 @@ mod tests {
 
         let scalar = ScalarReducer::from_results([1.0, 2.0, 3.0, 4.0])
             .expect("finite scalar fixture should reduce");
-        assert_eq!(scalar.count, 4);
+        assert_eq!(4, scalar.count);
         assert_f64_bits_eq(scalar.mean, 2.5);
         assert_f64_close(
             scalar
