@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(2, elite_count(10, 0.2));
         assert_eq!(3, elite_count(10, 0.21));
         assert_eq!(10, elite_count(10, 1.0));
-        assert_eq!(elite_count(usize::MAX, 1.0), usize::MAX);
+        assert_eq!(usize::MAX, elite_count(usize::MAX, 1.0));
     }
 
     #[test]
