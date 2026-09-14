@@ -737,14 +737,14 @@ mod tests {
         let overflowing_search =
             optimizer(CrossEntropyConfig::new([0.5, 0.5], [f64::MAX, f64::MAX]));
         assert_eq!(
+            Err(CrossEntropyError::InvalidStandardNormal { dimension: 1 }),
             overflowing_search.ask_with_standard_normal(|dimension| {
                 if dimension == 1 {
                     f64::NAN
                 } else {
                     f64::MAX
                 }
-            }),
-            Err(CrossEntropyError::InvalidStandardNormal { dimension: 1 })
+            })
         );
     }
 
