@@ -208,7 +208,7 @@ mod tests {
         );
 
         assert_eq!(Some(NonClone(7)), result);
-        assert_eq!(evaluations, 1);
+        assert_eq!(1, evaluations);
     }
 
     #[test]
