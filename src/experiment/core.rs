@@ -1697,7 +1697,7 @@ mod tests {
         assert_f64_bits_eq(scalar.min, 1.0);
         assert_f64_bits_eq(scalar.max, 4.0);
         let one = ScalarReducer::from_results([5.0]).expect("single finite scalar should reduce");
-        assert_eq!(one.sample_variance, None);
+        assert_eq!(None, one.sample_variance);
         assert_eq!(one.standard_error, None);
         assert_eq!(ScalarReducer::from_results([]), Err(ReduceError::Empty));
     }
