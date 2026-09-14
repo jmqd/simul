@@ -381,7 +381,7 @@ mod tests {
             |_| f64::NAN,
             1,
         );
-        assert_eq!(recovered, Some(NonClone(1)));
+        assert_eq!(Some(NonClone(1)), recovered);
 
         let no_valid_score = simulated_annealing_search_with_rng(
             &mut PanicRng,
