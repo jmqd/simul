@@ -1779,13 +1779,13 @@ mod tests {
             )
         );
         assert_eq!(
+            Err(AggregateError::ArithmeticOverflow),
             aggregate_scalar(
                 &records,
                 |value| *value,
                 FailurePolicy::Ignore,
                 NonFinitePolicy::Ignore,
-            ),
-            Err(AggregateError::ArithmeticOverflow)
+            )
         );
     }
 
