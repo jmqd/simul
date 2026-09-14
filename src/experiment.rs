@@ -232,7 +232,7 @@ mod tests {
 
         assert_eq!(Some(NonClone(2)), result);
         assert_eq!(2, proposal);
-        assert_eq!(schedule_indices, [0, 1]);
+        assert_eq!(&[0, 1], schedule_indices.as_slice());
     }
 
     #[test]
