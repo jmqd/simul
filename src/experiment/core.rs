@@ -1826,7 +1826,7 @@ mod tests {
             NonFinitePolicy::Ignore,
         )
         .expect("replacement policy should produce a scalar summary");
-        assert_eq!(summary.requested, 3);
+        assert_eq!(3, summary.requested);
         assert_eq!(summary.completed, 2);
         assert_eq!(summary.failed, 1);
         assert_eq!(summary.statistics.count, 2);
