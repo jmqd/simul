@@ -1856,7 +1856,7 @@ mod tests {
         ];
         let selected =
             select_best(&candidates, &MaximizeFinite).expect("candidates should have a winner");
-        assert_eq!(selected.0, CandidateId::new(2));
+        assert_eq!(CandidateId::new(2), selected.0);
         assert_f64_bits_eq(selected.1.get(), score.get());
     }
 
