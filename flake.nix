@@ -31,14 +31,14 @@
           rustc = rustToolchain;
         };
 
-        dylintVersion = "6.0.1";
+        dylintVersion = "6.0.4";
         dylintSource = pkgs.fetchFromGitHub {
           owner = "trailofbits";
           repo = "dylint";
           rev = "v${dylintVersion}";
-          hash = "sha256-SteI8+BZ5ej38goCOD+PRJozt7qVSTp/IFJXyeBblAw=";
+          hash = "sha256-CROuPpPzUobUcH3Xl2fpEOVxEBBppmFBaJSRXsEuaXg=";
         };
-        dylintCargoHash = "sha256-D2j/uErxsw22HzNiljf4ODdnTsUcz1wFFRaXCrWPpU4=";
+        dylintCargoHash = "sha256-9YAYtVoqMfyeG5sy8Jtt8a894k9AzyhIDEFzyqdzyeI=";
 
         cargoDylint = rustPlatform.buildRustPackage {
           pname = "cargo-dylint";
@@ -48,6 +48,8 @@
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.openssl ];
           buildAndTestSubdir = "cargo-dylint";
+          # Use the exact published driver, not the temporary Nix build source path.
+          buildFeatures = [ "dylint/__driver_from_crates_io" ];
           doCheck = false;
         };
 
@@ -140,6 +142,7 @@
             dylintCargo
             rustToolchain
             openssl
+            zlib
             pkg-config
             dylintRustup
             git
