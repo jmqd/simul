@@ -722,8 +722,8 @@ mod tests {
         assert_close(sampled[0], 0.6, 1.0e-12);
         assert_close(sampled[1], 0.4, 1.0e-12);
         assert_eq!(
-            search.ask_with_standard_normal(|_| f64::INFINITY),
-            Err(CrossEntropyError::InvalidStandardNormal { dimension: 0 })
+            Err(CrossEntropyError::InvalidStandardNormal { dimension: 0 }),
+            search.ask_with_standard_normal(|_| f64::INFINITY)
         );
         assert_eq!(
             search.ask_with_standard_normal(|dimension| if dimension == 1 {
