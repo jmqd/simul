@@ -168,9 +168,16 @@ impl AgentContext<'_> {
     }
 
     /// Sleeps the Agent for a relative amount of time.
+    ///
+    /// # Panics
+    ///
+    /// Panics before changing the sleep request if the wake time exceeds `u64::MAX`.
     #[inline]
     pub const fn sleep_for(&mut self, ticks: DiscreteTime) {
-        *self.requested_sleep_until = Some(self.time + ticks);
+        let Some(wake_time) = self.time.checked_add(ticks) else {
+            panic!("agent wake time exceeds u64::MAX");
+        };
+        *self.requested_sleep_until = Some(wake_time);
     }
 
     /// Records whether the current message remains in progress or finished cleanly.

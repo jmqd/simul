@@ -1,5 +1,9 @@
 #+title: Changelog
 
+* DONE Reject simulation time overflow consistently
+Tick advancement is checked before callbacks; sleep requests reject overflowing
+wake times before changing state. Both checks also apply in release builds.
+
 * DONE Protect agent routing identity
 AgentContext exposes its handle through =handle()= instead of a writable field.
 =find_by_name_mut= returns mutable behavior and state, not a replaceable agent.

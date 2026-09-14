@@ -229,3 +229,73 @@ fn mutable_agent_access_preserves_identity_and_routing() {
         );
     }
 }
+
+#[derive(Clone, Debug)]
+struct BoundaryCallback(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Agent for BoundaryCallback {
+    fn on_message(&mut self, _: &mut AgentContext, _: &Message) {}
+
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        ctx.send_halt_interrupt("done");
+    }
+}
+
+#[test]
+fn time_overflow_fails_before_callbacks() {
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![proactive_agent("worker", BoundaryCallback(called.clone()))],
+        starting_time: u64::MAX,
+        halt_check: |_| false,
+        ..Default::default()
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
+    assert!(result.is_err());
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(simulation.time(), u64::MAX);
+}
+
+#[test]
+fn sleep_overflow_does_not_wrap_or_change_mode() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![periodic_producer("sender", u64::MAX, "missing")],
+        starting_time: 1,
+        halt_check: |simulation| simulation.time() == 2,
+        ..Default::default()
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
+    assert!(result.is_err());
+    assert_eq!(simulation.time(), 1);
+    assert_eq!(
+        simulation
+            .find_by_name("sender")
+            .map(|agent| agent.state.mode),
+        Some(AgentMode::Proactive)
+    );
+}
+
+#[test]
+fn final_representable_tick_and_wake_time_are_allowed() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![periodic_producer("sender", 1, "missing")],
+        starting_time: u64::MAX - 1,
+        halt_check: |simulation| simulation.time() == u64::MAX,
+        ..Default::default()
+    });
+    simulation.run();
+    assert_eq!(simulation.time(), u64::MAX);
+    assert_eq!(
+        simulation
+            .find_by_name("sender")
+            .map(|agent| agent.state.mode),
+        Some(AgentMode::AsleepUntil(u64::MAX))
+    );
+    assert_eq!(
+        simulation
+            .produced_for_agent("sender")
+            .map(<[Message]>::len),
+        Some(1)
+    );
+}

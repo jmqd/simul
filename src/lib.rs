@@ -245,12 +245,20 @@ impl Simulation {
     }
 
     /// Runs the simulation. This should only be called after adding all the beginning state.
+    ///
+    /// # Panics
+    ///
+    /// Panics before invoking tick callbacks if advancing time would exceed
+    /// `u64::MAX`. Agent callbacks may also panic.
     pub fn run(&mut self) {
         self.mode = SimulationMode::Running;
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
         let mut requested_sleep_until: Option<DiscreteTime>;
 
         while self.mode == SimulationMode::Running && !(self.halt_check)(self) {
+            let Some(next_time) = self.time.checked_add(1) else {
+                panic!("simulation time exceeds u64::MAX");
+            };
             debug!("Running next tick of simulation at time {}", self.time);
 
             {
@@ -339,7 +347,7 @@ impl Simulation {
             self.process_command_buffer(&mut command_buffer);
 
             debug!("Finished this tick; incrementing time.");
-            self.time += 1;
+            self.time = next_time;
         }
 
         self.mode = SimulationMode::Completed;
@@ -455,7 +463,9 @@ impl Simulation {
                 }
 
                 AgentCommandType::Sleep(ticks) => {
-                    let sleep_until = self.time + ticks;
+                    let Some(sleep_until) = self.time.checked_add(ticks) else {
+                        panic!("agent wake time exceeds u64::MAX");
+                    };
                     let commanding_agent = &mut self.agents[command.agent_handle];
 
                     commanding_agent.state.mode = AgentMode::AsleepUntil(sleep_until);
