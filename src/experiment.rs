@@ -231,7 +231,7 @@ mod tests {
         );
 
         assert_eq!(Some(NonClone(2)), result);
-        assert_eq!(proposal, 2);
+        assert_eq!(2, proposal);
         assert_eq!(schedule_indices, [0, 1]);
     }
 
