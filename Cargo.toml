@@ -37,7 +37,8 @@ parallel = ["dep:rayon"]
 
 [dev-dependencies]
 env_logger = "0.11.11"
-criterion = "0.7.0"
+# Benchmarks and tests require Rust 1.86; the library MSRV remains 1.85.
+criterion = "0.8.2"
 
 [[bench]]
 name = "benchmarks"
