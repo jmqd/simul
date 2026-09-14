@@ -1635,7 +1635,7 @@ mod tests {
         );
         assert_eq!(Ok(20), records[0].result);
         assert_eq!(Err("negative"), records[1].result);
-        assert_eq!(records[2].result, Ok(40));
+        assert_eq!(Ok(40), records[2].result);
     }
 
     #[test]
