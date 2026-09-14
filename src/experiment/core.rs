@@ -1761,13 +1761,13 @@ mod tests {
                 result,
             });
         assert_eq!(
+            Err(AggregateError::EvaluationFailed { failures: 1 }),
             aggregate_scalar(
                 &records,
                 |value| *value,
                 FailurePolicy::RejectCandidate,
                 NonFinitePolicy::RejectCandidate,
-            ),
-            Err(AggregateError::EvaluationFailed { failures: 1 })
+            )
         );
         assert_eq!(
             aggregate_scalar(
