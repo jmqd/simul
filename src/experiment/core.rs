@@ -810,6 +810,8 @@ pub enum ReduceError {
     Empty,
     /// A non-finite scalar was supplied.
     NonFinite(NonFiniteValue),
+    /// A scalar update exceeded the representable count or finite arithmetic range.
+    ArithmeticOverflow,
     /// Wilson's positive finite z-score was invalid.
     InvalidWilsonZ(f64),
 }
@@ -936,6 +938,9 @@ impl ScalarReducer {
     /// # Errors
     ///
     /// Returns [`ReduceError::NonFinite`] when `value` is NaN or infinite.
+    /// Returns [`ReduceError::ArithmeticOverflow`] when the count or Welford
+    /// recurrence cannot be represented. Rejected observations leave the reducer
+    /// unchanged.
     //
     // Keep Welford's multiply and addition separate: contraction changes the
     // established floating-point reduction results.
@@ -943,17 +948,32 @@ impl ScalarReducer {
     pub fn observe(&mut self, value: f64) -> Result<(), ReduceError> {
         let finite = FiniteValue::new(value).map_err(ReduceError::NonFinite)?;
         let value = finite.get();
-        self.count += 1;
-        if self.count == 1 {
+        let count = self
+            .count
+            .checked_add(1)
+            .ok_or(ReduceError::ArithmeticOverflow)?;
+        if count == 1 {
+            self.count = count;
             self.mean = value;
             self.min = value;
             self.max = value;
             return Ok(());
         }
         let delta = value - self.mean;
-        self.mean += delta / self.count as f64;
-        let delta_after = value - self.mean;
-        self.sum_squared_deviation += delta * delta_after;
+        let mean = self.mean + delta / count as f64;
+        let delta_after = value - mean;
+        let sum_squared_deviation = self.sum_squared_deviation + delta * delta_after;
+        if !delta.is_finite()
+            || !mean.is_finite()
+            || !delta_after.is_finite()
+            || !sum_squared_deviation.is_finite()
+            || sum_squared_deviation < 0.0
+        {
+            return Err(ReduceError::ArithmeticOverflow);
+        }
+        self.count = count;
+        self.mean = mean;
+        self.sum_squared_deviation = sum_squared_deviation;
         self.min = self.min.min(value);
         self.max = self.max.max(value);
         Ok(())
@@ -963,7 +983,8 @@ impl ScalarReducer {
     ///
     /// # Errors
     ///
-    /// Returns [`ReduceError::NonFinite`] for a non-finite observation, or
+    /// Returns [`ReduceError::NonFinite`] for a non-finite observation,
+    /// [`ReduceError::ArithmeticOverflow`] for an unrepresentable update, or
     /// [`ReduceError::Empty`] when `results` contains no observations.
     pub fn from_results(
         results: impl IntoIterator<Item = f64>,
@@ -1058,6 +1079,8 @@ pub enum AggregateError {
     },
     /// Every observation was excluded by policy.
     NoUsableObservations,
+    /// Accepted scalar observations overflowed the reducer's arithmetic.
+    ArithmeticOverflow,
 }
 
 /// Compact per-candidate counts and typed statistics.
@@ -1124,7 +1147,9 @@ pub fn aggregate_bernoulli<O, E>(
 ///
 /// Returns [`AggregateError`] when the records are empty, mix candidates,
 /// exceed public count capacity, contain observations rejected by either
-/// policy, or leave no usable observations.
+/// policy, leave no usable observations, or overflow the scalar recurrence.
+/// Arithmetic overflow is an error under every non-finite policy; rejected
+/// evaluator failures and non-finite inputs retain precedence over it.
 pub fn aggregate_scalar<O, E>(
     records: &[TrialRecord<O, E>],
     score: impl Fn(&O) -> f64,
@@ -1137,6 +1162,7 @@ pub fn aggregate_scalar<O, E>(
     let mut completed = 0_u32;
     let mut failed = 0_u32;
     let mut non_finite = 0_u32;
+    let mut reduction = Ok(());
     for record in records {
         let value = record.result.as_ref().map_or_else(
             |_| {
@@ -1161,7 +1187,7 @@ pub fn aggregate_scalar<O, E>(
             },
         );
         if let Some(value) = value {
-            let _ = reducer.observe(value.get());
+            reduction = reduction.and_then(|()| reducer.observe(value.get()));
         }
     }
     if failed > 0 && matches!(failure_policy, FailurePolicy::RejectCandidate) {
@@ -1172,9 +1198,14 @@ pub fn aggregate_scalar<O, E>(
             observations: non_finite,
         });
     }
-    let statistics = reducer
-        .finish()
-        .map_err(|_| AggregateError::NoUsableObservations)?;
+    let statistics = reduction.and_then(|()| reducer.finish()).map_err(|error| {
+        if error == ReduceError::Empty {
+            AggregateError::NoUsableObservations
+        } else {
+            // Inputs were validated above; only arithmetic can reject an update.
+            AggregateError::ArithmeticOverflow
+        }
+    })?;
     Ok(CandidateSummary {
         candidate,
         requested,
@@ -1470,6 +1501,91 @@ mod tests {
         assert_eq!(one.sample_variance, None);
         assert_eq!(one.standard_error, None);
         assert_eq!(ScalarReducer::from_results([]), Err(ReduceError::Empty));
+    }
+
+    #[test]
+    fn scalar_reducer_rejects_unrepresentable_statistics() {
+        assert_eq!(
+            ScalarReducer::from_results([f64::MAX, -f64::MAX]),
+            Err(ReduceError::ArithmeticOverflow)
+        );
+        // The mean and deltas fit, but the squared deviation does not.
+        assert_eq!(
+            ScalarReducer::from_results([0.0, f64::MAX]),
+            Err(ReduceError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn scalar_reducer_failed_update_preserves_accepted_observations() {
+        let mut reducer = ScalarReducer::default();
+        reducer.observe(1.0).expect("finite observation should fit");
+        reducer.observe(3.0).expect("finite observation should fit");
+        let before = reducer.finish().expect("accepted observations should reduce");
+        assert_eq!(
+            reducer.observe(f64::MAX),
+            Err(ReduceError::ArithmeticOverflow)
+        );
+        assert_eq!(reducer.finish(), Ok(before));
+        reducer.observe(5.0).expect("reducer should remain usable");
+        assert_eq!(
+            reducer.finish(),
+            ScalarReducer::from_results([1.0, 3.0, 5.0])
+        );
+    }
+
+    #[test]
+    fn scalar_aggregation_reports_overflow_independently_of_non_finite_policy() {
+        let master = MasterSeed::from_u64(9);
+        let records = [f64::MAX, -f64::MAX].map(|value| TrialRecord {
+            key: TrialKey::new(CandidateId::new(1), ReplicationId::new(0)),
+            replay: context(master, 1, 0, 0).replay_key(),
+            result: Ok::<f64, &str>(value),
+        });
+        for policy in [NonFinitePolicy::Ignore, NonFinitePolicy::RejectCandidate] {
+            assert_eq!(
+                aggregate_scalar(&records, |value| *value, FailurePolicy::Ignore, policy),
+                Err(AggregateError::ArithmeticOverflow)
+            );
+        }
+    }
+
+    #[test]
+    fn scalar_aggregation_rejection_precedes_arithmetic_overflow() {
+        let master = MasterSeed::from_u64(9);
+        let records = [Ok(f64::MAX), Ok(-f64::MAX), Ok(f64::NAN), Err("physics")]
+            .map(|result| TrialRecord {
+                key: TrialKey::new(CandidateId::new(1), ReplicationId::new(0)),
+                replay: context(master, 1, 0, 0).replay_key(),
+                result,
+            });
+        assert_eq!(
+            aggregate_scalar(
+                &records,
+                |value| *value,
+                FailurePolicy::RejectCandidate,
+                NonFinitePolicy::RejectCandidate,
+            ),
+            Err(AggregateError::EvaluationFailed { failures: 1 })
+        );
+        assert_eq!(
+            aggregate_scalar(
+                &records,
+                |value| *value,
+                FailurePolicy::Ignore,
+                NonFinitePolicy::RejectCandidate,
+            ),
+            Err(AggregateError::NonFinite { observations: 1 })
+        );
+        assert_eq!(
+            aggregate_scalar(
+                &records,
+                |value| *value,
+                FailurePolicy::Ignore,
+                NonFinitePolicy::Ignore,
+            ),
+            Err(AggregateError::ArithmeticOverflow)
+        );
     }
 
     #[test]

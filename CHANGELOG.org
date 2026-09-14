@@ -1,5 +1,9 @@
 #+title: Changelog
 
+* DONE Reject unrepresentable scalar statistics
+Scalar reduction reports arithmetic overflow without changing accepted state.
+Aggregation preserves that failure instead of returning non-finite statistics.
+
 * DONE Add SimulationParams struct and pass it into the constructor.
 * DONE Rename =Ticket= to =Message= or =Packet= for better readability.
 Also considering "Event"
