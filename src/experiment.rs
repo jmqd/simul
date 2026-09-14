@@ -391,7 +391,7 @@ mod tests {
             |_| panic!("temperature schedule must not run"),
             0,
         );
-        assert_eq!(no_valid_score, None);
+        assert_eq!(None, no_valid_score);
     }
 
     #[test]
