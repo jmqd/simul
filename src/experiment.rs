@@ -252,7 +252,7 @@ mod tests {
         );
 
         assert_eq!(&[10, 9], visited.as_slice());
-        assert_eq!(result, Some(NonClone(10)));
+        assert_eq!(Some(NonClone(10)), result);
         assert!(rng.draws > 0);
     }
 
