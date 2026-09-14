@@ -1881,7 +1881,7 @@ mod tests {
         .expect("valid fixed schedule should run serially");
         assert!(retain_records(records.clone(), RetentionPolicy::default()).is_empty());
         let failures = retain_records(records, RetentionPolicy::FailuresOnly);
-        assert_eq!(failures.len(), 1);
+        assert_eq!(1, failures.len());
         assert_eq!(
             failures[0].key,
             TrialId::new(CandidateId::new(4), ReplicationId::new(1))
