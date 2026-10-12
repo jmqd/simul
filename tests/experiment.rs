@@ -268,7 +268,7 @@ mod parallel {
             |(), (), _| -> Result<(), Infallible> { panic!("empty batch evaluated a trial") },
         );
         match result {
-            Ok(records) => assert!(records.is_empty()),
+            Ok(records) => assert_eq!(records, []),
             Err(error) => panic!("empty batch failed: {error:?}"),
         }
     }

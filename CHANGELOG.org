@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Update the development toolchain to Rust 1.99.0
+Refresh rust-overlay to provide the pinned compiler on all four Nix platforms.
+Keep the library MSRV at 1.85 and adapt empty-result assertions to the new Clippy
+diagnostics. Seeded optimizer and simulation replay matches Rust 1.98.1 exactly.
+
 * DONE Reuse repeated payload-free message contents
 Consecutive sends with unchanged source and destination can share retained
 contents instead of reallocating message bodies and names. Timestamps and

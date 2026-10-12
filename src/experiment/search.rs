@@ -363,7 +363,7 @@ mod tests {
         let mut split_asked = split.ask(2);
         split_asked.extend(split.ask(99));
         assert_eq!(all, split_asked);
-        assert!(split.ask(1).is_empty());
+        assert_eq!(split.ask(1), []);
         assert_eq!(split.status().asked, 5);
         assert_eq!(split.status().outstanding, 5);
     }
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn zero_budget_and_bounded_sampling_are_defined() {
         let mut empty = SeededRandomSearch::new(MasterSeed::from_u64(1), 0, |_| 0_u64, MaxI32);
-        assert!(empty.ask(10).is_empty());
+        assert_eq!(empty.ask(10), []);
         assert!(empty.status().finished);
 
         let sampled = sample_bounded(MasterSeed::from_u64(5), 3, &[(0.0, 1.0), (-2.0, 2.0)])
