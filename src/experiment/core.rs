@@ -1088,17 +1088,37 @@ impl BernoulliReducer {
         }
         let n = self.attempts as f64;
         let rate = self.successes as f64 / n;
-        let z2 = self.wilson_z * self.wilson_z;
-        let denominator = 1.0 + z2 / n;
-        let center = (rate + z2 / (2.0 * n)) / denominator;
-        let radius =
-            self.wilson_z * ((rate * (1.0 - rate) / n + z2 / (4.0 * n * n)).sqrt()) / denominator;
+        let scaled_z = self.wilson_z / n.sqrt();
+        // Rationalize the lower root instead of subtracting nearly equal
+        // center and radius terms. Scale by z² when it exceeds n, so neither
+        // the squared z-score nor the root calculation can overflow.
+        let (lower, upper) = if scaled_z > 1.0 {
+            let inverse_square = scaled_z.recip().powi(2);
+            let root = (4.0 * rate * (1.0 - rate))
+                .mul_add(inverse_square, 1.0)
+                .sqrt();
+            let numerator = (2.0 * rate).mul_add(inverse_square, 1.0 + root);
+            (
+                rate * (2.0 * rate * inverse_square / numerator),
+                numerator / (2.0 * (1.0 + inverse_square)),
+            )
+        } else {
+            let square = scaled_z * scaled_z;
+            let root = scaled_z * scaled_z.hypot(2.0 * (rate * (1.0 - rate)).sqrt());
+            let numerator = rate.mul_add(2.0, square + root);
+            let lower = if self.successes == 0 {
+                0.0
+            } else {
+                rate * (2.0 * rate / numerator)
+            };
+            (lower, numerator / (2.0 * (1.0 + square)))
+        };
         Ok(BernoulliSummary {
             attempts: self.attempts,
             successes: self.successes,
             rate,
-            wilson_lower: (center - radius).max(0.0),
-            wilson_upper: (center + radius).min(1.0),
+            wilson_lower: lower.max(0.0),
+            wilson_upper: upper.min(1.0),
         })
     }
 }
@@ -1700,6 +1720,44 @@ mod tests {
         assert_eq!(None, one.sample_variance);
         assert_eq!(None, one.standard_error);
         assert_eq!(Err(ReduceError::Empty), ScalarReducer::from_results([]));
+    }
+
+    #[test]
+    fn wilson_interval_preserves_small_positive_lower_bounds() {
+        for (z, expected_lower) in [
+            (1.0e8, 2.249_999_999_999_999e-16),
+            (1.0e9, 2.25e-18),
+            (1.0e154, 2.25e-308),
+            (1.5e154, 1.0e-308),
+        ] {
+            let mut reducer = BernoulliReducer::new(z).expect("positive finite z");
+            for observation in [true, true, true, false] {
+                reducer.observe(observation);
+            }
+            let summary = reducer.finish().expect("four observations");
+            assert!((summary.wilson_lower / expected_lower - 1.0).abs() <= 16.0 * f64::EPSILON);
+            assert_f64_close(summary.wilson_upper, 1.0);
+        }
+    }
+
+    #[test]
+    fn wilson_interval_preserves_a_subnormal_upper_bound() {
+        let mut reducer = BernoulliReducer::new(2.3e-162).expect("positive finite z");
+        reducer.observe(false);
+        let summary = reducer.finish().expect("one observation");
+        assert_f64_bits_eq(summary.wilson_lower, 0.0);
+        assert_f64_bits_eq(summary.wilson_upper, f64::from_bits(1));
+    }
+
+    #[test]
+    fn wilson_interval_includes_certain_success() {
+        let mut reducer = BernoulliReducer::new(1.0e4).expect("positive finite z");
+        reducer.observe(true);
+        reducer.observe(true);
+        let summary = reducer.finish().expect("two observations");
+        let expected_lower = 2.0 / (2.0 + 1.0e8);
+        assert!((summary.wilson_lower / expected_lower - 1.0).abs() <= 16.0 * f64::EPSILON);
+        assert_f64_bits_eq(summary.wilson_upper, 1.0);
     }
 
     #[test]

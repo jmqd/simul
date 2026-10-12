@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Stabilize Wilson confidence intervals at numeric extremes
+Rationalize the lower confidence bound to avoid cancellation, and rescale large
+z-scores before squaring. Preserve representable tiny bounds instead of rounding
+them away through intermediate overflow or underflow.
+
 * DONE Preserve tiny centers in complete circular refits
 At learning rate one, use the elite center directly instead of subtracting and
 re-adding the previous center. Small representable circular coordinates no longer
