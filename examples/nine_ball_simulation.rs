@@ -4,7 +4,9 @@ use rand_distr::weighted::WeightedIndex;
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::missing_docs_in_private_items)]
@@ -15,6 +17,7 @@ struct NineBallPlayer {
     winning_threshold: u8,
     score: u8,
     opponent_name: String,
+    winner: Rc<Cell<Option<usize>>>,
 }
 
 #[allow(clippy::unwrap_used)]
@@ -38,7 +41,9 @@ impl Agent for NineBallPlayer {
         }
 
         if self.score >= self.winning_threshold {
+            self.winner.set(Some(ctx.handle()));
             ctx.send_halt_interrupt("won");
+            return;
         }
 
         // If the opponent gets lucky, they get another turn.
@@ -62,6 +67,7 @@ struct ApaNineBallPlayer {
     score: u8,
     opponent_name: String,
     agent_options: AgentOptions,
+    winner: Rc<Cell<Option<usize>>>,
 }
 
 #[allow(clippy::unwrap_used)]
@@ -85,7 +91,9 @@ impl Agent for ApaNineBallPlayer {
         }
 
         if self.score >= self.winning_threshold {
+            self.winner.set(Some(ctx.handle()));
             ctx.send_halt_interrupt("won");
+            return;
         }
 
         // If the player gets lucky, they get another turn.
@@ -103,6 +111,7 @@ impl Agent for ApaNineBallPlayer {
 /// Runs a simulation for normal 9 ball rules.
 fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: usize) -> String {
     let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
+    let winner = Rc::new(Cell::new(None));
 
     let alice = NineBallPlayer {
         luck_chance: 0.0,
@@ -111,6 +120,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_weights: [5, 10, 20, 20, 18, 12, 5, 4, 3, 2],
         opponent_name: "john".to_string(),
+        winner: Rc::clone(&winner),
     };
 
     let john = NineBallPlayer {
@@ -120,16 +130,17 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_weights: [6, 11, 18, 18, 15, 9, 3, 2, 2, 1],
         opponent_name: "alice".to_string(),
+        winner: Rc::clone(&winner),
     };
 
     let mut agent_initializers: Vec<AgentInitializer> = vec![
         AgentInitializer {
             agent: Box::new(alice),
-            options: AgentOptions::default(),
+            options: AgentOptions::defaults_with_name("alice".to_string()),
         },
         AgentInitializer {
             agent: Box::new(john),
-            options: AgentOptions::default(),
+            options: AgentOptions::defaults_with_name("john".to_string()),
         },
     ];
 
@@ -149,14 +160,10 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
     let mut sim = Simulation::new(simulation_parameters_generator());
     sim.run();
 
-    sim.find_agent(|a| {
-        a.state
-            .produced
-            .last()
-            .is_some_and(|m| m.interrupt.is_some())
-    })
-    .map(|a| a.name.clone())
-    .unwrap()
+    winner
+        .get()
+        .map(|handle| sim.agents()[handle].name.clone())
+        .unwrap()
 }
 
 #[allow(clippy::unwrap_used)]
@@ -166,6 +173,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
     starting_player: usize,
 ) -> String {
     let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
+    let winner = Rc::new(Cell::new(None));
 
     let alice = ApaNineBallPlayer {
         luck_chance: 0.0,
@@ -180,6 +188,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
             ..Default::default()
         },
         opponent_name: "john".to_string(),
+        winner: Rc::clone(&winner),
     };
 
     let john = ApaNineBallPlayer {
@@ -192,9 +201,10 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
             initial_mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
             name: "john".to_string(),
-            initial_queue: vec![Message::new_with_payload(0, "", "", Some(vec![1]))].into(),
+            ..Default::default()
         },
         opponent_name: "alice".to_string(),
+        winner: Rc::clone(&winner),
     };
 
     let mut agent_initializers = vec![
@@ -224,21 +234,17 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
     let mut sim = Simulation::new(simulation_parameters_generator());
     sim.run();
 
-    sim.find_agent(|a| {
-        a.state
-            .produced
-            .last()
-            .is_some_and(|m| m.interrupt.is_some())
-    })
-    .map(|a| a.name.clone())
-    .unwrap()
+    winner
+        .get()
+        .map(|handle| sim.agents()[handle].name.clone())
+        .unwrap()
 }
 
 fn main() {
     // To vary who "breaks" first, we pass in a starting player, 0 or 1.
     let mut starting_player: usize = 0;
 
-    eprintln!("Normal 9-ball");
+    eprintln!("APA 9-ball");
     println!("luck_chance\tbetter_player_win_percent");
 
     for pct in [0.00, 0.20, 0.40, 0.50] {
@@ -283,5 +289,68 @@ fn main() {
             pct * 100.0,
             (count["alice"] as f32 / (count["alice"] + count["john"]) as f32) * 100.0
         );
+    }
+}
+
+/// Regression coverage for the match-ending turn under each ruleset.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn winning_turn_records_the_winner_without_scheduling_another_turn() {
+        for apa_rules in [false, true] {
+            let winner = Rc::new(Cell::new(None));
+            let agent: Box<dyn Agent> = if apa_rules {
+                Box::new(ApaNineBallPlayer {
+                    luck_chance: 0.0,
+                    run_out_choices: [8; 10],
+                    run_out_weights: [1; 10],
+                    winning_threshold: 9,
+                    score: 0,
+                    opponent_name: "opponent".to_string(),
+                    agent_options: AgentOptions::default(),
+                    winner: Rc::clone(&winner),
+                })
+            } else {
+                Box::new(NineBallPlayer {
+                    luck_chance: 0.0,
+                    run_out_choices: [8; 10],
+                    run_out_weights: [1; 10],
+                    winning_threshold: 1,
+                    score: 0,
+                    opponent_name: "opponent".to_string(),
+                    winner: Rc::clone(&winner),
+                })
+            };
+            let mut simulation = Simulation::new(SimulationParameters {
+                agent_initializers: vec![AgentInitializer {
+                    agent,
+                    options: AgentOptions {
+                        name: "player".to_string(),
+                        initial_queue: vec![Message::new_with_payload(
+                            0,
+                            "break",
+                            "player",
+                            Some(vec![2]),
+                        )]
+                        .into(),
+                        ..Default::default()
+                    },
+                }],
+                halt_check: |simulation| simulation.time() == 2,
+                ..Default::default()
+            });
+            simulation.run();
+
+            assert_eq!(winner.get(), Some(0));
+            assert_eq!(simulation.time(), 1);
+            assert_eq!(
+                simulation
+                    .produced_for_agent("player")
+                    .map(<[Message]>::len),
+                Some(0)
+            );
+        }
     }
 }

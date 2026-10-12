@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Restore the nine-ball simulation example
+Record the winning agent explicitly, give both normal-rules players unique names,
+and queue the opening turn only for the chosen starter. Winning turns halt without
+scheduling another turn. Label the APA and normal-rules result tables correctly.
+
 * DONE Preserve short waits at large simulation timestamps
 Subtract integer timestamps before converting waiting durations to floating point.
 One-tick waits remain accurate above 2^53 and near the u64 time limit.
