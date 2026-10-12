@@ -13,7 +13,7 @@ use std::rc::Rc;
 struct NineBallPlayer {
     luck_chance: f32,
     run_out_choices: [usize; 10],
-    run_out_weights: [usize; 10],
+    run_out_distribution: WeightedIndex<usize>,
     winning_threshold: u8,
     score: u8,
     opponent_name: String,
@@ -24,10 +24,10 @@ struct NineBallPlayer {
 impl Agent for NineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
         let mut rng = rand::rng();
-        let dist = WeightedIndex::new(self.run_out_weights).unwrap();
-        let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
+        let mut balls_to_run = self.run_out_choices[self.run_out_distribution.sample(&mut rng)];
 
-        let mut ball = u8::from_le_bytes(msg.custom_payload.clone().unwrap().try_into().unwrap());
+        let mut ball =
+            u8::from_le_bytes(msg.custom_payload.as_deref().unwrap().try_into().unwrap());
 
         while balls_to_run > 0 {
             balls_to_run -= 1;
@@ -48,12 +48,12 @@ impl Agent for NineBallPlayer {
 
         // If the opponent gets lucky, they get another turn.
         let next_turn = if rng.random_range(0.0..1.0) > (1.0 - self.luck_chance) {
-            ctx.name.to_string()
+            ctx.name
         } else {
-            self.opponent_name.clone()
+            &self.opponent_name
         };
 
-        ctx.send(&next_turn, Some(ball.to_le_bytes().to_vec()));
+        ctx.send(next_turn, Some(ball.to_le_bytes().to_vec()));
     }
 }
 
@@ -62,7 +62,7 @@ impl Agent for NineBallPlayer {
 struct ApaNineBallPlayer {
     luck_chance: f32,
     run_out_choices: [usize; 10],
-    run_out_weights: [usize; 10],
+    run_out_distribution: WeightedIndex<usize>,
     winning_threshold: u8,
     score: u8,
     opponent_name: String,
@@ -74,9 +74,9 @@ struct ApaNineBallPlayer {
 impl Agent for ApaNineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
         let mut rng = rand::rng();
-        let dist = WeightedIndex::new(self.run_out_weights).unwrap();
-        let mut balls_to_run = self.run_out_choices[dist.sample(&mut rng)];
-        let mut ball = u8::from_le_bytes(msg.custom_payload.clone().unwrap().try_into().unwrap());
+        let mut balls_to_run = self.run_out_choices[self.run_out_distribution.sample(&mut rng)];
+        let mut ball =
+            u8::from_le_bytes(msg.custom_payload.as_deref().unwrap().try_into().unwrap());
 
         while balls_to_run > 0 {
             balls_to_run -= 1;
@@ -98,12 +98,12 @@ impl Agent for ApaNineBallPlayer {
 
         // If the player gets lucky, they get another turn.
         let next_turn = if rng.random_range(0.0..1.0) > (1.0 - self.luck_chance) {
-            ctx.name.to_string()
+            ctx.name
         } else {
-            self.opponent_name.clone()
+            &self.opponent_name
         };
 
-        ctx.send(&next_turn, Some(ball.to_le_bytes().to_vec()));
+        ctx.send(next_turn, Some(ball.to_le_bytes().to_vec()));
     }
 }
 
@@ -118,7 +118,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         score: 0,
         winning_threshold: 5,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-        run_out_weights: [5, 10, 20, 20, 18, 12, 5, 4, 3, 2],
+        run_out_distribution: WeightedIndex::new([5, 10, 20, 20, 18, 12, 5, 4, 3, 2]).unwrap(),
         opponent_name: "john".to_string(),
         winner: Rc::clone(&winner),
     };
@@ -128,7 +128,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         score: 0,
         winning_threshold: 5,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-        run_out_weights: [6, 11, 18, 18, 15, 9, 3, 2, 2, 1],
+        run_out_distribution: WeightedIndex::new([6, 11, 18, 18, 15, 9, 3, 2, 2, 1]).unwrap(),
         opponent_name: "alice".to_string(),
         winner: Rc::clone(&winner),
     };
@@ -180,7 +180,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         score: 0,
         winning_threshold: 55,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-        run_out_weights: [5, 10, 20, 20, 18, 12, 5, 4, 3, 2],
+        run_out_distribution: WeightedIndex::new([5, 10, 20, 20, 18, 12, 5, 4, 3, 2]).unwrap(),
         agent_options: AgentOptions {
             initial_mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
@@ -196,7 +196,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         score: 0,
         winning_threshold: 55,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-        run_out_weights: [6, 11, 18, 18, 15, 9, 3, 2, 2, 1],
+        run_out_distribution: WeightedIndex::new([6, 11, 18, 18, 15, 9, 3, 2, 2, 1]).unwrap(),
         agent_options: AgentOptions {
             initial_mode: AgentMode::Reactive,
             wake_mode: AgentMode::Reactive,
@@ -301,11 +301,13 @@ mod tests {
     fn winning_turn_records_the_winner_without_scheduling_another_turn() {
         for apa_rules in [false, true] {
             let winner = Rc::new(Cell::new(None));
+            let run_out_distribution = WeightedIndex::new([1; 10])
+                .unwrap_or_else(|error| panic!("invalid test distribution: {error}"));
             let agent: Box<dyn Agent> = if apa_rules {
                 Box::new(ApaNineBallPlayer {
                     luck_chance: 0.0,
                     run_out_choices: [8; 10],
-                    run_out_weights: [1; 10],
+                    run_out_distribution,
                     winning_threshold: 9,
                     score: 0,
                     opponent_name: "opponent".to_string(),
@@ -316,7 +318,7 @@ mod tests {
                 Box::new(NineBallPlayer {
                     luck_chance: 0.0,
                     run_out_choices: [8; 10],
-                    run_out_weights: [1; 10],
+                    run_out_distribution,
                     winning_threshold: 1,
                     score: 0,
                     opponent_name: "opponent".to_string(),
