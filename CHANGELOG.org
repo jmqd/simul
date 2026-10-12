@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Avoid temporary allocations for singleton search results
+Skip within-batch duplicate sets and the canonical sorting buffer when a tell
+contains one result. Preserve identity validation and atomic rejection of invalid
+results, while keeping canonical ordering for batches.
+
 * DONE Stabilize Wilson confidence intervals at numeric extremes
 Rationalize the lower confidence bound to avoid cancellation, and rescale large
 z-scores before squaring. Preserve representable tiny bounds instead of rounding

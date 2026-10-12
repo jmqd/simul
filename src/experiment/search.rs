@@ -161,8 +161,11 @@ where
 
     /// Validates an entire tell batch before state is mutated.
     fn validate_tells(&self, evaluated: &[Told<S>]) -> Result<(), TellError> {
-        let mut batch_tokens = HashSet::with_capacity(evaluated.len());
-        let mut batch_candidates = HashSet::with_capacity(evaluated.len());
+        let check_batch_duplicates = evaluated.len() > 1;
+        let mut batch_tokens =
+            check_batch_duplicates.then(|| HashSet::with_capacity(evaluated.len()));
+        let mut batch_candidates =
+            check_batch_duplicates.then(|| HashSet::with_capacity(evaluated.len()));
         for told in evaluated {
             if told.candidate != told.summary.candidate {
                 return Err(TellError::CandidateMismatch {
@@ -170,18 +173,37 @@ where
                     summary: told.summary.candidate,
                 });
             }
-            if self.completed_tokens.contains(&told.token) || !batch_tokens.insert(told.token) {
+            if self.completed_tokens.contains(&told.token)
+                || batch_tokens
+                    .as_mut()
+                    .is_some_and(|tokens| !tokens.insert(told.token))
+            {
                 return Err(TellError::DuplicateToken(told.token));
             }
             if !self.pending.contains_key(&told.token) {
                 return Err(TellError::UnknownToken(told.token));
             }
             if self.completed_candidates.contains(&told.candidate)
-                || !batch_candidates.insert(told.candidate)
+                || batch_candidates
+                    .as_mut()
+                    .is_some_and(|candidates| !candidates.insert(told.candidate))
             {
                 return Err(TellError::DuplicateCandidate(told.candidate));
             }
         }
+        Ok(())
+    }
+
+    /// Incorporates one validated result into the strategy state.
+    fn incorporate_tell(&mut self, told: &Told<S>) -> Result<(), TellError> {
+        let candidate = self
+            .pending
+            .remove(&told.token)
+            .ok_or(TellError::UnknownToken(told.token))?;
+        self.consider(candidate, told);
+        self.completed_tokens.insert(told.token);
+        self.completed_candidates.insert(told.candidate);
+        self.told_count += 1;
         Ok(())
     }
 
@@ -232,17 +254,14 @@ where
 
     fn tell(&mut self, evaluated: &[Told<S>]) -> Result<(), TellError> {
         self.validate_tells(evaluated)?;
+        if let [told] = evaluated {
+            return self.incorporate_tell(told);
+        }
+
         let mut canonical: Vec<_> = evaluated.iter().collect();
         canonical.sort_by_key(|told| told.candidate);
         for told in canonical {
-            let candidate = self
-                .pending
-                .remove(&told.token)
-                .ok_or(TellError::UnknownToken(told.token))?;
-            self.consider(candidate, told);
-            self.completed_tokens.insert(told.token);
-            self.completed_candidates.insert(told.candidate);
-            self.told_count += 1;
+            self.incorporate_tell(told)?;
         }
         Ok(())
     }
@@ -444,6 +463,55 @@ mod tests {
         );
         assert_eq!(search.status().told, 0);
         assert_eq!(search.status().outstanding, 2);
+    }
+
+    #[test]
+    fn singleton_tells_preserve_state_on_invalid_candidate_ids() {
+        let mut search = SeededRandomSearch::new(MasterSeed::from_u64(1), 2, |_| 7_u64, MaxI32);
+        let asked = search.ask(2);
+        search
+            .tell(&[Told {
+                token: asked[0].token,
+                candidate: CandidateId::new(3),
+                summary: summary(3, 1),
+            }])
+            .expect("first result should be accepted");
+        let status = search.status();
+        let best = search.best().cloned();
+
+        for (candidate, summary_candidate, expected) in [
+            (3, 3, TellError::DuplicateCandidate(CandidateId::new(3))),
+            (
+                4,
+                5,
+                TellError::CandidateMismatch {
+                    told: CandidateId::new(4),
+                    summary: CandidateId::new(5),
+                },
+            ),
+        ] {
+            let invalid = Told {
+                token: asked[1].token,
+                candidate: CandidateId::new(candidate),
+                summary: summary(summary_candidate, 99),
+            };
+            assert_eq!(Err(expected), search.tell(&[invalid]));
+            assert_eq!(status, search.status());
+            assert_eq!(best.as_ref(), search.best());
+        }
+
+        search
+            .tell(&[Told {
+                token: asked[1].token,
+                candidate: CandidateId::new(4),
+                summary: summary(4, 2),
+            }])
+            .expect("rejected results must leave the proposal pending");
+        assert!(search.status().finished);
+        assert_eq!(
+            Some(CandidateId::new(4)),
+            search.best().map(|result| result.candidate_id)
+        );
     }
 
     #[test]
