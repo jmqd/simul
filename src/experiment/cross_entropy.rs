@@ -439,29 +439,34 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
                     CrossEntropyDimension::Circular,
                 ),
             };
-            let elite_variance = elites
+            let differences = elites
                 .iter()
-                .map(|sample| {
-                    let difference = match self.dimensions[dimension] {
-                        CrossEntropyDimension::Linear => sample.point[dimension] - elite_mean,
-                        CrossEntropyDimension::Circular => {
-                            circular_delta(elite_mean, sample.point[dimension])
-                        }
-                    };
-                    difference * difference
-                })
+                .map(|sample| match self.dimensions[dimension] {
+                    CrossEntropyDimension::Linear => sample.point[dimension] - elite_mean,
+                    CrossEntropyDimension::Circular => {
+                        circular_delta(elite_mean, sample.point[dimension])
+                    }
+                });
+            let elite_variance = differences
+                .clone()
+                .map(|difference| difference * difference)
                 .sum::<f64>()
                 * inverse_elite_count;
-            let old_variance = self.standard_deviation[dimension].powi(2);
-            let next_standard_deviation = if old_variance.is_finite() {
-                old_variance
-                    .mul_add(retained_weight, elite_variance * self.learning_rate)
-                    .sqrt()
+            let next_variance = self.standard_deviation[dimension]
+                .powi(2)
+                .mul_add(retained_weight, elite_variance * self.learning_rate);
+            let next_standard_deviation = if next_variance.is_normal() {
+                next_variance.sqrt()
             } else {
-                // Weight before combining to avoid squaring a large deviation,
-                // including the zero retained weight of a complete refit.
+                // Work with deviations when squaring or weighting variances
+                // would overflow, underflow, or lose subnormal precision.
+                let elite_deviation = if elite_variance.is_normal() {
+                    elite_variance.sqrt()
+                } else {
+                    differences.fold(0.0, f64::hypot) * inverse_elite_count.sqrt()
+                };
                 (self.standard_deviation[dimension] * retained_weight.sqrt())
-                    .hypot((elite_variance * self.learning_rate).sqrt())
+                    .hypot(elite_deviation * self.learning_rate.sqrt())
             };
 
             self.mean[dimension] = next_mean;
@@ -908,6 +913,66 @@ mod tests {
         assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
         assert_close(search.standard_deviation()[0], 0.25, f64::EPSILON);
         assert_eq!(search.ask_with_standard_normal(|_| 1.0), Ok([0.75]));
+    }
+
+    #[test]
+    fn smoothing_tiny_deviations_preserves_representable_spread() {
+        for deviation in [1.0e-160, 1.0e-200] {
+            let mut search = optimizer(
+                CrossEntropyConfig::new([0.0; 2], [deviation; 2])
+                    .with_dimensions([
+                        CrossEntropyDimension::Linear,
+                        CrossEntropyDimension::Circular,
+                    ])
+                    .with_minimum_standard_deviation([1.0e-300; 2])
+                    .with_learning_rate(0.75),
+            );
+            let mut samples = [CrossEntropySample::new([0.0; 2], 1.0)];
+            assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+            for actual in search.standard_deviation() {
+                assert_close(actual / deviation, 0.5, f64::EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn complete_refit_preserves_tiny_elite_spread() {
+        for deviation in [1.0e-160, 1.0e-200] {
+            let mut search = optimizer(
+                CrossEntropyConfig::new([0.5; 2], [0.25; 2])
+                    .with_dimensions([
+                        CrossEntropyDimension::Linear,
+                        CrossEntropyDimension::Circular,
+                    ])
+                    .with_minimum_standard_deviation([1.0e-300; 2])
+                    .with_elite_fraction(1.0)
+                    .with_learning_rate(1.0),
+            );
+            let mut samples = [
+                CrossEntropySample::new([0.0; 2], 1.0),
+                CrossEntropySample::new([2.0 * deviation; 2], 1.0),
+            ];
+            assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+            for actual in search.standard_deviation() {
+                assert_close(actual / deviation, 1.0, 4.0 * f64::EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_learning_rate_does_not_underflow_weighted_spread() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.0], [1.0e-300])
+                .with_minimum_standard_deviation([1.0e-310])
+                .with_elite_fraction(1.0)
+                .with_learning_rate(1.0e-200),
+        );
+        let mut samples = [
+            CrossEntropySample::new([0.0], 1.0),
+            CrossEntropySample::new([2.0e-100], 1.0),
+        ];
+        assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+        assert_close(search.standard_deviation()[0] / 1.0e-200, 1.0, f64::EPSILON);
     }
 
     #[test]

@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Preserve tiny optimizer standard deviations
+Avoid variance underflow and subnormal precision loss during smoothing and
+complete refits. Use deviation arithmetic when the weighted variance cannot
+retain normal precision, rather than collapsing a representable spread to its
+minimum. Normal-scale seeded optimizer replay remains bit-identical.
+
 * DONE Update reviewed random-number dependencies
 Upgrade rand to 0.10.3 and zerocopy/zerocopy-derive to 0.8.62 for upstream numeric
 and pointer-metadata fixes. Keep the library MSRV at 1.85; frozen seed vectors,
