@@ -433,6 +433,8 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
                 CrossEntropyDimension::Linear => {
                     old_mean.mul_add(retained_weight, elite_mean * self.learning_rate)
                 }
+                // Avoid losing a tiny center when subtracting the old mean.
+                CrossEntropyDimension::Circular if retained_weight <= 0.0 => elite_mean,
                 CrossEntropyDimension::Circular => normalize(
                     self.learning_rate
                         .mul_add(circular_delta(old_mean, elite_mean), old_mean),
@@ -973,6 +975,18 @@ mod tests {
         ];
         assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
         assert_close(search.standard_deviation()[0] / 1.0e-200, 1.0, f64::EPSILON);
+    }
+
+    #[test]
+    fn complete_circular_refit_preserves_a_tiny_elite_center() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.5], [0.25])
+                .with_dimensions([CrossEntropyDimension::Circular])
+                .with_learning_rate(1.0),
+        );
+        let mut samples = [CrossEntropySample::new([1.0e-200], 1.0)];
+        assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+        assert_close(search.mean()[0] / 1.0e-200, 1.0, 4.0 * f64::EPSILON);
     }
 
     #[test]
