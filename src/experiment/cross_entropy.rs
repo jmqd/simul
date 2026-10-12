@@ -607,6 +607,9 @@ fn circular_delta(from: f64, to: f64) -> f64 {
 /// Projects a value into its normalized domain.
 #[inline]
 fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
+    if valid_coordinate(value, dimension) {
+        return value;
+    }
     match dimension {
         CrossEntropyDimension::Linear => {
             let reflected = value.rem_euclid(2.0);

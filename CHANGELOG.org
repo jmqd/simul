@@ -1,5 +1,9 @@
 #+title: Changelog
 
+* DONE Skip projection for already-normalized optimizer coordinates
+Avoid floating-point remainder operations for coordinates already inside their
+linear or circular domain. Seeded proposal and update replay remains bit-identical.
+
 * DONE Fail license checks when collection or filtering fails
 Preserve errors from cargo-license instead of reporting success for missing or
 failed tooling. A license-filter error also fails the check.
