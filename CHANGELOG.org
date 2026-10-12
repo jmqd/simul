@@ -1,5 +1,9 @@
 #+title: Changelog
 
+* DONE Preserve short waits at large simulation timestamps
+Subtract integer timestamps before converting waiting durations to floating point.
+One-tick waits remain accurate above 2^53 and near the u64 time limit.
+
 * DONE Refresh dependencies and tooling (September 2026)
 Pin Rust 1.98.1 and update BLAKE3 to 1.8.7, Criterion to 0.8.2, log to 0.4.34,
 and compatible Cargo lockfile dependencies, replacing yanked chacha20 0.10.1.

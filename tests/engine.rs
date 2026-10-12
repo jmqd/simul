@@ -346,3 +346,32 @@ fn consumed_message_completion_does_not_change_sender_history() {
     assert_eq!(produced[0].custom_payload, consumed[0].custom_payload);
     assert_eq!(produced[0].queued_time, consumed[0].queued_time);
 }
+
+#[test]
+fn average_wait_preserves_short_durations_at_large_timestamps() {
+    for starting_time in [0, 1_u64 << 53, u64::MAX - 2] {
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: vec![
+                periodic_producer("sender", 1, "receiver"),
+                periodic_consumer("receiver", 1),
+            ],
+            starting_time,
+            halt_check: |simulation| {
+                simulation
+                    .consumed_for_agent("receiver")
+                    .is_some_and(|messages| !messages.is_empty())
+            },
+            ..Default::default()
+        });
+        simulation.run();
+
+        assert_eq!(
+            Some(1.0_f64.to_bits()),
+            simulation
+                .calc_avg_wait_statistics()
+                .get("receiver")
+                .map(|wait| wait.to_bits()),
+            "starting time: {starting_time}"
+        );
+    }
+}

@@ -368,8 +368,12 @@ impl Simulation {
         {
             let mut sum_of_times: f64 = 0f64;
             for completed in &agent.state.consumed {
-                sum_of_times += completed.completed_time.unwrap_or(completed.queued_time) as f64
-                    - completed.queued_time as f64;
+                let completed_time = completed.completed_time.unwrap_or(completed.queued_time);
+                sum_of_times += if completed_time >= completed.queued_time {
+                    (completed_time - completed.queued_time) as f64
+                } else {
+                    -((completed.queued_time - completed_time) as f64)
+                };
             }
 
             data.insert(
