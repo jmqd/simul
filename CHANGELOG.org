@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Update reviewed random-number dependencies
+Upgrade rand to 0.10.3 and zerocopy/zerocopy-derive to 0.8.62 for upstream numeric
+and pointer-metadata fixes. Keep the library MSRV at 1.85; frozen seed vectors,
+seeded optimizer proposals, and simulation replay remain unchanged.
+
 * DONE Update the development toolchain to Rust 1.99.0
 Refresh rust-overlay to provide the pinned compiler on all four Nix platforms.
 Keep the library MSRV at 1.85 and adapt empty-result assertions to the new Clippy

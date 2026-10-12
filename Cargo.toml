@@ -53,7 +53,7 @@ harness = false
 name = "cross_entropy_benchmark"
 harness = false
 [dependencies]
-rand = {version = "0.10.2", features = ["alloc"]}
+rand = {version = "0.10.3", features = ["alloc"]}
 blake3 = "=1.8.7"
 rand_chacha = "=0.10.0"
 rayon = { version = "1.11.0", optional = true }
