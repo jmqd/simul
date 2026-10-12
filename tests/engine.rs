@@ -375,3 +375,101 @@ fn average_wait_preserves_short_durations_at_large_timestamps() {
         );
     }
 }
+
+#[derive(Clone, Debug)]
+struct ChangingPayloadSender;
+
+impl Agent for ChangingPayloadSender {
+    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
+
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        ctx.send("receiver", (ctx.time == 2).then(|| vec![7]));
+    }
+}
+
+#[test]
+fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            proactive_agent("sender", ChangingPayloadSender),
+            periodic_consumer("receiver", 1),
+        ],
+        halt_check: |simulation| simulation.time() == 5,
+        ..Default::default()
+    });
+    simulation.run();
+
+    let Some((_, state)) = simulation.find_by_name_mut("sender") else {
+        panic!("sender must exist");
+    };
+    assert_eq!(state.produced.len(), 5);
+    for (time, message) in (0_u64..).zip(&state.produced) {
+        assert_eq!(message.queued_time, time);
+        assert_eq!(message.completed_time, None);
+        assert_eq!(
+            message.custom_payload.as_deref(),
+            (time == 2).then_some([7].as_slice())
+        );
+    }
+    state.produced[0].source.push_str("-edited");
+    state.produced[0].custom_payload = Some(vec![9]);
+    assert_eq!(state.produced[1].source, "sender");
+    assert!(state.produced[1].custom_payload.is_none());
+
+    let Some(consumed) = simulation.consumed_for_agent("receiver") else {
+        panic!("receiver must exist");
+    };
+    assert_eq!(consumed.len(), 4);
+    for (time, message) in (0_u64..).zip(consumed) {
+        assert_eq!(message.source, "sender");
+        assert_eq!(message.destination, "receiver");
+        assert_eq!(message.queued_time, time);
+        assert_eq!(message.completed_time, Some(time + 1));
+        assert_eq!(
+            message.custom_payload.as_deref(),
+            (time == 2).then_some([7].as_slice())
+        );
+    }
+}
+
+#[test]
+fn new_sends_do_not_inherit_edited_history() {
+    let mutations: [fn(&mut Message); 6] = [
+        |message| message.source.push_str("-edited"),
+        |message| message.destination.push_str("-edited"),
+        |message| message.custom_payload = Some(vec![]),
+        |message| {
+            message.interrupt = Some(simul::message::Interrupt::HaltSimulation("old".into()));
+        },
+        |message| message.queued_time = u64::MAX,
+        |message| message.completed_time = Some(u64::MAX),
+    ];
+    for mutate in mutations {
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: vec![
+                periodic_producer("sender", 1, "receiver"),
+                periodic_consumer("receiver", 1),
+                proactive_agent("halter", HaltImmediately),
+            ],
+            halt_check: |_| false,
+            ..Default::default()
+        });
+        simulation.run();
+        let Some((_, state)) = simulation.find_by_name_mut("sender") else {
+            panic!("sender must exist");
+        };
+        mutate(&mut state.produced[0]);
+        simulation.run();
+
+        let Some(produced) = simulation.produced_for_agent("sender") else {
+            panic!("sender must exist");
+        };
+        let message = &produced[1];
+        assert_eq!(message.source, "sender");
+        assert_eq!(message.destination, "receiver");
+        assert!(message.custom_payload.is_none());
+        assert!(message.interrupt.is_none());
+        assert_eq!(message.queued_time, 1);
+        assert_eq!(message.completed_time, None);
+    }
+}

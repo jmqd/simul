@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Reuse repeated payload-free message contents
+Consecutive sends with unchanged source and destination can share retained
+contents instead of reallocating message bodies and names. Timestamps and
+copy-on-write edits remain independent; payload and history changes are respected.
+
 * DONE Reduce per-turn allocation in the nine-ball example
 Build each player's weighted distribution once per match, borrow message payloads
 when decoding the ball, and borrow the next player's name when sending a turn.

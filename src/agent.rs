@@ -144,10 +144,25 @@ impl AgentContext<'_> {
     /// Multiple messages sent by one callback are delivered in call order.
     #[inline]
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
+        // Repeated payload-free sends can reuse retained contents, just as
+        // delivery shares contents with history. Timestamps stay independent.
+        let message = match self.state.produced.last() {
+            Some(previous)
+                if payload.is_none()
+                    && previous.custom_payload.is_none()
+                    && previous.interrupt.is_none()
+                    && previous.source == self.name
+                    && previous.destination == target =>
+            {
+                let mut message = previous.clone();
+                message.queued_time = self.time;
+                message.completed_time = None;
+                message
+            }
+            _ => Message::new_with_payload(self.time, self.name, target, payload),
+        };
         self.commands.push(AgentCommand {
-            ty: AgentCommandType::SendMessage(Message::new_with_payload(
-                self.time, self.name, target, payload,
-            )),
+            ty: AgentCommandType::SendMessage(message),
             agent_handle: self.handle,
             receiver_handle: self.agent_name_handle_map.get(target).copied(),
         });
