@@ -39,13 +39,14 @@ doc:
 # Check licenses (logic ported from check.sh)
 check-licenses:
     @echo "Checking licenses..."
-    @# The grep command will exit with 0 if it finds matching lines (bad licenses),
-    @# and 1 if it finds no matches (all licenses are good).
-    @# We want to fail (exit 1) if grep finds matches.
-    @if cargo license | grep -v -E "((MIT)|(Apache-2.0)|(BSD-[23]))"; then \
+    @# Only grep's "no disallowed licenses" status is a successful check.
+    @licenses="$(cargo license)" || exit "$?"; \
+    if printf '%s\n' "$licenses" | grep -v -E "((MIT)|(Apache-2.0)|(BSD-[23]))"; then \
         printf "\033[31m ERROR: Disallowed licenses detected above\033[0m\n"; \
         exit 1; \
     else \
+        status=$?; \
+        [ "$status" -eq 1 ] || exit "$status"; \
         echo "License check passed."; \
     fi
 

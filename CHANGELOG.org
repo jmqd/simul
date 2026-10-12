@@ -1,5 +1,9 @@
 #+title: Changelog
 
+* DONE Fail license checks when collection or filtering fails
+Preserve errors from cargo-license instead of reporting success for missing or
+failed tooling. A license-filter error also fails the check.
+
 * DONE Restore the nine-ball simulation example
 Record the winning agent explicitly, give both normal-rules players unique names,
 and queue the opening turn only for the chosen starter. Winning turns halt without
