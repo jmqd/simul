@@ -28,7 +28,8 @@ use simul::experiment::{
     aggregate_bernoulli, aggregate_scalar, run_serial, simulated_annealing_search_with_rng,
     CandidateId, CandidateSummary, CrossEntropyConfig, CrossEntropyDimension,
     CrossEntropyOptimizer, CrossEntropySample, FailurePolicy, FixedReplications, MasterSeed,
-    NonFinitePolicy, ScalarReducer, ScalarSummary, SelectionPolicy, TrialStream,
+    NonFinitePolicy, ScalarReducer, ScalarSummary, SelectionPolicy, TrialContext, TrialRecord,
+    TrialStream,
 };
 use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
@@ -82,6 +83,12 @@ const WORKLOADS: &[Workload] = &[
         name: "exp/run_serial_4096",
         iterations: 1,
         run: exp_run_serial,
+    },
+    #[cfg(feature = "parallel")]
+    Workload {
+        name: "exp/run_parallel_4096",
+        iterations: 1,
+        run: exp_run_parallel,
     },
     Workload {
         name: "exp/sample_bounded_512x8",
@@ -554,26 +561,22 @@ fn exp_search_sim() -> Fingerprint {
         .mix_f64(best.summary.statistics.mean)
 }
 
-/// Replicated trials drawing independent and common named streams.
-fn exp_run_serial() -> Fingerprint {
-    let trials = FixedReplications::new(4_096, 7).trials(CandidateId::new(3), 0.25_f64);
-    let records = run_serial(SEED, trials, |&offset, context| {
-        let mut noise = context.independent_rng(TrialStream::TrialNoise, "noise");
-        let mut layout = context.common_rng(TrialStream::LayoutNoise, "layout");
-        Ok::<_, Infallible>(
-            offset + noise.uniform_f64() + noise.uniform_f64() + layout.uniform_f64(),
-        )
-    })
-    .expect("unique trials");
+fn trial_score(offset: f64, context: &TrialContext) -> f64 {
+    let mut noise = context.independent_rng(TrialStream::TrialNoise, "noise");
+    let mut layout = context.common_rng(TrialStream::LayoutNoise, "layout");
+    offset + noise.uniform_f64() + noise.uniform_f64() + layout.uniform_f64()
+}
+
+fn summarize_trials(records: &[TrialRecord<f64, Infallible>]) -> Fingerprint {
     let scalar = aggregate_scalar(
-        &records,
+        records,
         |&score| score,
         FailurePolicy::RejectCandidate,
         NonFinitePolicy::RejectCandidate,
     )
     .expect("finite scores");
     let bernoulli = aggregate_bernoulli(
-        &records,
+        records,
         |&score| score > 1.75,
         FailurePolicy::RejectCandidate,
     )
@@ -585,6 +588,37 @@ fn exp_run_serial() -> Fingerprint {
         .mix_f64(scalar.statistics.max)
         .mix(bernoulli.statistics.successes)
         .mix_f64(bernoulli.statistics.wilson_lower)
+}
+
+/// Replicated trials drawing independent and common named streams.
+fn exp_run_serial() -> Fingerprint {
+    let trials = FixedReplications::new(4_096, 7).trials(CandidateId::new(3), 0.25_f64);
+    let records = run_serial(SEED, trials, |&offset, context| {
+        Ok::<_, Infallible>(trial_score(offset, context))
+    })
+    .expect("unique trials");
+    summarize_trials(&records)
+}
+
+/// The serial trial workload on a dedicated four-worker pool.
+#[cfg(feature = "parallel")]
+fn exp_run_parallel() -> Fingerprint {
+    use simul::experiment::{run_parallel, ParallelConfig};
+    use std::num::NonZeroUsize;
+    let config = ParallelConfig::new(
+        NonZeroUsize::new(4).expect("nonzero workers"),
+        NonZeroUsize::new(4_096).expect("nonzero limit"),
+    );
+    let trials = FixedReplications::new(4_096, 7).trials(CandidateId::new(3), 0.25_f64);
+    let records = run_parallel(
+        SEED,
+        trials,
+        config,
+        || Ok::<_, Infallible>(()),
+        |(), &offset, context| Ok::<_, Infallible>(trial_score(offset, context)),
+    )
+    .expect("valid parallel batch");
+    summarize_trials(&records)
 }
 
 fn exp_sample_bounded() -> Fingerprint {
