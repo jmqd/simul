@@ -52,6 +52,11 @@ harness = false
 [[bench]]
 name = "cross_entropy_benchmark"
 harness = false
+
+[[bench]]
+name = "instruction_counts"
+harness = false
+
 [dependencies]
 rand = {version = "0.10.3", features = ["alloc"]}
 blake3 = "=1.8.7"
