@@ -18,7 +18,7 @@ lint:
 
 # Install the nightly components required by the pinned Dylint libraries
 dylint-toolchain:
-    rustup toolchain install nightly-2026-05-28 --component rust-src --component rustc-dev --component llvm-tools-preview
+    rustup toolchain install nightly-2026-08-20 --component rust-src --component rustc-dev --component llvm-tools-preview
 
 # Run Dylint lints
 dylint: dylint-toolchain

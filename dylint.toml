@@ -1,6 +1,6 @@
 [workspace.metadata.dylint]
 libraries = [
-    { git = "https://github.com/trailofbits/dylint", tag = "v6.0.4", pattern = [
+    { git = "https://github.com/trailofbits/dylint", tag = "v6.2.0", pattern = [
         "examples/general/non_local_effect_before_unhandled_error",
         "examples/general/basic_dead_store",
         "examples/general/incorrect_matches_operation",
