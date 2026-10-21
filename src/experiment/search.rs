@@ -4,6 +4,10 @@ use super::{CandidateId, CandidateSummary, MasterSeed, SeedDeriver, SelectionPol
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
+/// Largest tell batch checked for repeated identities by scanning earlier
+/// entries, which avoids allocating and hashing two sets per call.
+const SCANNED_TELL_BATCH: usize = 16;
+
 /// Stable identity returned with a proposed candidate.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProposalToken(u64);
@@ -120,9 +124,10 @@ pub struct SeededRandomSearch<C, S, P, G> {
     /// Policy used to compare candidate summaries.
     policy: P,
     /// Proposed candidate values awaiting evaluation.
+    ///
+    /// Tokens are issued in order, so a token below `next_token` that is no
+    /// longer pending has already been told.
     pending: BTreeMap<ProposalToken, C>,
-    /// Tokens already incorporated by `tell`.
-    completed_tokens: HashSet<ProposalToken>,
     /// Candidate identities already incorporated by `tell`.
     completed_candidates: HashSet<CandidateId>,
     /// Current winner and its original selecting evidence.
@@ -147,7 +152,6 @@ where
             generator,
             policy,
             pending: BTreeMap::new(),
-            completed_tokens: HashSet::new(),
             completed_candidates: HashSet::new(),
             best: None,
         }
@@ -161,47 +165,68 @@ where
 
     /// Validates an entire tell batch before state is mutated.
     fn validate_tells(&self, evaluated: &[Told<S>]) -> Result<(), TellError> {
-        let check_batch_duplicates = evaluated.len() > 1;
-        let mut batch_tokens =
-            check_batch_duplicates.then(|| HashSet::with_capacity(evaluated.len()));
-        let mut batch_candidates =
-            check_batch_duplicates.then(|| HashSet::with_capacity(evaluated.len()));
-        for told in evaluated {
-            if told.candidate != told.summary.candidate {
-                return Err(TellError::CandidateMismatch {
-                    told: told.candidate,
-                    summary: told.summary.candidate,
-                });
+        if evaluated.len() <= SCANNED_TELL_BATCH {
+            for (index, told) in evaluated.iter().enumerate() {
+                let earlier = &evaluated[..index];
+                self.validate_tell(
+                    told,
+                    || earlier.iter().any(|other| other.token == told.token),
+                    || {
+                        earlier
+                            .iter()
+                            .any(|other| other.candidate == told.candidate)
+                    },
+                )?;
             }
-            if self.completed_tokens.contains(&told.token)
-                || batch_tokens
-                    .as_mut()
-                    .is_some_and(|tokens| !tokens.insert(told.token))
-            {
-                return Err(TellError::DuplicateToken(told.token));
-            }
-            if !self.pending.contains_key(&told.token) {
-                return Err(TellError::UnknownToken(told.token));
-            }
-            if self.completed_candidates.contains(&told.candidate)
-                || batch_candidates
-                    .as_mut()
-                    .is_some_and(|candidates| !candidates.insert(told.candidate))
-            {
-                return Err(TellError::DuplicateCandidate(told.candidate));
+        } else {
+            let mut batch_tokens = HashSet::with_capacity(evaluated.len());
+            let mut batch_candidates = HashSet::with_capacity(evaluated.len());
+            for told in evaluated {
+                self.validate_tell(
+                    told,
+                    || !batch_tokens.insert(told.token),
+                    || !batch_candidates.insert(told.candidate),
+                )?;
             }
         }
         Ok(())
     }
 
-    /// Incorporates one validated result into the strategy state.
-    fn incorporate_tell(&mut self, told: &Told<S>) -> Result<(), TellError> {
+    /// Validates one tell in batch order. The callbacks report whether an
+    /// earlier entry of the same batch repeats its token or candidate.
+    fn validate_tell(
+        &self,
+        told: &Told<S>,
+        repeats_token: impl FnOnce() -> bool,
+        repeats_candidate: impl FnOnce() -> bool,
+    ) -> Result<(), TellError> {
+        if told.candidate != told.summary.candidate {
+            return Err(TellError::CandidateMismatch {
+                told: told.candidate,
+                summary: told.summary.candidate,
+            });
+        }
+        let outstanding = self.pending.contains_key(&told.token);
+        let completed = !outstanding && told.token.value() < self.next_token;
+        if completed || repeats_token() {
+            return Err(TellError::DuplicateToken(told.token));
+        }
+        if !outstanding {
+            return Err(TellError::UnknownToken(told.token));
+        }
+        if self.completed_candidates.contains(&told.candidate) || repeats_candidate() {
+            return Err(TellError::DuplicateCandidate(told.candidate));
+        }
+        Ok(())
+    }
+
+    /// Incorporates one validated tell.
+    fn incorporate(&mut self, told: &Told<S>) -> Result<(), TellError> {
         let candidate = self
             .pending
             .remove(&told.token)
             .ok_or(TellError::UnknownToken(told.token))?;
         self.consider(candidate, told);
-        self.completed_tokens.insert(told.token);
         self.completed_candidates.insert(told.candidate);
         self.told_count += 1;
         Ok(())
@@ -254,14 +279,16 @@ where
 
     fn tell(&mut self, evaluated: &[Told<S>]) -> Result<(), TellError> {
         self.validate_tells(evaluated)?;
-        if let [told] = evaluated {
-            return self.incorporate_tell(told);
-        }
-
-        let mut canonical: Vec<_> = evaluated.iter().collect();
-        canonical.sort_by_key(|told| told.candidate);
-        for told in canonical {
-            self.incorporate_tell(told)?;
+        if evaluated.is_sorted_by_key(|told| told.candidate) {
+            for told in evaluated {
+                self.incorporate(told)?;
+            }
+        } else {
+            let mut canonical: Vec<_> = evaluated.iter().collect();
+            canonical.sort_by_key(|told| told.candidate);
+            for told in canonical {
+                self.incorporate(told)?;
+            }
         }
         Ok(())
     }
@@ -441,28 +468,58 @@ mod tests {
         assert_eq!(best.summary.statistics, 5);
     }
 
+    fn told(token: ProposalToken, candidate: u64) -> Told<i32> {
+        Told {
+            token,
+            candidate: CandidateId::new(candidate),
+            summary: summary(candidate, 1),
+        }
+    }
+
     #[test]
-    fn duplicate_candidate_tell_rejects_the_whole_batch() {
-        let mut search = SeededRandomSearch::new(MasterSeed::from_u64(1), 2, |_| 7_u64, MaxI32);
-        let asked = search.ask(2);
-        let result = search.tell(&[
-            Told {
-                token: asked[0].token,
-                candidate: CandidateId::new(3),
-                summary: summary(3, 1),
-            },
-            Told {
-                token: asked[1].token,
-                candidate: CandidateId::new(3),
-                summary: summary(3, 2),
-            },
-        ]);
-        assert_eq!(
-            result,
-            Err(TellError::DuplicateCandidate(CandidateId::new(3)))
-        );
-        assert_eq!(search.status().told, 0);
-        assert_eq!(search.status().outstanding, 2);
+    fn repeated_identities_reject_the_whole_batch_at_every_size() {
+        for size in [2, SCANNED_TELL_BATCH, SCANNED_TELL_BATCH + 1] {
+            let budget = u64::try_from(size).expect("small batch") + 1;
+            let last = budget - 2;
+            let mut search =
+                SeededRandomSearch::new(MasterSeed::from_u64(1), budget, |_| 7_u64, MaxI32);
+            let asked = search.ask(size + 1);
+            let mut batch: Vec<Told<i32>> = asked[..size]
+                .iter()
+                .zip(0..)
+                .map(|(proposal, candidate)| told(proposal.token, candidate))
+                .collect();
+
+            batch[size - 1] = told(asked[0].token, last);
+            assert_eq!(
+                Err(TellError::DuplicateToken(asked[0].token)),
+                search.tell(&batch),
+                "{size} tells"
+            );
+            batch[size - 1] = told(asked[size - 1].token, 0);
+            assert_eq!(
+                Err(TellError::DuplicateCandidate(CandidateId::new(0))),
+                search.tell(&batch),
+                "{size} tells"
+            );
+            assert_eq!(0, search.status().told);
+            assert_eq!(budget, search.status().outstanding);
+
+            batch[size - 1] = told(asked[size - 1].token, last);
+            search
+                .tell(&batch)
+                .expect("distinct identities should be accepted");
+            assert_eq!(
+                Err(TellError::DuplicateCandidate(CandidateId::new(0))),
+                search.tell(&[told(asked[size].token, 0)])
+            );
+            assert_eq!(
+                Err(TellError::DuplicateToken(asked[0].token)),
+                search.tell(&[told(asked[0].token, budget)])
+            );
+            assert_eq!(budget - 1, search.status().told);
+            assert_eq!(1, search.status().outstanding);
+        }
     }
 
     #[test]
