@@ -16,3 +16,8 @@
   of line (+8% for small simulations); one loop serves both.
 - The sparse scheduler's per-tick checks cost two-agent simulations about 2% of
   retired instructions with no measurable change in cycles.
+- Padding `Message` by 8 bytes cost message-heavy simulations 1.5-5% and by 16
+  bytes 2-6%, so a boxed interrupt beside a fat `Arc<[u8]>` payload was
+  rejected; a const assertion keeps `Message` at 48 bytes.
+- The two 10k-tick pair workloads have bimodal minima that differ by 2-4%
+  between runs of one binary; compare them over 9 or more rounds.
