@@ -612,6 +612,9 @@ fn circular_delta(from: f64, to: f64) -> f64 {
 }
 
 /// Projects a value into its normalized domain.
+///
+/// Both remainders return in-domain values unchanged, so those skip the
+/// `fmod` call that `rem_euclid` makes.
 #[inline]
 fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
     if valid_coordinate(value, dimension) {
