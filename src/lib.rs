@@ -32,6 +32,10 @@ pub use message::*;
 use log::{debug, info, log_enabled, Level};
 use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Source of agent layout tokens; each constructed simulation takes the next.
+static NEXT_LAYOUT: AtomicU64 = AtomicU64::new(0);
 
 /// Per-agent statistics keyed by agent name; public methods return std maps.
 #[allow(
@@ -97,6 +101,10 @@ pub struct Simulation {
     /// Maps agent names to identities in simulations too large for linear
     /// name scans; empty otherwise.
     agent_name_handle_map: FxHashMap<String, AgentId>,
+
+    /// Identifies this agent layout for cached target identities. Clones share
+    /// the layout and its token; every constructed simulation gets a new one.
+    layout: u64,
 }
 
 /// The parameters to create a Simulation.
@@ -238,6 +246,7 @@ impl Simulation {
             enable_queue_depth_metric: parameters.enable_queue_depth_metrics,
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
             agent_name_handle_map,
+            layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -381,6 +390,7 @@ impl Simulation {
                             peers,
                             agent_name_handle_map,
                             agent_count,
+                            layout: self.layout,
                             state: &agent.state,
                             message_processing_status: MessageProcessingStatus::NoError,
                         };

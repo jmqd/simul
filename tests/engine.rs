@@ -8,8 +8,12 @@ use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
 
 fn proactive_agent(name: &str, agent: impl Agent + 'static) -> AgentInitializer {
+    proactive_agent_boxed(name, Box::new(agent))
+}
+
+fn proactive_agent_boxed(name: &str, agent: Box<dyn Agent>) -> AgentInitializer {
     AgentInitializer {
-        agent: Box::new(agent),
+        agent,
         options: AgentOptions {
             initial_mode: AgentMode::Proactive,
             wake_mode: AgentMode::Proactive,
@@ -428,6 +432,48 @@ fn final_representable_tick_and_wake_time_are_allowed() {
             .produced_for_agent("sender")
             .map(<[Message]>::len),
         Some(1)
+    );
+}
+
+#[test]
+fn reused_producers_resolve_targets_in_each_simulation() {
+    let mut first = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            periodic_producer("producer", 1, "consumer"),
+            periodic_consumer("consumer", 1),
+        ],
+        halt_check: |simulation| simulation.time() == 2,
+        ..Default::default()
+    });
+    first.run();
+    let Some(producer) = first.find_by_name("producer") else {
+        panic!("producer must exist");
+    };
+
+    // The consumer's identity from the first simulation names the bystander here.
+    let mut second = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            periodic_consumer("consumer", 1),
+            periodic_consumer("bystander", 1),
+            proactive_agent_boxed("producer", producer.agent.clone()),
+        ],
+        halt_check: |simulation| simulation.time() == 2,
+        ..Default::default()
+    });
+    second.run();
+
+    let Some(sent) = second.produced_for_agent("producer") else {
+        panic!("producer must exist");
+    };
+    assert_eq!(
+        vec![Some(AgentId::new(0)); 2],
+        sent.iter()
+            .map(|message| message.destination)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        Some(0),
+        second.consumed_for_agent("bystander").map(<[Message]>::len)
     );
 }
 
