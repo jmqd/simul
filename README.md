@@ -141,6 +141,12 @@ between identities and agents. Create initial messages with `Message::new` or
 allocates nothing; clones share payloads until modified, and timestamps and
 identities remain independent.
 
+Simulations with more than 64 agents and neither per-tick metric use an ordered
+ready bitmap and wake heap during sparse phases, switching to dense scans as
+activity rises. Smaller simulations and runs with queue-depth or asleep-cycle
+metrics keep dense scans. Callback order, end-of-tick delivery, and halt checks
+on every tick are unchanged; the scheduler never jumps over quiet ticks.
+
 ## Poisson-distributed example w/ Plotting
 
 Here's an example of an outputted graph from a simulation run. In this

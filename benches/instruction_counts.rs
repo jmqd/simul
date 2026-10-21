@@ -70,6 +70,11 @@ const WORKLOADS: &[Workload] = &[
         run: sim_sparse,
     },
     Workload {
+        name: "sim/sparse_512_scheduled",
+        iterations: 1,
+        run: sim_sparse_scheduled,
+    },
+    Workload {
         name: "sim/relay_ring_16",
         iterations: 1,
         run: sim_relay_ring,
@@ -411,7 +416,7 @@ fn sim_fan_in() -> Fingerprint {
 }
 
 /// Mostly sleeping producers and a few busy consumers.
-fn sim_sparse() -> Fingerprint {
+fn sparse_simulation(enable_agent_asleep_cycles_metric: bool) -> Simulation {
     let mut agent_initializers: Vec<AgentInitializer> = (0..512_u64)
         .map(|index| {
             periodic_producer(
@@ -423,18 +428,28 @@ fn sim_sparse() -> Fingerprint {
         .collect();
     agent_initializers
         .extend((0..8).map(|index| periodic_consumer(format!("consumer-{index}"), 1)));
-    let simulation = simulate(SimulationParameters {
+    simulate(SimulationParameters {
         agent_initializers,
         halt_check: |simulation| simulation.time() >= 3_000,
-        enable_agent_asleep_cycles_metric: true,
+        enable_agent_asleep_cycles_metric,
         ..Default::default()
-    });
+    })
+}
+
+/// The sparse population with sleep metrics, which require dense scans.
+fn sim_sparse() -> Fingerprint {
+    let simulation = sparse_simulation(true);
     simulation
         .agents()
         .iter()
         .fold(histories(&simulation), |fingerprint, agent| {
             fingerprint.mix(simulation.asleep_cycle_count(&agent.name).unwrap_or(0))
         })
+}
+
+/// The sparse population without metrics, which the sparse schedule serves.
+fn sim_sparse_scheduled() -> Fingerprint {
+    histories(&sparse_simulation(false))
 }
 
 /// Forwards each payload around a ring after holding it in progress.

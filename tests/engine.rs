@@ -560,6 +560,124 @@ fn average_wait_preserves_short_durations_at_large_timestamps() {
     }
 }
 
+type CallbackTrace = std::sync::Arc<std::sync::Mutex<Vec<(u64, usize)>>>;
+
+#[derive(Clone, Debug)]
+struct ScheduledAgent(CallbackTrace);
+
+impl Agent for ScheduledAgent {
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .push((ctx.time, ctx.id().index()));
+        if ctx.id().index() == 0 {
+            ctx.send("agent-65", Some(vec![1]));
+            ctx.sleep_for(ctx.time % 3);
+        } else {
+            ctx.sleep_for(if ctx.time < 6 { 1 } else { 100 });
+        }
+    }
+
+    fn on_message(&mut self, ctx: &mut AgentContext, _: &Message) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .push((ctx.time, ctx.id().index()));
+        if ctx.time % 4 == 1 {
+            ctx.set_processing_status(MessageProcessingStatus::InProgress);
+        }
+        ctx.send("agent-0", None);
+        ctx.sleep_for(2);
+    }
+}
+
+fn scheduling_scenario(metrics: bool) -> (Simulation, CallbackTrace) {
+    let trace = CallbackTrace::default();
+    let agents = (0..130)
+        .map(|index| {
+            let (initial_mode, wake_mode) = match index {
+                0 => (AgentMode::Proactive, AgentMode::Proactive),
+                65 => (AgentMode::AsleepUntil(1), AgentMode::Reactive),
+                128 => (AgentMode::AsleepUntil(0), AgentMode::Dead),
+                129 => (AgentMode::AsleepUntil(0), AgentMode::AsleepUntil(2)),
+                _ => (AgentMode::AsleepUntil(4), AgentMode::Proactive),
+            };
+            AgentInitializer {
+                agent: Box::new(ScheduledAgent(trace.clone())),
+                options: AgentOptions {
+                    name: format!("agent-{index}"),
+                    initial_mode,
+                    wake_mode,
+                    ..Default::default()
+                },
+            }
+        })
+        .collect();
+    let simulation = Simulation::new(SimulationParameters {
+        agent_initializers: agents,
+        halt_check: |simulation| simulation.time() == 12,
+        enable_queue_depth_metrics: metrics,
+        enable_agent_asleep_cycles_metric: metrics,
+        ..Default::default()
+    });
+    (simulation, trace)
+}
+
+#[test]
+fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
+    let (mut sparse, sparse_trace) = scheduling_scenario(false);
+    let (mut dense, dense_trace) = scheduling_scenario(true);
+    sparse.run();
+    dense.run();
+    let sparse_trace = sparse_trace
+        .lock()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let dense_trace = dense_trace.lock().unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(*dense_trace, *sparse_trace);
+    drop(dense_trace);
+    assert!(sparse_trace.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(
+        &[(0, 0), (1, 0), (1, 65), (2, 0), (3, 65)],
+        &sparse_trace[..5]
+    );
+    drop(sparse_trace);
+    assert_eq!(12, sparse.time());
+    assert_eq!(Some(12), dense.asleep_cycle_count("agent-129"));
+    assert_eq!(Some(0), dense.asleep_cycle_count("agent-128"));
+    for (left, right) in sparse.agents().iter().zip(dense.agents()) {
+        let (left, right) = (&left.state, &right.state);
+        assert_eq!(right.mode, left.mode);
+        assert_eq!(right.wake_mode, left.wake_mode);
+        assert_eq!(right.queue.len(), left.queue.len());
+        assert_eq!(right.produced.len(), left.produced.len());
+        assert_eq!(right.consumed.len(), left.consumed.len());
+        let left_messages = left
+            .queue
+            .iter()
+            .chain(&left.produced)
+            .chain(&left.consumed);
+        let right_messages = right
+            .queue
+            .iter()
+            .chain(&right.produced)
+            .chain(&right.consumed);
+        for (left, right) in left_messages.zip(right_messages) {
+            assert_eq!(right.queued_time, left.queued_time);
+            assert_eq!(right.completed_time, left.completed_time);
+            assert_eq!(right.source, left.source);
+            assert_eq!(right.destination, left.destination);
+            assert_eq!(right.custom_payload, left.custom_payload);
+        }
+    }
+    for agent in dense.agents() {
+        assert_eq!(
+            Some(12),
+            dense.queue_depth_metrics(&agent.name).map(<[usize]>::len)
+        );
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ChangingPayloadSender;
 
@@ -656,4 +774,113 @@ fn new_sends_do_not_inherit_edited_history() {
         assert_eq!(message.queued_time, 1);
         assert_eq!(message.completed_time, None);
     }
+}
+
+#[test]
+fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
+    let trace = CallbackTrace::default();
+    let mut agents: Vec<_> = (0..130)
+        .map(|index| AgentInitializer {
+            agent: Box::new(ScheduledAgent(trace.clone())),
+            options: AgentOptions {
+                name: format!("agent-{index}"),
+                initial_mode: AgentMode::Dead,
+                ..Default::default()
+            },
+        })
+        .collect();
+    agents[65].options.initial_mode = AgentMode::AsleepUntil(5);
+    agents[65].options.initial_queue.push_back(Message::new(0));
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: agents,
+        halt_check: |simulation| {
+            simulation.find_by_name("agent-65").is_some_and(|agent| {
+                (simulation.time() == 5 && agent.state.mode == AgentMode::AsleepUntil(5))
+                    || !agent.state.consumed.is_empty()
+            })
+        },
+        ..Default::default()
+    });
+    simulation.run();
+    assert_eq!(5, simulation.time());
+    assert!(trace
+        .lock()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .is_empty());
+    let (_, state) = simulation
+        .find_by_name_mut("agent-65")
+        .unwrap_or_else(|| panic!("missing agent"));
+    assert_eq!(AgentMode::AsleepUntil(5), state.mode);
+    state.mode = AgentMode::AsleepUntil(3);
+    simulation.run();
+    // Tick 5 retries the original message; tick 7 completes it.
+    assert_eq!(8, simulation.time());
+    assert_eq!(
+        vec![(5, 65), (7, 65)],
+        *trace.lock().unwrap_or_else(|error| panic!("{error}"))
+    );
+    assert_eq!(
+        Some(7),
+        simulation
+            .consumed_for_agent("agent-65")
+            .and_then(|messages| messages[0].completed_time)
+    );
+}
+
+#[test]
+fn all_sleeping_agents_still_check_halt_between_wakeups() {
+    let trace = CallbackTrace::default();
+    let agents = (0..130)
+        .map(|index| {
+            let mut agent =
+                proactive_agent(&format!("agent-{index}"), ScheduledAgent(trace.clone()));
+            agent.options.initial_mode = AgentMode::AsleepUntil(10);
+            agent
+        })
+        .collect();
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: agents,
+        halt_check: |simulation| simulation.time() >= 3,
+        ..Default::default()
+    });
+    simulation.run();
+    assert_eq!(3, simulation.time());
+    assert!(trace
+        .lock()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .is_empty());
+}
+
+#[test]
+fn callback_panic_does_not_wake_later_agents_early() {
+    #[derive(Clone, Debug)]
+    struct PanicTick;
+    impl Agent for PanicTick {
+        fn on_message(&mut self, _: &mut AgentContext, _: &Message) {}
+        fn on_tick(&mut self, _: &mut AgentContext) {
+            panic!("callback failed");
+        }
+    }
+    let mut agents: Vec<_> = (0..130)
+        .map(|index| {
+            let mut agent = periodic_consumer(format!("agent-{index}"), 1);
+            agent.options.initial_mode = AgentMode::AsleepUntil(u64::MAX);
+            agent
+        })
+        .collect();
+    agents[0] = proactive_agent("agent-0", PanicTick);
+    agents[65].options.initial_mode = AgentMode::AsleepUntil(0);
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: agents,
+        halt_check: |_| false,
+        ..Default::default()
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
+    assert!(result.is_err());
+    assert_eq!(
+        Some(AgentMode::AsleepUntil(0)),
+        simulation
+            .find_by_name("agent-65")
+            .map(|agent| agent.state.mode)
+    );
 }

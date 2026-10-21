@@ -1,5 +1,14 @@
 #+title: Changelog
 
+* DONE Skip inactive agents during sparse simulation phases
+Simulations with more than 64 agents and neither per-tick metric use a ready
+bitmap and wake heap while retaining handle-ordered callbacks, end-of-tick
+delivery, and per-tick halt checks. Scheduling state is rebuilt on resume, and
+wake transitions stay ordered even if a callback panics. Small, busy, and
+metrics-enabled simulations scan densely. Ported from perf-hotpaths d9ed3ad; a
+520-agent sparse population retires 76% fewer instructions, and 10,000 ticks
+with 10,000 idle agents run in 19 ms instead of 552 ms.
+
 * DONE Cut per-message, per-trial, and search overhead
 Simulations with at most eight agents route messages by scanning names; larger
 ones hash names with rustc-hash, and Clippy bans the std hash maps. Built-in

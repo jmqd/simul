@@ -31,7 +31,8 @@ pub use message::*;
 
 use log::{debug, info, log_enabled, Level};
 use rustc_hash::FxHashMap;
-use std::collections::hash_map::Entry;
+use std::cmp::Reverse;
+use std::collections::{hash_map::Entry, BinaryHeap};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Source of agent layout tokens; each constructed simulation takes the next.
@@ -59,6 +60,9 @@ const MAX_AGENTS: usize = u32::MAX as usize;
 
 /// Messages of room reserved in each history and queue of a small simulation.
 const SMALL_SIMULATION_HISTORY: usize = 16;
+
+/// Simulations with more agents than this may skip inactive agents each tick.
+const SPARSE_SCHEDULE_MIN_AGENTS: usize = 64;
 
 /// The current mode of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -168,6 +172,211 @@ impl Default for SimulationParameters {
             enable_agent_asleep_cycles_metric: false,
         }
     }
+}
+
+/// Per-tick inputs shared by every agent visit.
+struct Tick<'a> {
+    /// The current simulation time.
+    time: DiscreteTime,
+    /// The simulation's agent layout token.
+    layout: u64,
+    /// Number of agents, which bounds valid identities.
+    agent_count: usize,
+    /// Whether callbacks route by scanning names instead of the name index.
+    scan_names: bool,
+    /// Whether every visit records the queue depth.
+    queue_depth_metric: bool,
+    /// Whether visits to sleeping agents count asleep cycles.
+    asleep_cycles_metric: bool,
+    /// Name index for simulations too large to scan names.
+    agent_name_handle_map: &'a FxHashMap<String, AgentId>,
+    /// Commands issued during the tick, applied at its end.
+    commands: &'a mut Vec<AgentCommand>,
+}
+
+/// Tracks runnable handles in callback order and sleeping agents by wake time.
+struct SparseSchedule {
+    /// One bit per agent; scanning words skips inactive agents without touching them.
+    ready: Vec<u64>,
+    /// Number of set bits, used to return to dense scanning when activity rises.
+    ready_count: usize,
+    /// Wake deadlines ordered by time, then stable agent handle.
+    sleeping: BinaryHeap<Reverse<(DiscreteTime, usize)>>,
+}
+
+impl SparseSchedule {
+    /// Rebuilds transient scheduling state, including changes made between runs.
+    fn new(agents: &[SimulationAgent]) -> Self {
+        let mut schedule = Self {
+            ready: vec![0; agents.len().div_ceil(64)],
+            ready_count: 0,
+            sleeping: BinaryHeap::new(),
+        };
+        let mut sleeping = Vec::new();
+        for (handle, agent) in agents.iter().enumerate() {
+            if let AgentMode::AsleepUntil(deadline) = agent.state.mode {
+                if agent.state.mode != agent.state.wake_mode {
+                    sleeping.push(Reverse((deadline, handle)));
+                }
+            } else {
+                schedule.set_ready(handle, Self::runnable(&agent.state));
+            }
+        }
+        schedule.sleeping = BinaryHeap::from(sleeping);
+        schedule
+    }
+
+    /// Reports whether a nonsleeping agent has a callback to execute.
+    fn runnable(state: &AgentState) -> bool {
+        state.mode == AgentMode::Proactive
+            || (state.mode == AgentMode::Reactive && !state.queue.is_empty())
+    }
+
+    /// Changes membership without introducing duplicate visits.
+    fn set_ready(&mut self, handle: usize, ready: bool) {
+        let word = &mut self.ready[handle.div_euclid(64)];
+        let bit = 1 << handle.rem_euclid(64);
+        if (*word & bit != 0) != ready {
+            *word ^= bit;
+            if ready {
+                self.ready_count += 1;
+            } else {
+                self.ready_count -= 1;
+            }
+        }
+    }
+
+    /// Finds the next runnable handle at or after the cursor.
+    fn next(&self, cursor: usize) -> Option<usize> {
+        let mut index = cursor.div_euclid(64);
+        let mut bits = *self.ready.get(index)? & (u64::MAX << cursor.rem_euclid(64));
+        loop {
+            if bits != 0 {
+                return Some(index * 64 + bits.trailing_zeros() as usize);
+            }
+            index += 1;
+            bits = *self.ready.get(index)?;
+        }
+    }
+
+    /// Defers wake processing until a subsequent tick, even for zero-length sleeps.
+    fn sleep(&mut self, handle: usize, deadline: DiscreteTime) {
+        self.set_ready(handle, false);
+        self.sleeping.push(Reverse((deadline, handle)));
+    }
+
+    /// Marks due agents ready; their state changes only at their ordered visit.
+    fn wake(&mut self, time: DiscreteTime, agents: &[SimulationAgent]) {
+        while let Some(&Reverse((deadline, handle))) = self.sleeping.peek() {
+            if deadline > time {
+                break;
+            }
+            self.sleeping.pop();
+            if agents[handle].state.mode == AgentMode::AsleepUntil(deadline) {
+                self.set_ready(handle, true);
+            }
+        }
+    }
+}
+
+/// Visits one agent in handle order: wakes it when due, runs its callback, and
+/// applies the sleep it requested. Returns whether a callback ran and the
+/// requested wake time.
+///
+/// Dense and sparse ticks share this body. Out of line, its callback setup cost
+/// dense simulations 10-13% more instructions.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: out of line, dense simulations ran 10-13% more instructions"
+)]
+#[inline(always)]
+fn visit_agent(
+    agents: &mut [SimulationAgent],
+    handle: usize,
+    tick: &mut Tick<'_>,
+) -> (bool, Option<DiscreteTime>) {
+    // Only small simulations split the slice, since every visit pays for it,
+    // including visits to sleeping agents.
+    let (agent, peers) = if tick.scan_names {
+        let (before, rest) = agents.split_at_mut(handle);
+        let Some((agent, after)) = rest.split_first_mut() else {
+            return (false, None);
+        };
+        (agent, Some((&*before, &*after)))
+    } else {
+        (&mut agents[handle], None)
+    };
+    if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
+        if tick.time < wakeup_at {
+            // A sleeping agent pops no message, runs no callback, and requests
+            // no sleep; only the optional metrics change.
+            if tick.queue_depth_metric {
+                agent.record_queue_depth();
+            }
+            if tick.asleep_cycles_metric {
+                agent.metadata.asleep_cycle_count += 1;
+            }
+            return (false, None);
+        }
+        agent.state.mode = agent.state.wake_mode;
+    }
+    let queued_msg = if agent.state.mode == AgentMode::Reactive {
+        agent.state.queue.pop_front()
+    } else {
+        None
+    };
+    if tick.queue_depth_metric {
+        agent.record_queue_depth();
+    }
+
+    // Proactive agents tick; reactive agents handle their queued message.
+    let message = match agent.state.mode {
+        AgentMode::Proactive => None,
+        AgentMode::Reactive => match queued_msg {
+            Some(message) => Some(message),
+            None => return (false, None),
+        },
+        AgentMode::AsleepUntil(_) => {
+            if tick.asleep_cycles_metric {
+                agent.metadata.asleep_cycle_count += 1;
+            }
+            return (false, None);
+        }
+        AgentMode::Dead => return (false, None),
+    };
+
+    let mut requested_sleep_until = None;
+    let mut ctx = AgentContext {
+        id: AgentId::from_handle(handle),
+        name: &agent.name,
+        time: tick.time,
+        commands: &mut *tick.commands,
+        requested_sleep_until: &mut requested_sleep_until,
+        peers,
+        agent_name_handle_map: tick.agent_name_handle_map,
+        agent_count: tick.agent_count,
+        layout: tick.layout,
+        state: &agent.state,
+        message_processing_status: MessageProcessingStatus::NoError,
+    };
+    if let Some(msg) = message {
+        // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
+        agent.agent.on_message(&mut ctx, &msg);
+        match ctx.message_processing_status {
+            MessageProcessingStatus::InProgress => agent.state.queue.push_front(msg),
+            MessageProcessingStatus::NoError => {
+                let mut msg = msg;
+                msg.completed_time = Some(tick.time);
+                agent.state.consumed.push(msg);
+            }
+        }
+    } else {
+        agent.agent.on_tick(&mut ctx);
+    }
+    if let Some(sleep_until) = requested_sleep_until {
+        agent.state.mode = AgentMode::AsleepUntil(sleep_until);
+    }
+    (true, requested_sleep_until)
 }
 
 impl Simulation {
@@ -337,120 +546,105 @@ impl Simulation {
     pub fn run(&mut self) {
         self.mode = SimulationMode::Running;
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
-        let mut requested_sleep_until: Option<DiscreteTime>;
+        // Small scans are cheaper than maintaining the schedule, and metrics need
+        // every agent visited every tick, so either keeps dense scans.
+        let sparse_eligible = self.agents.len() > SPARSE_SCHEDULE_MIN_AGENTS
+            && !self.enable_queue_depth_metric
+            && !self.enable_agent_asleep_cycles_metric;
+        let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
 
+        // One loop serves both paths: separate dense and scheduled loops moved
+        // the dense tick and delivery out of line and cost small simulations 8%.
         while self.mode == SimulationMode::Running && !(self.halt_check)(self) {
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
             };
             debug!("Running next tick of simulation at time {}", self.time);
-
-            {
-                let agent_name_handle_map = &self.agent_name_handle_map;
-                let agent_count = self.agents.len();
-                let scan_names = agent_count <= LINEAR_NAME_SCAN_LIMIT;
-                for agent_handle in 0..self.agents.len() {
-                    // Only small simulations split the slice, since every visit pays
-                    // for it, including visits to sleeping agents.
-                    let (agent, peers) = if scan_names {
-                        let (before, rest) = self.agents.split_at_mut(agent_handle);
-                        let Some((agent, after)) = rest.split_first_mut() else {
-                            break;
-                        };
-                        (agent, Some((&*before, &*after)))
-                    } else {
-                        (&mut self.agents[agent_handle], None)
-                    };
-                    if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
-                        if self.time < wakeup_at {
-                            // A sleeping agent pops no message, runs no callback, and
-                            // requests no sleep; only the optional metrics change.
-                            if self.enable_queue_depth_metric {
-                                agent.record_queue_depth();
-                            }
-                            if self.enable_agent_asleep_cycles_metric {
-                                agent.metadata.asleep_cycle_count += 1;
-                            }
-                            continue;
-                        }
-                        agent.state.mode = agent.state.wake_mode;
-                    }
-                    let queued_msg = if agent.state.mode == AgentMode::Reactive {
-                        agent.state.queue.pop_front()
-                    } else {
-                        None
-                    };
-
-                    if self.enable_queue_depth_metric {
-                        agent.record_queue_depth();
-                    }
-
-                    requested_sleep_until = None;
-
-                    // Proactive agents tick; reactive agents handle their queued message.
-                    let callback = match agent.state.mode {
-                        AgentMode::Proactive => Some(None),
-                        AgentMode::Reactive => queued_msg.map(Some),
-                        AgentMode::AsleepUntil(_) => {
-                            if self.enable_agent_asleep_cycles_metric {
-                                agent.metadata.asleep_cycle_count += 1;
-                            }
-                            None
-                        }
-                        AgentMode::Dead => None,
-                    };
-
-                    if let Some(message) = callback {
-                        let mut ctx = AgentContext {
-                            id: AgentId::from_handle(agent_handle),
-                            name: &agent.name,
-                            time: self.time,
-                            commands: &mut command_buffer,
-                            requested_sleep_until: &mut requested_sleep_until,
-                            peers,
-                            agent_name_handle_map,
-                            agent_count,
-                            layout: self.layout,
-                            state: &agent.state,
-                            message_processing_status: MessageProcessingStatus::NoError,
-                        };
-
-                        if let Some(msg) = message {
-                            // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
-                            agent.agent.on_message(&mut ctx, &msg);
-
-                            match ctx.message_processing_status {
-                                MessageProcessingStatus::InProgress => {
-                                    agent.state.queue.push_front(msg);
-                                }
-                                MessageProcessingStatus::NoError => {
-                                    let mut msg = msg;
-                                    msg.completed_time = Some(self.time);
-                                    agent.state.consumed.push(msg);
-                                }
-                            }
-                        } else {
-                            agent.agent.on_tick(&mut ctx);
-                        }
-                    }
-
-                    if let Some(sleep_until) = requested_sleep_until {
-                        agent.state.mode = AgentMode::AsleepUntil(sleep_until);
-                    }
+            if let Some(active) = &mut schedule {
+                active.wake(self.time, &self.agents);
+                if active.ready_count >= self.agents.len().div_ceil(4) {
+                    schedule = None;
                 }
             }
+            let callbacks = match schedule.as_mut() {
+                Some(active) => self.run_sparse_tick(&mut command_buffer, active),
+                None => self.run_dense_tick(&mut command_buffer),
+            };
 
             // Consume all the new messages in the bus and deliver to agents.
-            self.process_command_buffer(&mut command_buffer);
+            self.process_command_buffer(&mut command_buffer, schedule.as_mut());
 
             debug!("Finished this tick; incrementing time.");
             self.time = next_time;
+            // Separate low and high watermarks amortize rebuilding across busy and
+            // quiet phases instead of switching around one threshold.
+            if sparse_eligible
+                && schedule.is_none()
+                && callbacks < self.agents.len().div_ceil(8)
+                && self.mode == SimulationMode::Running
+            {
+                schedule = Some(SparseSchedule::new(&self.agents));
+            }
         }
 
         self.mode = SimulationMode::Completed;
         if log_enabled!(Level::Debug) {
             self.emit_completed_simulation_debug_logging();
         }
+    }
+
+    /// Borrows the agents mutably beside the inputs every visit shares.
+    fn split_tick<'a>(
+        &'a mut self,
+        commands: &'a mut Vec<AgentCommand>,
+    ) -> (&'a mut [SimulationAgent], Tick<'a>) {
+        let agent_count = self.agents.len();
+        let tick = Tick {
+            time: self.time,
+            layout: self.layout,
+            agent_count,
+            scan_names: agent_count <= LINEAR_NAME_SCAN_LIMIT,
+            queue_depth_metric: self.enable_queue_depth_metric,
+            asleep_cycles_metric: self.enable_agent_asleep_cycles_metric,
+            agent_name_handle_map: &self.agent_name_handle_map,
+            commands,
+        };
+        (&mut self.agents, tick)
+    }
+
+    /// Visits every agent in handle order and returns how many callbacks ran.
+    fn run_dense_tick(&mut self, commands: &mut Vec<AgentCommand>) -> usize {
+        let (agents, mut tick) = self.split_tick(commands);
+        let mut callbacks = 0;
+        for handle in 0..agents.len() {
+            let (ran, _) = visit_agent(agents, handle, &mut tick);
+            callbacks += usize::from(ran);
+        }
+        callbacks
+    }
+
+    /// Visits only scheduled agents in handle order, keeps the schedule in step,
+    /// and returns how many callbacks ran. Kept out of `run` so the dense loop
+    /// compiles as before.
+    #[inline(never)]
+    fn run_sparse_tick(
+        &mut self,
+        commands: &mut Vec<AgentCommand>,
+        schedule: &mut SparseSchedule,
+    ) -> usize {
+        let (agents, mut tick) = self.split_tick(commands);
+        let mut callbacks = 0;
+        let mut cursor = 0;
+        while let Some(handle) = schedule.next(cursor) {
+            cursor = handle + 1;
+            let (ran, requested_sleep_until) = visit_agent(agents, handle, &mut tick);
+            callbacks += usize::from(ran);
+            match requested_sleep_until {
+                Some(deadline) => schedule.sleep(handle, deadline),
+                None => schedule.set_ready(handle, SparseSchedule::runnable(&agents[handle].state)),
+            }
+        }
+        callbacks
     }
 
     /// A helper to calculate the average waiting time to process items.
@@ -544,13 +738,22 @@ impl Simulation {
 
     /// Applies buffered Agent commands in the order they were issued.
     #[inline]
-    fn process_command_buffer(&mut self, command_buffer: &mut Vec<AgentCommand>) {
+    fn process_command_buffer(
+        &mut self,
+        command_buffer: &mut Vec<AgentCommand>,
+        mut schedule: Option<&mut SparseSchedule>,
+    ) {
         for command in command_buffer.drain(..) {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
                     if let Some(destination) = message.destination {
                         let receiver = &mut self.agents[destination.index()];
                         receiver.state.queue.push_back(message.clone());
+                        if let Some(active) = schedule.as_deref_mut() {
+                            if receiver.state.mode == AgentMode::Reactive {
+                                active.set_ready(destination.index(), true);
+                            }
+                        }
                     }
 
                     let commanding_agent = &mut self.agents[command.agent_handle];
@@ -570,6 +773,9 @@ impl Simulation {
                     let commanding_agent = &mut self.agents[command.agent_handle];
 
                     commanding_agent.state.mode = AgentMode::AsleepUntil(sleep_until);
+                    if let Some(active) = schedule.as_deref_mut() {
+                        active.sleep(command.agent_handle, sleep_until);
+                    }
                 }
             }
         }
