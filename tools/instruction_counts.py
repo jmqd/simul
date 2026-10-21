@@ -7,18 +7,22 @@ usage:
                                       [--filter SUBSTRING] [--no-examples] [--commit]
 
 `snapshot` builds the `instruction_counts` bench and the deterministic release
-examples, then copies the binaries and the source revision into OUTDIR.
+examples, then copies the binaries into OUTDIR with `snapshot.json` (revision,
+dirty status, rustc version, and code-affecting build environment).
 
-`compare` alternates base and candidate runs, requires identical output
-fingerprints, and prints a Markdown table of minimum retired instructions
-(the steadiest statistic on a busy host) and median cycles; `--commit` prints
-a 72-column instruction table for commit messages instead. It exits with
-status 1 when any fingerprint differs.
+`compare` refuses snapshots whose rustc or build environment differ, alternates
+base and candidate runs, requires identical output fingerprints, and prints a
+Markdown table of minimum retired instructions (the steadiest statistic on a
+busy host) and median cycles; `--commit` prints a 72-column instruction table
+for commit messages instead. It exits with status 1 when any fingerprint
+differs.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import statistics
@@ -28,6 +32,20 @@ from pathlib import Path
 
 EXAMPLES = ("software_team", "simple_experiment")
 TIME_COUNTER = re.compile(r"^\s*(\d+)\s+(instructions retired|cycles elapsed)\s*$", re.M)
+
+
+def affects_codegen(key):
+    """Whether an environment variable changes release or bench machine code.
+
+    Target directories, incremental mode, and dev/test profile settings do not,
+    so worktrees may differ in those and still be compared.
+    """
+    return (
+        key in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
+                "CARGO_BUILD_TARGET", "RUSTUP_TOOLCHAIN")
+        or key.startswith(("CARGO_PROFILE_RELEASE_", "CARGO_PROFILE_BENCH_"))
+        or (key.startswith("CARGO_TARGET_") and key.endswith(("_RUSTFLAGS", "_LINKER")))
+    )
 
 
 def run(command, cwd=None):
@@ -43,32 +61,74 @@ def snapshot(args):
     worktree = Path(args.worktree).resolve()
     out = Path(args.outdir).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    build = run(
-        ["cargo", "bench", "--all-features", "--bench", "instruction_counts", "--no-run",
-         "--message-format=json-render-diagnostics"],
-        cwd=worktree,
+    metadata = json.loads(
+        run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=worktree).stdout
     )
-    executables = [
-        message["executable"]
-        for message in map(json.loads, filter(None, build.stdout.splitlines()))
-        if message.get("executable")
-    ]
-    shutil.copy2(executables[-1], out / "instruction_counts")
-    if not args.no_examples:
-        command = ["cargo", "build", "--release"]
-        for example in EXAMPLES:
-            command += ["--example", example]
-        run(command, cwd=worktree)
-        metadata = json.loads(
-            run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=worktree).stdout
+    target = Path(metadata["target_directory"])
+    target.mkdir(parents=True, exist_ok=True)
+    # Worktrees may share CARGO_TARGET_DIR, where every build uplifts examples to
+    # the same path. Holding this lock from build to copy keeps peers' snapshots
+    # from replacing the binaries in between.
+    with open(target / ".instruction-counts-snapshot.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        build = run(
+            ["cargo", "bench", "--all-features", "--bench", "instruction_counts", "--no-run",
+             "--message-format=json-render-diagnostics"],
+            cwd=worktree,
         )
-        examples = Path(metadata["target_directory"]) / "release" / "examples"
-        for example in EXAMPLES:
-            shutil.copy2(examples / example, out / example)
+        executables = [
+            message["executable"]
+            for message in map(json.loads, filter(None, build.stdout.splitlines()))
+            if message.get("executable")
+        ]
+        shutil.copy2(executables[-1], out / "instruction_counts")
+        if not args.no_examples:
+            command = ["cargo", "build", "--release"]
+            for example in EXAMPLES:
+                command += ["--example", example]
+            run(command, cwd=worktree)
+            for example in EXAMPLES:
+                shutil.copy2(target / "release" / "examples" / example, out / example)
     revision = run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
-    dirty = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=worktree).stdout
-    (out / "revision.txt").write_text(revision + ("\ndirty:\n" + dirty if dirty else "\n"))
-    print(f"snapshot {out} at {revision}{' (dirty)' if dirty else ''}")
+    status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=worktree).stdout
+    build_env = {key: value for key, value in sorted(os.environ.items()) if affects_codegen(key)}
+    (out / "snapshot.json").write_text(json.dumps({
+        "revision": revision,
+        "dirty": bool(status),
+        "status": status,
+        # Resolved inside the worktree, so it honors rust-toolchain.toml.
+        "rustc": run(["rustc", "--version"], cwd=worktree).stdout.strip(),
+        "build_env": build_env,
+    }, indent=1) + "\n")
+    print(f"snapshot {out} at {revision}{' (dirty)' if status else ''}")
+
+
+def snapshot_metadata(directory):
+    path = directory / "snapshot.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def check_comparable(arms):
+    """Refuses toolchain or build-env mismatches; warns about dirty trees."""
+    metadata = {arm: snapshot_metadata(directory) for arm, directory in arms.items()}
+    if any(value is None for value in metadata.values()):
+        print("warning: snapshot metadata missing; toolchains unverified", file=sys.stderr)
+        return metadata
+    for key in ("rustc", "build_env"):
+        if metadata["base"][key] != metadata["cand"][key]:
+            sys.exit(f"refusing to compare: {key} differs: "
+                     f"{metadata['base'][key]!r} vs {metadata['cand'][key]!r}")
+    for arm, value in metadata.items():
+        if value["dirty"]:
+            print(f"warning: {arm} snapshot was built from a dirty tree", file=sys.stderr)
+    return metadata
+
+
+def describe(metadata, arm):
+    value = metadata.get(arm)
+    if value is None:
+        return f"{arm} unknown"
+    return f"{arm} {value['revision'][:7]}{'+dirty' if value['dirty'] else ''}"
 
 
 def bench_rows(directory, reps, substring):
@@ -115,6 +175,7 @@ def percent(base, candidate):
 
 def compare(args):
     arms = {"base": Path(args.base).resolve(), "cand": Path(args.cand).resolve()}
+    metadata = check_comparable(arms)
     results = {arm: {} for arm in arms}
     order = []
     for round_index in range(args.rounds):
@@ -147,7 +208,12 @@ def compare(args):
             statistics.median(cand["cycles"]) if cand["cycles"] else None,
             len(base["fingerprints"] | cand["fingerprints"]) == 1,
         ))
-    ratios = [cand / base for _, base, cand, _, _, _ in rows if base and cand]
+    # Whole-process rows include process startup, so only in-process rows are averaged.
+    ratios = [
+        cand / base
+        for name, base, cand, _, _, _ in rows
+        if base and cand and not name.startswith("process/")
+    ]
     geometric = math.exp(sum(map(math.log, ratios)) / len(ratios)) if ratios else None
     differs = any(not same for *_, same in rows)
     if args.commit:
@@ -160,16 +226,16 @@ def compare(args):
             flag = "" if same else "  DIFFERENT"
             print(f"{name:<26}{base:>14,}{cand:>14,}{percent(base, cand):>9}{flag}")
         if geometric is not None:
-            print(f"{'geometric mean':<54}{100.0 * (geometric - 1.0):>+8.2f}%")
+            print(f"{'geometric mean (in-process)':<54}{100.0 * (geometric - 1.0):>+8.2f}%")
         print(
             f"min of {args.rounds}x{args.reps} runs; outputs "
             f"{'DIFFER' if differs else 'identical'}"
         )
+        rustc = (metadata.get("base") or {}).get("rustc", "rustc ?").split(" (")[0]
+        print(f"{describe(metadata, 'base')} vs {describe(metadata, 'cand')}; {rustc}")
     else:
-        for arm, directory in arms.items():
-            revision = directory / "revision.txt"
-            label = revision.read_text().splitlines()[0][:12] if revision.exists() else "?"
-            print(f"{arm}: {directory} ({label})")
+        print(f"{describe(metadata, 'base')}: {arms['base']}")
+        print(f"{describe(metadata, 'cand')}: {arms['cand']}")
         print(f"rounds {args.rounds} x reps {args.reps}; "
               "instructions = min, cycles = median of round minima\n")
         print("| workload | base instructions | candidate instructions "
