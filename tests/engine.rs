@@ -30,6 +30,70 @@ impl Agent for HaltImmediately {
     }
 }
 
+/// Sends one message each to the previous agent, itself, and the next agent.
+#[derive(Clone, Debug)]
+struct NeighborSender {
+    previous: String,
+    next: String,
+}
+
+impl Agent for NeighborSender {
+    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
+
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        let own = ctx.name.to_string();
+        for target in [&self.previous, &own, &self.next] {
+            ctx.send(target, None);
+        }
+    }
+}
+
+#[test]
+fn messages_route_to_lower_own_and_higher_handles() {
+    for count in [3, 8, 9] {
+        let name = |handle: usize| format!("agent-{handle}");
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: (0..count)
+                .map(|handle| {
+                    proactive_agent(
+                        &name(handle),
+                        NeighborSender {
+                            previous: name((handle + count - 1) % count),
+                            next: name((handle + 1) % count),
+                        },
+                    )
+                })
+                .collect(),
+            halt_check: |simulation| simulation.time() == 1,
+            ..Default::default()
+        });
+        simulation.run();
+
+        for receiver in 0..count {
+            let mut senders = [
+                (receiver + count - 1) % count,
+                receiver,
+                (receiver + 1) % count,
+            ];
+            senders.sort_unstable();
+            let Some(agent) = simulation.find_by_name(&name(receiver)) else {
+                panic!("agent-{receiver} must exist");
+            };
+            let sources: Vec<&str> = agent
+                .state
+                .queue
+                .iter()
+                .map(|message| message.source.as_str())
+                .collect();
+            assert_eq!(
+                senders.map(name),
+                sources.as_slice(),
+                "{count} agents, receiver agent-{receiver}"
+            );
+        }
+    }
+}
+
 #[test]
 fn halt_interrupt_stops_simulation() {
     let mut simulation = Simulation::new(SimulationParameters {

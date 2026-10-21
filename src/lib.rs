@@ -35,6 +35,9 @@ use std::collections::{hash_map::Entry, HashMap};
 /// `DiscreteTime` is a Simulation's internal representation of time.
 pub type DiscreteTime = u64;
 
+/// Largest simulation that resolves agent names by linear scan instead of hashing.
+const LINEAR_NAME_SCAN_LIMIT: usize = 8;
+
 /// The current mode of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum SimulationMode {
@@ -76,7 +79,8 @@ pub struct Simulation {
     /// The mode of the Simulation.
     mode: SimulationMode,
 
-    /// Maps from an Agent's id to its index, a handle for indexing the Agent.
+    /// Maps agent names to handles in simulations too large for linear name
+    /// scans; empty otherwise.
     agent_name_handle_map: HashMap<String, usize>,
 }
 
@@ -152,17 +156,30 @@ impl Simulation {
     ///
     /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a name.
     pub fn try_new(parameters: SimulationParameters) -> Result<Self, SimulationError> {
-        let mut agent_name_handle_map = HashMap::with_capacity(parameters.agent_initializers.len());
-
-        for (i, agent_initializer) in parameters.agent_initializers.iter().enumerate() {
-            match agent_name_handle_map.entry(agent_initializer.options.name.clone()) {
-                Entry::Occupied(_) => {
-                    return Err(SimulationError::DuplicateAgentName(
-                        agent_initializer.options.name.clone(),
-                    ));
+        let initializers = &parameters.agent_initializers;
+        let mut agent_name_handle_map = HashMap::new();
+        if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
+            for (i, agent_initializer) in initializers.iter().enumerate() {
+                let name = &agent_initializer.options.name;
+                if initializers[..i]
+                    .iter()
+                    .any(|earlier| earlier.options.name == *name)
+                {
+                    return Err(SimulationError::DuplicateAgentName(name.clone()));
                 }
-                Entry::Vacant(entry) => {
-                    entry.insert(i);
+            }
+        } else {
+            agent_name_handle_map.reserve(initializers.len());
+            for (i, agent_initializer) in initializers.iter().enumerate() {
+                match agent_name_handle_map.entry(agent_initializer.options.name.clone()) {
+                    Entry::Occupied(_) => {
+                        return Err(SimulationError::DuplicateAgentName(
+                            agent_initializer.options.name.clone(),
+                        ));
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(i);
+                    }
                 }
             }
         }
@@ -264,8 +281,19 @@ impl Simulation {
 
             {
                 let agent_name_handle_map = &self.agent_name_handle_map;
+                let scan_names = self.agents.len() <= LINEAR_NAME_SCAN_LIMIT;
                 for agent_handle in 0..self.agents.len() {
-                    let agent = &mut self.agents[agent_handle];
+                    // Only small simulations split the slice, since every visit pays
+                    // for it, including visits to sleeping agents.
+                    let (agent, peers) = if scan_names {
+                        let (before, rest) = self.agents.split_at_mut(agent_handle);
+                        let Some((agent, after)) = rest.split_first_mut() else {
+                            break;
+                        };
+                        (agent, Some((&*before, &*after)))
+                    } else {
+                        (&mut self.agents[agent_handle], None)
+                    };
                     if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
                         if self.time >= wakeup_at {
                             agent.state.mode = agent.state.wake_mode;
@@ -294,6 +322,7 @@ impl Simulation {
                                 time: self.time,
                                 commands: &mut command_buffer,
                                 requested_sleep_until: &mut requested_sleep_until,
+                                peers,
                                 agent_name_handle_map,
                                 state: &agent.state,
                                 message_processing_status: MessageProcessingStatus::NoError,
@@ -310,6 +339,7 @@ impl Simulation {
                                     commands: &mut command_buffer,
                                     requested_sleep_until: &mut requested_sleep_until,
                                     state: &agent.state,
+                                    peers,
                                     agent_name_handle_map,
                                     message_processing_status: MessageProcessingStatus::NoError,
                                 };
@@ -438,7 +468,7 @@ impl Simulation {
     /// Returns an agent handle by name, using a linear scan for small simulations.
     #[inline]
     fn find_handle_by_name(&self, name: &str) -> Option<usize> {
-        if self.agents.len() <= 8 {
+        if self.agents.len() <= LINEAR_NAME_SCAN_LIMIT {
             self.agents.iter().position(|agent| agent.name == name)
         } else {
             self.agent_name_handle_map.get(name).copied()
@@ -625,16 +655,20 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_agent_names() {
-        let result = Simulation::try_new(SimulationParameters {
-            agent_initializers: vec![
-                periodic_consumer("worker".to_string(), 1),
-                periodic_consumer("worker".to_string(), 2),
-            ],
-            ..Default::default()
-        });
+        for count in [2, 8, 9] {
+            let mut agent_initializers: Vec<AgentInitializer> = (1..count)
+                .map(|i| periodic_consumer(format!("worker-{i}"), 1))
+                .collect();
+            agent_initializers.push(periodic_consumer("worker-1".to_string(), 2));
+            let result = Simulation::try_new(SimulationParameters {
+                agent_initializers,
+                ..Default::default()
+            });
 
-        assert!(
-            matches!(result, Err(SimulationError::DuplicateAgentName(name)) if name == "worker")
-        );
+            assert!(
+                matches!(&result, Err(SimulationError::DuplicateAgentName(name)) if name == "worker-1"),
+                "{count} agents: {result:?}"
+            );
+        }
     }
 }
