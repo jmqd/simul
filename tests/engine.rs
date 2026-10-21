@@ -207,11 +207,11 @@ fn unknown_destination_records_produced_message_without_delivery() {
         Some(1)
     );
     assert_eq!(
+        Some(None),
         simulation
             .produced_for_agent("sender")
             .and_then(|messages| messages.first())
-            .map(|message| message.destination),
-        Some(None)
+            .map(|message| message.destination)
     );
 }
 
@@ -350,10 +350,10 @@ fn mutable_agent_access_preserves_identity_and_routing() {
         simulation.run();
 
         assert_eq!(
+            Some(Some(AgentId::new(0))),
             simulation
                 .consumed_for_agent("receiver-1")
-                .map(|messages| messages[0].source),
-            Some(Some(AgentId::new(0)))
+                .map(|messages| messages[0].source)
         );
         assert!(simulation.find_by_name("replacement").is_none());
         assert_eq!(
@@ -493,19 +493,19 @@ fn cloned_messages_keep_independent_contents_and_timestamps() {
 
     assert_eq!(original.queued_time, 7);
     assert_eq!(original.completed_time, None);
-    assert_eq!(original.source, None);
-    assert_eq!(original.destination, None);
+    assert_eq!(None, original.source);
+    assert_eq!(None, original.destination);
     assert_eq!(original.custom_payload.as_deref(), Some([1, 2].as_slice()));
     assert!(original.interrupt.is_none());
     assert_eq!(edited.custom_payload.as_deref(), Some([3, 2].as_slice()));
     assert_eq!(edited.completed_time, Some(9));
-    assert_eq!(edited.source, Some(AgentId::new(1)));
+    assert_eq!(Some(AgentId::new(1)), edited.source);
 
     let plain = Message::new(1);
     let mut extended = plain.clone();
     extended.custom_payload = Some(vec![4]);
     assert!(plain.custom_payload.is_none());
-    assert_eq!(extended.custom_payload.as_deref(), Some([4].as_slice()));
+    assert_eq!(Some([4].as_slice()), extended.custom_payload.as_deref());
 }
 
 #[test]
