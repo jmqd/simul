@@ -321,12 +321,22 @@ impl AgentContext<'_> {
 /// Agents can be cloned into simulations with other layouts, so the resolved
 /// identity is reused only while the layout matches. Caching removed a name
 /// lookup from every send: 13% of instructions with two agents, 20% with 65.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct CachedTarget {
     /// Name of the target agent.
     name: String,
     /// Layout and identity of the last resolution; `None` before the first.
     resolved: Option<(u64, Option<AgentId>)>,
+}
+
+// The layout token comes from a process-wide counter, so printing it would make
+// agent Debug output depend on how many simulations ran earlier.
+impl fmt::Debug for CachedTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedTarget")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CachedTarget {
