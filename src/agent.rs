@@ -22,6 +22,37 @@ pub enum AgentMode {
     Dead,
 }
 
+/// A dense agent identity: the agent's position in
+/// [`SimulationParameters::agent_initializers`](crate::SimulationParameters).
+///
+/// Sending by identity with [`AgentContext::send_to`] skips the name lookup
+/// that [`AgentContext::send`] performs.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AgentId(u32);
+
+impl AgentId {
+    /// Creates the identity of the agent at `index` in construction order.
+    #[must_use]
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// Returns the agent's position in construction order.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Converts the handle of an agent in a constructed simulation.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "simulations reject more than u32::MAX agents"
+    )]
+    pub(crate) const fn from_handle(handle: usize) -> Self {
+        Self(handle as u32)
+    }
+}
+
 /// Per-agent bookkeeping collected by the simulation engine.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AgentMetadata {
@@ -81,7 +112,6 @@ impl Default for AgentState {
 pub struct AgentCommand {
     pub ty: AgentCommandType,
     pub agent_handle: usize,
-    pub receiver_handle: Option<usize>,
 }
 
 /// Actions the Agent can perform.
@@ -101,17 +131,17 @@ pub enum MessageProcessingStatus {
 
 // The Context holds the capability for Agents to act on the world
 ///
-/// Routing handles are read-only to callbacks.
+/// Routing identities are read-only to callbacks.
 ///
 /// ```compile_fail
-/// use simul::agent::AgentContext;
+/// use simul::agent::{AgentContext, AgentId};
 /// fn change_identity(ctx: &mut AgentContext<'_>) {
-///     ctx.handle = usize::MAX;
+///     ctx.id = AgentId::new(0);
 /// }
 /// ```
 pub struct AgentContext<'a> {
-    /// The handle id of the Agent.
-    pub(crate) handle: usize,
+    /// The identity of the Agent.
+    pub(crate) id: AgentId,
 
     /// The name of the Agent.
     pub name: &'a str,
@@ -129,8 +159,11 @@ pub struct AgentContext<'a> {
     /// route messages instead of hashing every target.
     pub(crate) peers: Option<(&'a [SimulationAgent], &'a [SimulationAgent])>,
 
-    /// Maps agent names to stable handles when `peers` is absent.
-    pub(crate) agent_name_handle_map: &'a FxHashMap<String, usize>,
+    /// Maps agent names to identities when `peers` is absent.
+    pub(crate) agent_name_handle_map: &'a FxHashMap<String, AgentId>,
+
+    /// Number of agents, which bounds valid identities.
+    pub(crate) agent_count: usize,
 
     pub state: &'a AgentState,
 
@@ -138,65 +171,74 @@ pub struct AgentContext<'a> {
 }
 
 impl AgentContext<'_> {
-    /// Returns the agent's immutable routing handle.
+    /// Returns the agent's immutable identity.
     #[must_use]
-    pub const fn handle(&self) -> usize {
-        self.handle
+    pub const fn id(&self) -> AgentId {
+        self.id
     }
 
-    /// Queues a message for end-of-tick delivery.
+    /// Queues a message to the agent named `target` for end-of-tick delivery.
     ///
-    /// Multiple messages sent by one callback are delivered in call order.
+    /// Multiple messages sent by one callback are delivered in call order. A
+    /// target that names no agent is recorded in the sender's history without
+    /// a destination and is not delivered.
     #[inline]
     pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
-        // Repeated payload-free sends can reuse retained contents, just as
-        // delivery shares contents with history. Timestamps stay independent.
-        let message = match self.state.produced.last() {
-            Some(previous)
-                if payload.is_none()
-                    && previous.custom_payload.is_none()
-                    && previous.interrupt.is_none()
-                    && previous.source == self.name
-                    && previous.destination == target =>
-            {
-                let mut message = previous.clone();
-                message.queued_time = self.time;
-                message.completed_time = None;
-                message
-            }
-            _ => Message::new_with_payload(self.time, self.name, target, payload),
-        };
-        self.commands.push(AgentCommand {
-            ty: AgentCommandType::SendMessage(message),
-            agent_handle: self.handle,
-            receiver_handle: self.resolve(target),
-        });
+        let destination = self.agent_id(target);
+        self.queue_message(destination, payload);
     }
 
-    /// Returns the handle of the agent named `target`, if one exists.
+    /// Queues a message to `target` without a name lookup.
     ///
-    /// Inlining keeps the hash probe in each `send` caller, as before routing
-    /// gained a scan path; out of line, the call cost large simulations ~2%.
+    /// Delivery order matches [`Self::send`]. An identity outside this
+    /// simulation is recorded like an unknown name.
     #[inline]
-    fn resolve(&self, target: &str) -> Option<usize> {
+    pub fn send_to(&mut self, target: AgentId, payload: Option<Vec<u8>>) {
+        let destination = (target.index() < self.agent_count).then_some(target);
+        self.queue_message(destination, payload);
+    }
+
+    /// Returns the identity of the agent named `name`, if one exists.
+    ///
+    /// Callbacks that message one peer repeatedly can resolve it once and use
+    /// [`Self::send_to`]. Inlining keeps the hash probe in each caller; out of
+    /// line, the call cost large simulations ~2%.
+    #[must_use]
+    #[inline]
+    pub fn agent_id(&self, name: &str) -> Option<AgentId> {
         match self.peers {
             Some((before, after)) => {
-                if self.name == target {
-                    Some(self.handle)
+                if self.name == name {
+                    Some(self.id)
                 } else {
                     before
                         .iter()
-                        .position(|agent| agent.name == target)
+                        .position(|agent| agent.name == name)
                         .or_else(|| {
                             after
                                 .iter()
-                                .position(|agent| agent.name == target)
-                                .map(|offset| self.handle + 1 + offset)
+                                .position(|agent| agent.name == name)
+                                .map(|offset| self.id.index() + 1 + offset)
                         })
+                        .map(AgentId::from_handle)
                 }
             }
-            None => self.agent_name_handle_map.get(target).copied(),
+            None => self.agent_name_handle_map.get(name).copied(),
         }
+    }
+
+    /// Queues a message from this agent for end-of-tick processing.
+    #[inline]
+    fn queue_message(&mut self, destination: Option<AgentId>, payload: Option<Vec<u8>>) {
+        self.commands.push(AgentCommand {
+            ty: AgentCommandType::SendMessage(Message::sent(
+                self.time,
+                self.id,
+                destination,
+                payload,
+            )),
+            agent_handle: self.id.index(),
+        });
     }
 
     /// Sends an interrupt to HALT the simulation.
@@ -204,8 +246,7 @@ impl AgentContext<'_> {
     pub fn send_halt_interrupt(&mut self, reason: &str) {
         self.commands.push(AgentCommand {
             ty: AgentCommandType::HaltSimulation(reason.to_string()),
-            agent_handle: self.handle,
-            receiver_handle: None,
+            agent_handle: self.id.index(),
         });
     }
 

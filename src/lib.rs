@@ -46,6 +46,13 @@ pub type DiscreteTime = u64;
 /// Largest simulation that resolves agent names by linear scan instead of hashing.
 const LINEAR_NAME_SCAN_LIMIT: usize = 8;
 
+/// Most agents one simulation holds, so every [`AgentId`] fits in `u32`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "u32::MAX fits in usize on every supported target"
+)]
+const MAX_AGENTS: usize = u32::MAX as usize;
+
 /// The current mode of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum SimulationMode {
@@ -87,9 +94,9 @@ pub struct Simulation {
     /// The mode of the Simulation.
     mode: SimulationMode,
 
-    /// Maps agent names to handles in simulations too large for linear name
-    /// scans; empty otherwise.
-    agent_name_handle_map: FxHashMap<String, usize>,
+    /// Maps agent names to identities in simulations too large for linear
+    /// name scans; empty otherwise.
+    agent_name_handle_map: FxHashMap<String, AgentId>,
 }
 
 /// The parameters to create a Simulation.
@@ -118,6 +125,11 @@ pub struct SimulationParameters {
 pub enum SimulationError {
     /// More than one agent was configured with the same name.
     DuplicateAgentName(String),
+    /// More agents were configured than [`AgentId`] can identify.
+    TooManyAgents {
+        /// Number of configured agents.
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for SimulationError {
@@ -125,6 +137,9 @@ impl std::fmt::Display for SimulationError {
         match self {
             Self::DuplicateAgentName(name) => {
                 write!(f, "duplicate agent name in simulation parameters: {name}")
+            }
+            Self::TooManyAgents { count } => {
+                write!(f, "{count} agents exceed the limit of {MAX_AGENTS}")
             }
         }
     }
@@ -162,9 +177,15 @@ impl Simulation {
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a name.
+    /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a
+    /// name, or [`SimulationError::TooManyAgents`] beyond `u32::MAX` agents.
     pub fn try_new(parameters: SimulationParameters) -> Result<Self, SimulationError> {
         let initializers = &parameters.agent_initializers;
+        if initializers.len() > MAX_AGENTS {
+            return Err(SimulationError::TooManyAgents {
+                count: initializers.len(),
+            });
+        }
         let mut agent_name_handle_map = FxHashMap::default();
         if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
             for (i, agent_initializer) in initializers.iter().enumerate() {
@@ -186,7 +207,7 @@ impl Simulation {
                         ));
                     }
                     Entry::Vacant(entry) => {
-                        entry.insert(i);
+                        entry.insert(AgentId::from_handle(i));
                     }
                 }
             }
@@ -231,7 +252,21 @@ impl Simulation {
     #[inline]
     pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent> {
         self.find_handle_by_name(name)
-            .and_then(|id| self.agents.get(id))
+            .and_then(|handle| self.agents.get(handle))
+    }
+
+    /// Returns the identity of the agent named `name`.
+    #[must_use]
+    #[inline]
+    pub fn agent_id(&self, name: &str) -> Option<AgentId> {
+        self.find_handle_by_name(name).map(AgentId::from_handle)
+    }
+
+    /// Returns the agent with identity `id`.
+    #[must_use]
+    #[inline]
+    pub fn agent(&self, id: AgentId) -> Option<&SimulationAgent> {
+        self.agents.get(id.index())
     }
 
     /// Returns mutable behavior and state, without exposing the routing identity.
@@ -247,8 +282,8 @@ impl Simulation {
         &mut self,
         name: &str,
     ) -> Option<(&mut Box<dyn Agent>, &mut AgentState)> {
-        let id = self.find_handle_by_name(name)?;
-        let agent = self.agents.get_mut(id)?;
+        let handle = self.find_handle_by_name(name)?;
+        let agent = self.agents.get_mut(handle)?;
         Some((&mut agent.agent, &mut agent.state))
     }
 
@@ -289,7 +324,8 @@ impl Simulation {
 
             {
                 let agent_name_handle_map = &self.agent_name_handle_map;
-                let scan_names = self.agents.len() <= LINEAR_NAME_SCAN_LIMIT;
+                let agent_count = self.agents.len();
+                let scan_names = agent_count <= LINEAR_NAME_SCAN_LIMIT;
                 for agent_handle in 0..self.agents.len() {
                     // Only small simulations split the slice, since every visit pays
                     // for it, including visits to sleeping agents.
@@ -322,57 +358,50 @@ impl Simulation {
 
                     requested_sleep_until = None;
 
-                    match agent.state.mode {
-                        AgentMode::Proactive => {
-                            let mut ctx = AgentContext {
-                                handle: agent_handle,
-                                name: &agent.name,
-                                time: self.time,
-                                commands: &mut command_buffer,
-                                requested_sleep_until: &mut requested_sleep_until,
-                                peers,
-                                agent_name_handle_map,
-                                state: &agent.state,
-                                message_processing_status: MessageProcessingStatus::NoError,
-                            };
-
-                            agent.agent.on_tick(&mut ctx);
-                        }
-                        AgentMode::Reactive => {
-                            if let Some(msg) = queued_msg {
-                                let mut ctx = AgentContext {
-                                    handle: agent_handle,
-                                    name: &agent.name,
-                                    time: self.time,
-                                    commands: &mut command_buffer,
-                                    requested_sleep_until: &mut requested_sleep_until,
-                                    state: &agent.state,
-                                    peers,
-                                    agent_name_handle_map,
-                                    message_processing_status: MessageProcessingStatus::NoError,
-                                };
-
-                                // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
-                                agent.agent.on_message(&mut ctx, &msg);
-
-                                match ctx.message_processing_status {
-                                    MessageProcessingStatus::InProgress => {
-                                        agent.state.queue.push_front(msg);
-                                    }
-                                    MessageProcessingStatus::NoError => {
-                                        let mut msg = msg;
-                                        msg.completed_time = Some(self.time);
-                                        agent.state.consumed.push(msg);
-                                    }
-                                }
-                            }
-                        }
+                    // Proactive agents tick; reactive agents handle their queued message.
+                    let callback = match agent.state.mode {
+                        AgentMode::Proactive => Some(None),
+                        AgentMode::Reactive => queued_msg.map(Some),
                         AgentMode::AsleepUntil(_) => {
                             if self.enable_agent_asleep_cycles_metric {
                                 agent.metadata.asleep_cycle_count += 1;
                             }
+                            None
                         }
-                        AgentMode::Dead => {}
+                        AgentMode::Dead => None,
+                    };
+
+                    if let Some(message) = callback {
+                        let mut ctx = AgentContext {
+                            id: AgentId::from_handle(agent_handle),
+                            name: &agent.name,
+                            time: self.time,
+                            commands: &mut command_buffer,
+                            requested_sleep_until: &mut requested_sleep_until,
+                            peers,
+                            agent_name_handle_map,
+                            agent_count,
+                            state: &agent.state,
+                            message_processing_status: MessageProcessingStatus::NoError,
+                        };
+
+                        if let Some(msg) = message {
+                            // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
+                            agent.agent.on_message(&mut ctx, &msg);
+
+                            match ctx.message_processing_status {
+                                MessageProcessingStatus::InProgress => {
+                                    agent.state.queue.push_front(msg);
+                                }
+                                MessageProcessingStatus::NoError => {
+                                    let mut msg = msg;
+                                    msg.completed_time = Some(self.time);
+                                    agent.state.consumed.push(msg);
+                                }
+                            }
+                        } else {
+                            agent.agent.on_tick(&mut ctx);
+                        }
                     }
 
                     if let Some(sleep_until) = requested_sleep_until {
@@ -479,7 +508,7 @@ impl Simulation {
         if self.agents.len() <= LINEAR_NAME_SCAN_LIMIT {
             self.agents.iter().position(|agent| agent.name == name)
         } else {
-            self.agent_name_handle_map.get(name).copied()
+            self.agent_name_handle_map.get(name).map(|id| id.index())
         }
     }
 
@@ -489,8 +518,8 @@ impl Simulation {
         for command in command_buffer.drain(..) {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
-                    if let Some(receiver_handle) = command.receiver_handle {
-                        let receiver = &mut self.agents[receiver_handle];
+                    if let Some(destination) = message.destination {
+                        let receiver = &mut self.agents[destination.index()];
                         receiver.state.queue.push_back(message.clone());
                     }
 

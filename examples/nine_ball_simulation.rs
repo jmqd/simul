@@ -41,7 +41,7 @@ impl Agent for NineBallPlayer {
         }
 
         if self.score >= self.winning_threshold {
-            self.winner.set(Some(ctx.handle()));
+            self.winner.set(Some(ctx.id().index()));
             ctx.send_halt_interrupt("won");
             return;
         }
@@ -91,7 +91,7 @@ impl Agent for ApaNineBallPlayer {
         }
 
         if self.score >= self.winning_threshold {
-            self.winner.set(Some(ctx.handle()));
+            self.winner.set(Some(ctx.id().index()));
             ctx.send_halt_interrupt("won");
             return;
         }
@@ -148,7 +148,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         .get_mut(starting_player)
         .unwrap()
         .options
-        .initial_queue = vec![Message::new_with_payload(0, "", "", Some(vec![1]))].into();
+        .initial_queue = vec![Message::new_with_payload(0, Some(vec![1]))].into();
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
@@ -222,7 +222,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .get_mut(starting_player)
         .unwrap()
         .options
-        .initial_queue = vec![Message::new_with_payload(0, "", "", Some(vec![1]))].into();
+        .initial_queue = vec![Message::new_with_payload(0, Some(vec![1]))].into();
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
@@ -330,13 +330,7 @@ mod tests {
                     agent,
                     options: AgentOptions {
                         name: "player".to_string(),
-                        initial_queue: vec![Message::new_with_payload(
-                            0,
-                            "break",
-                            "player",
-                            Some(vec![2]),
-                        )]
-                        .into(),
+                        initial_queue: vec![Message::new_with_payload(0, Some(vec![2]))].into(),
                         ..Default::default()
                     },
                 }],

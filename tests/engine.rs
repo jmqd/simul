@@ -1,8 +1,8 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use simul::agent::{
-    periodic_consumer, periodic_producer, Agent, AgentContext, AgentInitializer, AgentMode,
-    AgentOptions, MessageProcessingStatus,
+    periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
+    AgentMode, AgentOptions, MessageProcessingStatus,
 };
 use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
@@ -50,16 +50,18 @@ impl Agent for NeighborSender {
 
 #[test]
 fn messages_route_to_lower_own_and_higher_handles() {
-    for count in [3, 8, 9] {
-        let name = |handle: usize| format!("agent-{handle}");
+    for count in [3_u32, 8, 9] {
+        let name = |handle: u32| format!("agent-{handle}");
+        let neighbors = |handle: u32| [(handle + count - 1) % count, handle, (handle + 1) % count];
         let mut simulation = Simulation::new(SimulationParameters {
             agent_initializers: (0..count)
                 .map(|handle| {
+                    let [previous, _, next] = neighbors(handle);
                     proactive_agent(
                         &name(handle),
                         NeighborSender {
-                            previous: name((handle + count - 1) % count),
-                            next: name((handle + 1) % count),
+                            previous: name(previous),
+                            next: name(next),
                         },
                     )
                 })
@@ -69,26 +71,91 @@ fn messages_route_to_lower_own_and_higher_handles() {
         });
         simulation.run();
 
-        for receiver in 0..count {
-            let mut senders = [
-                (receiver + count - 1) % count,
-                receiver,
-                (receiver + 1) % count,
-            ];
-            senders.sort_unstable();
-            let Some(agent) = simulation.find_by_name(&name(receiver)) else {
-                panic!("agent-{receiver} must exist");
+        for handle in 0..count {
+            let id = AgentId::new(handle);
+            assert_eq!(Some(id), simulation.agent_id(&name(handle)));
+            let Some(agent) = simulation.agent(id) else {
+                panic!("agent-{handle} must exist");
             };
-            let sources: Vec<&str> = agent
+            let destinations: Vec<Option<AgentId>> = agent
+                .state
+                .produced
+                .iter()
+                .map(|message| message.destination)
+                .collect();
+            assert_eq!(
+                neighbors(handle).map(|neighbor| Some(AgentId::new(neighbor))),
+                destinations.as_slice(),
+                "{count} agents, sender agent-{handle}"
+            );
+
+            let mut senders = neighbors(handle);
+            senders.sort_unstable();
+            let sources: Vec<Option<AgentId>> = agent
                 .state
                 .queue
                 .iter()
-                .map(|message| message.source.as_str())
+                .map(|message| message.source)
                 .collect();
             assert_eq!(
-                senders.map(name),
+                senders.map(|sender| Some(AgentId::new(sender))),
                 sources.as_slice(),
-                "{count} agents, receiver agent-{receiver}"
+                "{count} agents, receiver agent-{handle}"
+            );
+        }
+    }
+}
+
+/// Sends one message to every identity through one past the last agent.
+#[derive(Clone, Debug)]
+struct IdentitySender {
+    count: u32,
+}
+
+impl Agent for IdentitySender {
+    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
+
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        for index in 0..=self.count {
+            ctx.send_to(AgentId::new(index), None);
+        }
+    }
+}
+
+#[test]
+fn send_to_delivers_by_identity_and_records_unknown_identities() {
+    for count in [3_u32, 9] {
+        let mut simulation = Simulation::new(SimulationParameters {
+            agent_initializers: (0..count)
+                .map(|handle| proactive_agent(&format!("agent-{handle}"), IdentitySender { count }))
+                .collect(),
+            halt_check: |simulation| simulation.time() == 1,
+            ..Default::default()
+        });
+        simulation.run();
+
+        let expected: Vec<Option<AgentId>> = (0..count)
+            .map(|id| Some(AgentId::new(id)))
+            .chain([None])
+            .collect();
+        for agent in simulation.agents() {
+            let destinations: Vec<Option<AgentId>> = agent
+                .state
+                .produced
+                .iter()
+                .map(|message| message.destination)
+                .collect();
+            assert_eq!(expected, destinations, "{count} agents, {}", agent.name);
+            assert_eq!(
+                expected[..expected.len() - 1],
+                agent
+                    .state
+                    .queue
+                    .iter()
+                    .map(|message| message.source)
+                    .collect::<Vec<_>>(),
+                "{count} agents, {}",
+                agent.name
             );
         }
     }
@@ -139,8 +206,8 @@ fn unknown_destination_records_produced_message_without_delivery() {
         simulation
             .produced_for_agent("sender")
             .and_then(|messages| messages.first())
-            .map(|message| message.destination.as_str()),
-        Some("missing")
+            .map(|message| message.destination),
+        Some(None)
     );
 }
 
@@ -209,7 +276,7 @@ fn in_progress_message_stays_queued_until_completed() {
         agent_initializers: vec![AgentInitializer {
             agent: Box::new(SlowConsumer),
             options: AgentOptions {
-                initial_queue: vec![Message::new(0, "producer", "consumer")].into(),
+                initial_queue: vec![Message::new(0)].into(),
                 name: "consumer".to_string(),
                 ..Default::default()
             },
@@ -281,8 +348,8 @@ fn mutable_agent_access_preserves_identity_and_routing() {
         assert_eq!(
             simulation
                 .consumed_for_agent("receiver-1")
-                .map(|messages| messages[0].source.as_str()),
-            Some("sender")
+                .map(|messages| messages[0].source),
+            Some(Some(AgentId::new(0)))
         );
         assert!(simulation.find_by_name("replacement").is_none());
         assert_eq!(
@@ -366,12 +433,12 @@ fn final_representable_tick_and_wake_time_are_allowed() {
 
 #[test]
 fn cloned_messages_keep_independent_contents_and_timestamps() {
-    let original = Message::new_with_payload(7, "sender", "receiver", Some(vec![1, 2]));
+    let original = Message::new_with_payload(7, Some(vec![1, 2]));
     let mut edited = original.clone();
     edited.queued_time = 8;
     edited.completed_time = Some(9);
-    edited.source.push_str("-edited");
-    edited.destination.push_str("-edited");
+    edited.source = Some(AgentId::new(1));
+    edited.destination = Some(AgentId::new(2));
     let Some(payload) = &mut edited.custom_payload else {
         panic!("payload must exist");
     };
@@ -380,12 +447,19 @@ fn cloned_messages_keep_independent_contents_and_timestamps() {
 
     assert_eq!(original.queued_time, 7);
     assert_eq!(original.completed_time, None);
-    assert_eq!(original.source, "sender");
-    assert_eq!(original.destination, "receiver");
+    assert_eq!(original.source, None);
+    assert_eq!(original.destination, None);
     assert_eq!(original.custom_payload.as_deref(), Some([1, 2].as_slice()));
     assert!(original.interrupt.is_none());
     assert_eq!(edited.custom_payload.as_deref(), Some([3, 2].as_slice()));
     assert_eq!(edited.completed_time, Some(9));
+    assert_eq!(edited.source, Some(AgentId::new(1)));
+
+    let plain = Message::new(1);
+    let mut extended = plain.clone();
+    extended.custom_payload = Some(vec![4]);
+    assert!(plain.custom_payload.is_none());
+    assert_eq!(extended.custom_payload.as_deref(), Some([4].as_slice()));
 }
 
 #[test]
@@ -475,9 +549,9 @@ fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
             (time == 2).then_some([7].as_slice())
         );
     }
-    state.produced[0].source.push_str("-edited");
+    state.produced[0].source = Some(AgentId::new(9));
     state.produced[0].custom_payload = Some(vec![9]);
-    assert_eq!(state.produced[1].source, "sender");
+    assert_eq!(state.produced[1].source, Some(AgentId::new(0)));
     assert!(state.produced[1].custom_payload.is_none());
 
     let Some(consumed) = simulation.consumed_for_agent("receiver") else {
@@ -485,8 +559,8 @@ fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
     };
     assert_eq!(consumed.len(), 4);
     for (time, message) in (0_u64..).zip(consumed) {
-        assert_eq!(message.source, "sender");
-        assert_eq!(message.destination, "receiver");
+        assert_eq!(message.source, Some(AgentId::new(0)));
+        assert_eq!(message.destination, Some(AgentId::new(1)));
         assert_eq!(message.queued_time, time);
         assert_eq!(message.completed_time, Some(time + 1));
         assert_eq!(
@@ -499,8 +573,8 @@ fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
 #[test]
 fn new_sends_do_not_inherit_edited_history() {
     let mutations: [fn(&mut Message); 6] = [
-        |message| message.source.push_str("-edited"),
-        |message| message.destination.push_str("-edited"),
+        |message| message.source = Some(AgentId::new(9)),
+        |message| message.destination = None,
         |message| message.custom_payload = Some(vec![]),
         |message| {
             message.interrupt = Some(simul::message::Interrupt::HaltSimulation("old".into()));
@@ -529,8 +603,8 @@ fn new_sends_do_not_inherit_edited_history() {
             panic!("sender must exist");
         };
         let message = &produced[1];
-        assert_eq!(message.source, "sender");
-        assert_eq!(message.destination, "receiver");
+        assert_eq!(message.source, Some(AgentId::new(0)));
+        assert_eq!(message.destination, Some(AgentId::new(1)));
         assert!(message.custom_payload.is_none());
         assert!(message.interrupt.is_none());
         assert_eq!(message.queued_time, 1);

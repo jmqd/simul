@@ -463,14 +463,7 @@ fn sim_relay_ring() -> Fingerprint {
         .map(|index| {
             let name = format!("relay-{index}");
             let initial_queue: VecDeque<Message> = (0..3_u8)
-                .map(|seed| {
-                    Message::new_with_payload(
-                        0,
-                        name.clone(),
-                        name.clone(),
-                        Some(vec![index ^ seed; 24]),
-                    )
-                })
+                .map(|seed| Message::new_with_payload(0, Some(vec![index ^ seed; 24])))
                 .collect();
             AgentInitializer {
                 agent: Box::new(Relay {

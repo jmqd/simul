@@ -319,8 +319,8 @@ fn ensure_self_tick(ctx: &mut AgentContext) {
     }
 }
 
-fn initial_tick(destination: &str) -> Message {
-    Message::new_with_payload(0, "clock", destination, Some(Payload::Tick.encode()))
+fn initial_tick() -> Message {
+    Message::new_with_payload(0, Some(Payload::Tick.encode()))
 }
 
 const fn discrete_multiple(value: DiscreteTime, divisor: DiscreteTime) -> bool {
@@ -1040,27 +1040,27 @@ fn build_simulation(params: SoftwareTeamParameters) -> Simulation {
             reactive_agent(
                 developer_name(0),
                 Developer::new(0, params),
-                vec![initial_tick(developer_name(0))].into(),
+                vec![initial_tick()].into(),
             ),
             reactive_agent(
                 developer_name(1),
                 Developer::new(1, params),
-                vec![initial_tick(developer_name(1))].into(),
+                vec![initial_tick()].into(),
             ),
             reactive_agent(
                 developer_name(2),
                 Developer::new(2, params),
-                vec![initial_tick(developer_name(2))].into(),
+                vec![initial_tick()].into(),
             ),
             reactive_agent(
                 DECISIONS,
                 DecisionMaker::new(params),
-                vec![initial_tick(DECISIONS)].into(),
+                vec![initial_tick()].into(),
             ),
             reactive_agent(
                 CI,
                 ContinuousIntegration::new(params),
-                vec![initial_tick(CI)].into(),
+                vec![initial_tick()].into(),
             ),
             reactive_agent(MERGE, MergeBot, VecDeque::new()),
             reactive_agent(METRICS, MetricsSink, VecDeque::new()),

@@ -120,19 +120,26 @@ fn main() {
   of the Simulation.
 - What an `Agent` does at each tick of the simulation is provided by you in its
   `on_tick()` and `on_message()` methods.
-- `Agents` must have a unique name.
+- `Agents` must have a unique name. Each also has a dense `AgentId`: its
+  position in `agent_initializers`.
 - If an `Agent` wants to interact with another `Agent`, it can send a `Message`
   via the `&mut ctx: AgentContext` passed into `on_tick` and `on_message`.
+  `ctx.send(name, payload)` resolves a name; `ctx.send_to(id, payload)` skips
+  the lookup, and `ctx.agent_id(name)` resolves a peer once for reuse.
 
 The simulation runs all the logic of calling `process()`, distributing messages,
 tracking metrics, incrementing time, and when to halt. A `Simulation` is
 finished when the provided `halt_check` function returns `true`, or if an
 `Agent` responds with a special `Interrupt` to halt the `Simulation`.
 
-Create initial messages with `Message::new` or `Message::new_with_payload`, not
-struct literals. Message clones share strings and payloads until modified;
-timestamps remain independent. Field reads and copy-on-write field updates keep
-their ordinary value semantics.
+Messages identify agents by `AgentId`: `source` is the sender (absent for an
+initial queue entry) and `destination` the addressed agent (absent when the
+target matched no agent, in which case the message is recorded but not
+delivered). `Simulation::agent(id)` and `Simulation::agent_id(name)` translate
+between identities and agents. Create initial messages with `Message::new` or
+`Message::new_with_payload`, not struct literals. A message without a payload
+allocates nothing; clones share payloads until modified, and timestamps and
+identities remain independent.
 
 ## Poisson-distributed example w/ Plotting
 
