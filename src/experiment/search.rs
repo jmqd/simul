@@ -3,7 +3,7 @@
 use super::{CandidateId, CandidateSummary, MasterSeed, SeedDeriver, SelectionPolicy, TrialRng};
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 
 /// Largest tell batch checked for repeated identities by scanning earlier
 /// entries, which avoids allocating and hashing two sets per call.
@@ -107,6 +107,74 @@ pub trait SearchStrategy<C, S> {
     fn status(&self) -> SearchStatus;
 }
 
+/// Candidates awaiting `tell`, stored by their sequentially issued tokens.
+///
+/// Untold candidates lie in a window that begins at the oldest untold token
+/// and ends at the next token to issue. A told slot becomes `None` until the
+/// window's front advances past it, so every operation is O(1) without the
+/// node allocations of an ordered map.
+struct PendingProposals<C> {
+    /// Token of the window's first slot.
+    first_token: u64,
+    /// Candidates for consecutive tokens; `None` once told.
+    window: VecDeque<Option<C>>,
+    /// Number of untold candidates in the window.
+    outstanding: usize,
+}
+
+impl<C> PendingProposals<C> {
+    /// Creates an empty window starting at token zero.
+    const fn new() -> Self {
+        Self {
+            first_token: 0,
+            window: VecDeque::new(),
+            outstanding: 0,
+        }
+    }
+
+    /// Reserves room for `additional` newly issued tokens.
+    fn reserve(&mut self, additional: usize) {
+        self.window.reserve(additional);
+    }
+
+    /// Records the candidate for the next token, `first_token + window.len()`.
+    fn push(&mut self, candidate: C) {
+        self.window.push_back(Some(candidate));
+        self.outstanding += 1;
+    }
+
+    /// Returns the window index of `token`, if it lies inside the window.
+    fn slot(&self, token: ProposalToken) -> Option<usize> {
+        let offset = token.value().checked_sub(self.first_token)?;
+        usize::try_from(offset)
+            .ok()
+            .filter(|&index| index < self.window.len())
+    }
+
+    /// Returns whether `token` is awaiting a `tell`.
+    fn contains(&self, token: ProposalToken) -> bool {
+        self.slot(token)
+            .is_some_and(|index| self.window[index].is_some())
+    }
+
+    /// Removes and returns the candidate for an untold `token`.
+    fn remove(&mut self, token: ProposalToken) -> Option<C> {
+        let index = self.slot(token)?;
+        let candidate = self.window[index].take()?;
+        self.outstanding -= 1;
+        while matches!(self.window.front(), Some(None)) {
+            self.window.pop_front();
+            self.first_token += 1;
+        }
+        Some(candidate)
+    }
+
+    /// Returns the number of untold candidates.
+    const fn len(&self) -> usize {
+        self.outstanding
+    }
+}
+
 /// Seeded random search with independent per-token proposal streams.
 ///
 /// Asking in different batch sizes yields the same ordered proposal sequence.
@@ -128,7 +196,7 @@ pub struct SeededRandomSearch<C, S, P, G> {
     ///
     /// Tokens are issued in order, so a token below `next_token` that is no
     /// longer pending has already been told.
-    pending: BTreeMap<ProposalToken, C>,
+    pending: PendingProposals<C>,
     /// Candidate identities already incorporated by `tell`.
     completed_candidates: FxHashSet<CandidateId>,
     /// Current winner and its original selecting evidence.
@@ -152,7 +220,7 @@ where
             told_count: 0,
             generator,
             policy,
-            pending: BTreeMap::new(),
+            pending: PendingProposals::new(),
             completed_candidates: FxHashSet::default(),
             best: None,
         }
@@ -209,7 +277,7 @@ where
                 summary: told.summary.candidate,
             });
         }
-        let outstanding = self.pending.contains_key(&told.token);
+        let outstanding = self.pending.contains(told.token);
         let completed = !outstanding && told.token.value() < self.next_token;
         if completed || repeats_token() {
             return Err(TellError::DuplicateToken(told.token));
@@ -227,7 +295,7 @@ where
     fn incorporate(&mut self, told: &Told<S>) -> Result<(), TellError> {
         let candidate = self
             .pending
-            .remove(&told.token)
+            .remove(told.token)
             .ok_or(TellError::UnknownToken(told.token))?;
         self.consider(candidate, told);
         self.completed_candidates.insert(told.candidate);
@@ -269,11 +337,12 @@ where
         let remaining = self.budget.saturating_sub(self.next_token);
         let count = usize::try_from(remaining).unwrap_or(usize::MAX).min(limit);
         let mut asked = Vec::with_capacity(count);
+        self.pending.reserve(count);
         for _ in 0..count {
             let token = ProposalToken::new(self.next_token);
             let mut rng = self.deriver.proposal_seed(token.value()).rng();
             let candidate = (self.generator)(&mut rng);
-            self.pending.insert(token, candidate.clone());
+            self.pending.push(candidate.clone());
             asked.push(Asked { token, candidate });
             self.next_token += 1;
         }
@@ -477,6 +546,40 @@ mod tests {
             candidate: CandidateId::new(candidate),
             summary: summary(candidate, 1),
         }
+    }
+
+    #[test]
+    fn out_of_order_tells_track_outstanding_tokens() {
+        let mut search = SeededRandomSearch::new(MasterSeed::from_u64(1), 6, |_| 7_u64, MaxI32);
+        let asked = search.ask(4);
+        let token = |index: usize| asked[index].token;
+        for (index, candidate) in [(2, 20), (0, 0), (3, 30)] {
+            search
+                .tell(&[told(token(index), candidate)])
+                .expect("the token is outstanding");
+        }
+        assert_eq!(1, search.status().outstanding);
+        for index in [0, 2, 3] {
+            assert_eq!(
+                Err(TellError::DuplicateToken(token(index))),
+                search.tell(&[told(token(index), 99)])
+            );
+        }
+        assert_eq!(
+            Err(TellError::UnknownToken(ProposalToken::new(4))),
+            search.tell(&[told(ProposalToken::new(4), 40)])
+        );
+
+        let later = search.ask(2);
+        search
+            .tell(&[
+                told(later[1].token, 50),
+                told(token(1), 10),
+                told(later[0].token, 40),
+            ])
+            .expect("the tokens are outstanding");
+        assert!(search.status().finished);
+        assert_eq!(6, search.status().told);
     }
 
     #[test]
