@@ -348,9 +348,18 @@ impl Simulation {
                         (&mut self.agents[agent_handle], None)
                     };
                     if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
-                        if self.time >= wakeup_at {
-                            agent.state.mode = agent.state.wake_mode;
+                        if self.time < wakeup_at {
+                            // A sleeping agent pops no message, runs no callback, and
+                            // requests no sleep; only the optional metrics change.
+                            if self.enable_queue_depth_metric {
+                                agent.record_queue_depth();
+                            }
+                            if self.enable_agent_asleep_cycles_metric {
+                                agent.metadata.asleep_cycle_count += 1;
+                            }
+                            continue;
                         }
+                        agent.state.mode = agent.state.wake_mode;
                     }
                     let queued_msg = if agent.state.mode == AgentMode::Reactive {
                         agent.state.queue.pop_front()
@@ -359,10 +368,7 @@ impl Simulation {
                     };
 
                     if self.enable_queue_depth_metric {
-                        agent
-                            .metadata
-                            .queue_depth_metrics
-                            .push(agent.state.queue.len());
+                        agent.record_queue_depth();
                     }
 
                     requested_sleep_until = None;

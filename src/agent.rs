@@ -79,6 +79,16 @@ pub struct SimulationAgent {
     pub state: AgentState,
 }
 
+impl SimulationAgent {
+    /// Records the current queue depth for this tick.
+    #[inline]
+    pub(crate) fn record_queue_depth(&mut self) {
+        self.metadata
+            .queue_depth_metrics
+            .push(self.state.queue.len());
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentState {
     /// The mode that the agent is in.
