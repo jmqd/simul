@@ -57,6 +57,9 @@ const LINEAR_NAME_SCAN_LIMIT: usize = 8;
 )]
 const MAX_AGENTS: usize = u32::MAX as usize;
 
+/// Messages of room reserved in each history and queue of a small simulation.
+const SMALL_SIMULATION_HISTORY: usize = 16;
+
 /// The current mode of a Simulation.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum SimulationMode {
@@ -221,20 +224,31 @@ impl Simulation {
             }
         }
 
+        // Small simulations are often run by the thousand in experiments, where
+        // growing each history from four messages dominated allocation.
+        let history_capacity = if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
+            SMALL_SIMULATION_HISTORY
+        } else {
+            0
+        };
         let agents: Vec<SimulationAgent> = parameters
             .agent_initializers
             .into_iter()
-            .map(|agent_initializer| SimulationAgent {
-                agent: agent_initializer.agent,
-                name: agent_initializer.options.name,
-                metadata: AgentMetadata::default(),
-                state: AgentState {
-                    mode: agent_initializer.options.initial_mode,
-                    wake_mode: agent_initializer.options.wake_mode,
-                    queue: agent_initializer.options.initial_queue,
-                    consumed: vec![],
-                    produced: vec![],
-                },
+            .map(|agent_initializer| {
+                let mut queue = agent_initializer.options.initial_queue;
+                queue.reserve(history_capacity);
+                SimulationAgent {
+                    agent: agent_initializer.agent,
+                    name: agent_initializer.options.name,
+                    metadata: AgentMetadata::default(),
+                    state: AgentState {
+                        mode: agent_initializer.options.initial_mode,
+                        wake_mode: agent_initializer.options.wake_mode,
+                        queue,
+                        consumed: Vec::with_capacity(history_capacity),
+                        produced: Vec::with_capacity(history_capacity),
+                    },
+                }
             })
             .collect();
 
