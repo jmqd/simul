@@ -521,6 +521,20 @@ impl FixedReplications {
     }
 
     /// Expands a candidate into stable replication IDs in ascending order.
+    ///
+    /// Pass a borrowed candidate to share it across replications without cloning
+    /// its contents:
+    ///
+    /// ```
+    /// use simul::experiment::{CandidateId, FixedReplications};
+    ///
+    /// let candidate = vec![1_u64, 2, 3];
+    /// let schedule = FixedReplications::new(4, 29);
+    /// let trials = schedule.trials(CandidateId::new(0), &candidate);
+    /// for trial in trials {
+    ///     assert!(std::ptr::eq(*trial.candidate(), &candidate));
+    /// }
+    /// ```
     pub fn trials<C: Clone>(
         self,
         candidate: CandidateId,
@@ -746,7 +760,7 @@ fn ensure_unique<C>(ordered: &[TrialSpec<C>]) -> Result<(), RunError> {
 #[cfg(feature = "parallel")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ParallelConfig {
-    /// Requested worker count, capped by batch size and available parallelism.
+    /// Requested worker capacity, capped by available parallelism.
     workers: NonZeroUsize,
     /// Maximum number of records retained by one batch.
     batch_limit: NonZeroUsize,
@@ -773,6 +787,77 @@ impl ParallelConfig {
     #[must_use]
     pub const fn batch_limit(self) -> NonZeroUsize {
         self.batch_limit
+    }
+}
+
+/// A caller-owned dedicated Rayon pool for repeated bounded batches.
+///
+/// Worker capacity is captured at construction as the smaller of the requested
+/// count and available parallelism (or one if availability cannot be determined).
+/// Later runs reuse those threads, even when batch sizes or available parallelism
+/// change; each batch uses at most one shard per worker and at most one per trial.
+/// Only the pool and configuration persist. Workspaces and output storage belong
+/// to each run, so mutable evaluator state is never implicitly carried forward.
+#[cfg(feature = "parallel")]
+#[derive(Debug)]
+pub struct ParallelExecutor {
+    /// Dedicated threads retained until the executor is dropped.
+    pool: rayon::ThreadPool,
+    /// Requested bounds applied to every batch.
+    config: ParallelConfig,
+}
+
+#[cfg(feature = "parallel")]
+impl ParallelExecutor {
+    /// Creates a dedicated pool with worker capacity fixed for its lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Rayon cannot construct the dedicated worker pool.
+    pub fn new(config: ParallelConfig) -> Result<Self, rayon::ThreadPoolBuildError> {
+        let available = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(config.workers.get().min(available.get()))
+            .build()?;
+        Ok(Self { pool, config })
+    }
+
+    /// Runs a bounded batch on the existing pool in canonical trial order.
+    ///
+    /// The evaluator contract and failure ordering are the same as [`run_parallel`].
+    /// Every run validates input and allocates all batch storage before invoking
+    /// fresh workspace factories on the caller thread, once per nonempty shard.
+    /// All factories must succeed before evaluation starts. Empty batches invoke
+    /// no callbacks. Workspaces are dropped after the batch, including on failure;
+    /// the pool remains available for later runs without creating new threads.
+    ///
+    /// # Errors
+    ///
+    /// Returns batch validation/allocation or workspace-initialization failures
+    /// before evaluation. When unwinding is enabled, callback panics are caught;
+    /// evaluator panics join all shards, select the lowest failing shard identity,
+    /// and discard partial output without retries.
+    pub fn run<C, O, E, W, WE>(
+        &self,
+        master_seed: MasterSeed,
+        trials: impl IntoIterator<Item = TrialSpec<C>>,
+        init_worker: impl FnMut() -> Result<W, WE>,
+        evaluate: impl Fn(&mut W, &C, &TrialContext) -> Result<O, E> + Send + Sync,
+    ) -> Result<Vec<TrialRecord<O, E>>, ParallelRunError<WE>>
+    where
+        C: Send + Sync,
+        O: Send,
+        E: Send,
+        W: Send,
+    {
+        run_parallel_with_pool(
+            master_seed,
+            trials,
+            self.config,
+            Some(&self.pool),
+            init_worker,
+            evaluate,
+        )
     }
 }
 
@@ -882,6 +967,7 @@ impl<T> Drop for RecordRange<'_, T> {
 /// canonical shard owns exactly one mutable workspace, initialized on the caller
 /// thread. All storage and the dedicated pool are prepared before factories run;
 /// all factories succeed before any evaluation begins. Empty input needs neither.
+/// Use [`ParallelExecutor`] to reuse a dedicated pool across multiple batches.
 ///
 /// # Errors
 ///
@@ -894,6 +980,25 @@ pub fn run_parallel<C, O, E, W, WE>(
     master_seed: MasterSeed,
     trials: impl IntoIterator<Item = TrialSpec<C>>,
     config: ParallelConfig,
+    init_worker: impl FnMut() -> Result<W, WE>,
+    evaluate: impl Fn(&mut W, &C, &TrialContext) -> Result<O, E> + Send + Sync,
+) -> Result<Vec<TrialRecord<O, E>>, ParallelRunError<WE>>
+where
+    C: Send + Sync,
+    O: Send,
+    E: Send,
+    W: Send,
+{
+    run_parallel_with_pool(master_seed, trials, config, None, init_worker, evaluate)
+}
+
+/// Shares batch ownership and callback ordering between one-shot and reused pools.
+#[cfg(feature = "parallel")]
+fn run_parallel_with_pool<C, O, E, W, WE>(
+    master_seed: MasterSeed,
+    trials: impl IntoIterator<Item = TrialSpec<C>>,
+    config: ParallelConfig,
+    pool: Option<&rayon::ThreadPool>,
     mut init_worker: impl FnMut() -> Result<W, WE>,
     evaluate: impl Fn(&mut W, &C, &TrialContext) -> Result<O, E> + Send + Sync,
 ) -> Result<Vec<TrialRecord<O, E>>, ParallelRunError<WE>>
@@ -914,8 +1019,14 @@ where
         .try_reserve_exact(ordered.len())
         .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
 
-    let available = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-    let workers = config.workers.get().min(ordered.len()).min(available.get());
+    let capacity = pool.map_or_else(
+        || {
+            let available = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+            config.workers.get().min(available.get())
+        },
+        rayon::ThreadPool::current_num_threads,
+    );
+    let workers = capacity.min(ordered.len());
     let mut workspaces = Vec::new();
     workspaces
         .try_reserve_exact(workers)
@@ -945,10 +1056,16 @@ where
         });
     }
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
-        .build()
-        .map_err(ParallelRunError::Pool)?;
+    let owned_pool;
+    let pool = if let Some(pool) = pool {
+        pool
+    } else {
+        owned_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .map_err(ParallelRunError::Pool)?;
+        &owned_pool
+    };
     for worker in 0..workers {
         let workspace = catch_callback(&mut init_worker)
             .map_err(|()| ParallelRunError::WorkerFactoryPanic { worker })?

@@ -36,6 +36,8 @@ available in this checkout; it has not been published as a new crates.io release
 - Schedule explicit `TrialSpec` values with `CandidateId` and `ReplicationId`.
   `run_serial_bounded` rejects duplicate identities and oversized batches before
   evaluation, and returns records ordered by `TrialId`.
+  Batch independent candidates in one runner call. Pass `&candidate` to
+  `FixedReplications::trials` to share large inputs without cloning their contents.
 - Replay uses the unchanged V1 keyed BLAKE3/ChaCha12 protocol. Retain `ReplayKey`,
   candidate inputs, and evaluator configuration. Named common-random streams
   share noise across candidates; `ValidationHoldout` separates validation noise.
@@ -48,6 +50,11 @@ available in this checkout; it has not been published as a new crates.io release
   configuration, and unobservable scratch for worker-count-independent results.
   Shards write directly into disjoint ranges of one final result allocation;
   initialization guards drop partial results on failure without a second buffer.
+  For repeated batches, construct `ParallelExecutor::new(config)` once and call
+  `executor.run(seed, trials, init_worker, evaluate)`. Worker capacity is fixed at
+  construction; each batch initializes fresh workspaces on its caller thread.
+  Empty batches invoke no callbacks, and failed batches do not invalidate the
+  executor. Prefer serial execution when individual batches are very cheap.
 - Setup failures are run-level errors; evaluator `Err` values remain ordered
   trial records. With unwinding enabled, callback panics discard partial output
   and return a run-level error without retries. This does not roll back callback

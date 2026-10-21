@@ -148,12 +148,12 @@ fn serial_workload_panic_discards_partial_results_without_retry() {
 #[cfg(feature = "parallel")]
 mod parallel {
     use super::*;
-    use simul::experiment::{run_parallel, ParallelConfig, ParallelRunError};
+    use simul::experiment::{run_parallel, ParallelConfig, ParallelExecutor, ParallelRunError};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn parallel_matches_serial_across_requested_worker_counts() {
+    fn parallel_and_reused_executor_match_serial_across_requested_worker_counts() {
         let evaluate = |candidate: &u64, context: &TrialContext| {
             if context.key().replication().value() == 0 {
                 Err(*candidate)
@@ -182,18 +182,49 @@ mod parallel {
                 Err(error) => panic!("parallel run failed: {error:?}"),
             };
             assert_eq!(parallel, serial);
+            let executor = ParallelExecutor::new(ParallelConfig::new(nonzero(workers), nonzero(4)))
+                .unwrap_or_else(|error| panic!("pool construction failed: {error:?}"));
+            let capacity = std::thread::available_parallelism()
+                .map_or(1, NonZeroUsize::get)
+                .min(workers);
+            let caller = std::thread::current().id();
+            let dropped = AtomicUsize::new(0);
+            let mut factories = 0;
+            for round in 0..3 {
+                let mut batch = trials();
+                batch.rotate_left(round);
+                let records = executor
+                    .run(
+                        MASTER_SEED,
+                        batch,
+                        || {
+                            assert_eq!(caller, std::thread::current().id());
+                            factories += 1;
+                            Ok::<_, Infallible>((Tracked(&dropped), [0_u64; 3]))
+                        },
+                        |(_, scratch), candidate, context| {
+                            *scratch = evaluate(candidate, context)?;
+                            Ok::<_, u64>(*scratch)
+                        },
+                    )
+                    .unwrap_or_else(|error| panic!("reused run failed: {error:?}"));
+                assert_eq!(serial, records);
+                assert_eq!((round + 1) * capacity.min(4), factories);
+                assert_eq!(factories, dropped.load(Ordering::SeqCst));
+            }
         }
     }
 
     #[test]
-    fn parallel_rejects_invalid_batches_before_callbacks() {
+    fn executor_rejects_invalid_batches_before_callbacks() {
         let factories = AtomicUsize::new(0);
         let evaluations = AtomicUsize::new(0);
         for (batch, limit) in [(vec![trial(2, 0), trial(2, 0)], 4), (trials().to_vec(), 3)] {
-            let result = run_parallel(
+            let executor = ParallelExecutor::new(ParallelConfig::new(nonzero(2), nonzero(limit)))
+                .unwrap_or_else(|error| panic!("pool construction failed: {error:?}"));
+            let result = executor.run(
                 MASTER_SEED,
                 batch,
-                ParallelConfig::new(nonzero(2), nonzero(limit)),
                 || {
                     factories.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, Infallible>(())
@@ -223,27 +254,29 @@ mod parallel {
     }
 
     #[test]
-    fn worker_initialization_failure_prevents_all_evaluation() {
+    fn executor_initialization_failure_prevents_evaluation_and_allows_reuse() {
         let workers = std::thread::available_parallelism()
             .map_or(1, NonZeroUsize::get)
             .min(2);
+        let executor = ParallelExecutor::new(ParallelConfig::new(nonzero(2), nonzero(4)))
+            .unwrap_or_else(|error| panic!("pool construction failed: {error:?}"));
         for fail_at in 0..workers {
             let mut factories = 0;
             let evaluations = AtomicUsize::new(0);
-            let result = run_parallel(
+            let dropped = AtomicUsize::new(0);
+            let result = executor.run(
                 MASTER_SEED,
                 trials(),
-                ParallelConfig::new(nonzero(2), nonzero(4)),
                 || {
                     let worker = factories;
                     factories += 1;
                     if worker == fail_at {
                         Err(Rc::new("initialization"))
                     } else {
-                        Ok(())
+                        Ok(Tracked(&dropped))
                     }
                 },
-                |(), _, _| {
+                |_, _, _| {
                     evaluations.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, Infallible>(())
                 },
@@ -255,6 +288,20 @@ mod parallel {
             ));
             assert_eq!(factories, fail_at + 1);
             assert_eq!(evaluations.load(Ordering::SeqCst), 0);
+            assert_eq!(fail_at, dropped.load(Ordering::SeqCst));
+            let recovered = executor
+                .run(
+                    MASTER_SEED,
+                    trials(),
+                    || Ok::<_, Infallible>(()),
+                    |(), _, context| Ok::<_, Infallible>(samples(context)),
+                )
+                .unwrap_or_else(|error| panic!("recovery failed: {error:?}"));
+            let serial = run_serial(MASTER_SEED, trials(), |_, context| {
+                Ok::<_, Infallible>(samples(context))
+            })
+            .unwrap_or_else(|error| panic!("serial run failed: {error:?}"));
+            assert_eq!(serial, recovered);
         }
     }
 
@@ -273,15 +320,55 @@ mod parallel {
         }
     }
 
+    #[test]
+    fn executor_reuses_threads_with_fresh_workspaces_across_empty_batches() {
+        let executor = ParallelExecutor::new(ParallelConfig::new(nonzero(1), nonzero(4)))
+            .unwrap_or_else(|error| panic!("pool construction failed: {error:?}"));
+        let caller = std::thread::current().id();
+        let mut thread = None;
+        let mut factories = 0;
+        let dropped = AtomicUsize::new(0);
+        for length in [1, 0, 4, 0, 2] {
+            let batch: Vec<_> = trials().into_iter().take(length).collect();
+            let records = executor
+                .run(
+                    MASTER_SEED,
+                    batch,
+                    || {
+                        assert_eq!(caller, std::thread::current().id());
+                        factories += 1;
+                        Ok::<_, Infallible>((Tracked(&dropped), 0))
+                    },
+                    |(_, count), _, _| {
+                        let ordinal = *count;
+                        *count += 1;
+                        Ok::<_, Infallible>((std::thread::current().id(), ordinal))
+                    },
+                )
+                .unwrap_or_else(|error| panic!("reused run failed: {error:?}"));
+            assert_eq!(length, records.len());
+            for (ordinal, record) in records.iter().enumerate() {
+                let result = record.result;
+                let Ok((worker, count)) = result;
+                assert_ne!(worker, caller);
+                assert_eq!(*thread.get_or_insert(worker), worker);
+                assert_eq!(ordinal, count);
+            }
+            assert_eq!(factories, dropped.load(Ordering::SeqCst));
+        }
+        assert_eq!(3, factories);
+    }
+
     #[cfg(panic = "unwind")]
     #[test]
-    fn worker_factory_panic_prevents_evaluation_without_retry() {
+    fn executor_factory_panic_prevents_evaluation_and_allows_reuse() {
         let mut factories = 0;
         let evaluations = AtomicUsize::new(0);
-        let result = run_parallel(
+        let executor = ParallelExecutor::new(ParallelConfig::new(nonzero(1), nonzero(4)))
+            .unwrap_or_else(|error| panic!("pool construction failed: {error:?}"));
+        let result = executor.run(
             MASTER_SEED,
             trials(),
-            ParallelConfig::new(nonzero(1), nonzero(4)),
             || -> Result<(), Infallible> {
                 factories += 1;
                 panic!("factory panic");
@@ -297,18 +384,33 @@ mod parallel {
         ));
         assert_eq!(factories, 1);
         assert_eq!(evaluations.load(Ordering::SeqCst), 0);
+        let recovered = executor
+            .run(
+                MASTER_SEED,
+                trials(),
+                || Ok::<_, Infallible>(()),
+                |(), _, context| Ok::<_, Infallible>(samples(context)),
+            )
+            .unwrap_or_else(|error| panic!("recovery failed: {error:?}"));
+        let serial = run_serial(MASTER_SEED, trials(), |_, context| {
+            Ok::<_, Infallible>(samples(context))
+        })
+        .unwrap_or_else(|error| panic!("serial run failed: {error:?}"));
+        assert_eq!(serial, recovered);
     }
 
     #[cfg(panic = "unwind")]
     #[test]
-    fn worker_workload_panic_discards_partial_results_without_retry() {
+    fn executor_workload_panic_discards_partial_results_and_allows_reuse() {
         let evaluations = AtomicUsize::new(0);
-        let result = run_parallel(
+        let executor = ParallelExecutor::new(ParallelConfig::new(nonzero(1), nonzero(4)))
+            .unwrap_or_else(|error| panic!("pool construction failed: {error:?}"));
+        let dropped = AtomicUsize::new(0);
+        let result = executor.run(
             MASTER_SEED,
             trials(),
-            ParallelConfig::new(nonzero(1), nonzero(4)),
-            || Ok::<_, Infallible>(()),
-            |(), _, _| {
+            || Ok::<_, Infallible>(Tracked(&dropped)),
+            |_, _, _| {
                 let previous = evaluations.fetch_add(1, Ordering::SeqCst);
                 assert_ne!(previous, 1, "workload panic");
                 Ok::<_, Infallible>(())
@@ -319,6 +421,21 @@ mod parallel {
             Err(ParallelRunError::WorkerWorkloadPanic { worker: 0 })
         ));
         assert_eq!(evaluations.load(Ordering::SeqCst), 2);
+        assert_eq!(1, dropped.load(Ordering::SeqCst));
+        let recovered = executor
+            .run(
+                MASTER_SEED,
+                trials(),
+                || Ok::<_, Infallible>(Tracked(&dropped)),
+                |_, _, context| Ok::<_, Infallible>(samples(context)),
+            )
+            .unwrap_or_else(|error| panic!("recovery failed: {error:?}"));
+        let serial = run_serial(MASTER_SEED, trials(), |_, context| {
+            Ok::<_, Infallible>(samples(context))
+        })
+        .unwrap_or_else(|error| panic!("serial run failed: {error:?}"));
+        assert_eq!(serial, recovered);
+        assert_eq!(2, dropped.load(Ordering::SeqCst));
     }
 
     #[derive(Debug)]
