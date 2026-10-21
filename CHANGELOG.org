@@ -1,5 +1,41 @@
 #+title: Changelog
 
+* DONE Cut per-message, per-trial, and search overhead
+Simulations with at most eight agents route messages by scanning names; larger
+ones hash names with rustc-hash, and Clippy bans the std hash maps. Built-in
+producers cache their target identity per simulation layout, so an agent cloned
+into another simulation resolves again. Still-sleeping agents skip the callback
+path, and small simulations reserve 16 messages per history and queue.
+SeededRandomSearch keeps untold proposals in a token window instead of a BTreeMap,
+derives told tokens instead of storing them, and validates small tell batches
+without allocating. Seed derivation hashes the concatenated V1 fields in one BLAKE3
+call; frozen seed vectors, including new long-tag vectors, are unchanged. CEM
+sampling skips fmod for in-domain coordinates with bit-identical results.
+With the AgentId change, retired instructions on the deterministic workloads fall
+32-81% for simulations, 56% for a 1,000-candidate simulation search, 4-19% for
+trial streams and search bookkeeping, and 5% for CEM, with identical outputs.
+
+* DONE Identify message agents by AgentId
+Agents have dense AgentId identities in construction order. Messages carry source
+and destination identities instead of names, so a send without a payload allocates
+nothing. Message::new(time) and Message::new_with_payload(time, payload) no longer
+take names; source is None for initial queue entries, and destination is None when
+a target matches no agent, which is recorded without delivery as before.
+AgentContext::id replaces handle; send_to sends by identity, agent_id resolves a
+name once, and Simulation::agent and agent_id translate identities.
+SimulationError::TooManyAgents rejects more than u32::MAX agents.
+
+* DONE Refresh dependencies and tooling (October 2026)
+Pin Rust 1.99.1 and update rand to 0.10.3, rayon to 1.12.0, compatible Cargo
+lockfile dependencies, and the Nix flake inputs. Update Dylint to 6.2.0 with
+nightly-2026-08-20. Keep the library MSRV at 1.85; tests and benchmarks require 1.86.
+Clippy 1.99's assert_is_empty lint reworded four test assertions. The example
+replay comparison is unchanged by the refresh. Verify native tests, Clippy,
+formatting, audit, docs, licenses, unused dependencies, Rust 1.85 library
+compilation, and the Nix package and dev shell on Apple Silicon. All four Nix
+platforms evaluate; Intel macOS and Linux builds were not exercised.
+Dylint completes with non-fatal assertion-order and crate-wide-allow warnings.
+
 * DONE Avoid temporary allocations for singleton search results
 Skip within-batch duplicate sets and the canonical sorting buffer when a tell
 contains one result. Preserve identity validation and atomic rejection of invalid
