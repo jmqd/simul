@@ -1,6 +1,5 @@
 //! Engine-independent deterministic experiment execution and reduction.
 
-use blake3::Hasher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use std::cmp::Ordering;
@@ -27,6 +26,11 @@ const EXECUTION_NOISE_NAMESPACE: &[u8] = b"simul/v1/execution-noise";
 const HOLDOUT_NAMESPACE: &[u8] = b"simul/v1/validation-holdout";
 /// Scale converting the high 53 bits of a `u64` to the unit interval.
 const U64_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 53) as f64);
+/// Longest derivation input hashed from a stack buffer instead of the heap.
+///
+/// Protocol prefixes and fixed-width fields take at most 104 bytes, so tags of
+/// up to 152 bytes avoid allocation.
+const STACK_DERIVATION_INPUT: usize = 256;
 
 /// A stable candidate identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -291,16 +295,30 @@ impl SeedDeriver {
     }
 
     /// Hashes length-delimited protocol fields under one domain separator.
+    ///
+    /// The fields are concatenated and hashed in one call, which yields the
+    /// same digest as streaming them through an incremental hasher at lower cost.
     fn derive(self, namespace: &[u8], fields: &[&[u8]]) -> DerivedSeed {
-        let mut hasher = Hasher::new_keyed(&self.master.0);
-        hasher.update(ROOT_NAMESPACE);
-        let namespace_length = u64::try_from(namespace.len()).unwrap_or(u64::MAX);
-        hasher.update(&namespace_length.to_le_bytes());
-        hasher.update(namespace);
-        for field in fields {
-            hasher.update(field);
+        let namespace_length = u64::try_from(namespace.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes();
+        let prefix: [&[u8]; 3] = [ROOT_NAMESPACE, &namespace_length, namespace];
+        let length: usize = prefix.iter().chain(fields).map(|part| part.len()).sum();
+        let mut stack = [0_u8; STACK_DERIVATION_INPUT];
+        let mut heap = Vec::new();
+        let input = if length <= STACK_DERIVATION_INPUT {
+            &mut stack[..length]
+        } else {
+            heap.resize(length, 0);
+            heap.as_mut_slice()
+        };
+        let mut offset = 0;
+        for part in prefix.iter().chain(fields) {
+            let end = offset + part.len();
+            input[offset..end].copy_from_slice(part);
+            offset = end;
         }
-        DerivedSeed(*hasher.finalize().as_bytes())
+        DerivedSeed(*blake3::keyed_hash(&self.master.0, input).as_bytes())
     }
 }
 
@@ -1593,6 +1611,9 @@ mod tests {
             seed_hex(trial.common_seed(TrialStream::ExecutionNoise, "aim")),
             seed_hex(trial.independent_seed(TrialStream::LayoutNoise, "object-a-x")),
             seed_hex(trial.independent_seed(TrialStream::ValidationHoldout, "aim")),
+            seed_hex(trial.independent_seed(TrialStream::ExecutionNoise, &"x".repeat(156))),
+            seed_hex(trial.independent_seed(TrialStream::ExecutionNoise, &"x".repeat(157))),
+            seed_hex(trial.common_seed(TrialStream::ExecutionNoise, &"x".repeat(2_000))),
         ];
         assert_eq!(
             [
@@ -1602,6 +1623,9 @@ mod tests {
                 "df7f9525e41471699734d85ae21acd50305b3ec8814ce422fb9b669e6594b6af",
                 "6302bbefbd0a99a1cd8a268a43d4d09b14a6254c8ec0b71655a06ac681b82c07",
                 "e7afea42c51a0e8bda0ff50b9f769e447ddce59374ab45735005836640fde0f8",
+                "9f86dca27e8e7da29be8e270723a5279d8269fe049bca29fdcd0d8356b6c9c2c",
+                "5f2ac546d7959e4a6d24ccbb9e756952f9930448b6a2b94abbc143e724325e29",
+                "826b2c1861f8c3dcf4ec5b8872b16a5266488494eda35db39c32ee66ef23cfd1",
             ],
             vectors
         );
