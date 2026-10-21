@@ -30,7 +30,15 @@ pub use agent::*;
 pub use message::*;
 
 use log::{debug, info, log_enabled, Level};
-use std::collections::{hash_map::Entry, HashMap};
+use rustc_hash::FxHashMap;
+use std::collections::hash_map::Entry;
+
+/// Per-agent statistics keyed by agent name; public methods return std maps.
+#[allow(
+    clippy::disallowed_types,
+    reason = "public statistics keep returning std HashMap"
+)]
+type NameStatistics<V> = std::collections::HashMap<String, V>;
 
 /// `DiscreteTime` is a Simulation's internal representation of time.
 pub type DiscreteTime = u64;
@@ -81,7 +89,7 @@ pub struct Simulation {
 
     /// Maps agent names to handles in simulations too large for linear name
     /// scans; empty otherwise.
-    agent_name_handle_map: HashMap<String, usize>,
+    agent_name_handle_map: FxHashMap<String, usize>,
 }
 
 /// The parameters to create a Simulation.
@@ -157,7 +165,7 @@ impl Simulation {
     /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a name.
     pub fn try_new(parameters: SimulationParameters) -> Result<Self, SimulationError> {
         let initializers = &parameters.agent_initializers;
-        let mut agent_name_handle_map = HashMap::new();
+        let mut agent_name_handle_map = FxHashMap::default();
         if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
             for (i, agent_initializer) in initializers.iter().enumerate() {
                 let name = &agent_initializer.options.name;
@@ -389,8 +397,8 @@ impl Simulation {
     /// A helper to calculate the average waiting time to process items.
     /// Note: This function will likely go away; it is an artifact of prototyping.
     #[must_use]
-    pub fn calc_avg_wait_statistics(&self) -> HashMap<String, f64> {
-        let mut data = HashMap::new();
+    pub fn calc_avg_wait_statistics(&self) -> NameStatistics<f64> {
+        let mut data = NameStatistics::new();
         for agent in self
             .agents
             .iter()
@@ -418,8 +426,8 @@ impl Simulation {
     /// Calculates the statistics of queue lengths.
     /// Mostly useful for checking which agents still have queues of work after halting.
     #[must_use]
-    pub fn calc_queue_len_statistics(&self) -> HashMap<String, usize> {
-        let mut data = HashMap::new();
+    pub fn calc_queue_len_statistics(&self) -> NameStatistics<usize> {
+        let mut data = NameStatistics::new();
 
         for agent in &self.agents {
             data.insert(agent.name.clone(), agent.state.queue.len());
@@ -430,8 +438,8 @@ impl Simulation {
 
     /// Calculates the length of the consumed messages for each Agent.
     #[must_use]
-    pub fn calc_consumed_len_statistics(&self) -> HashMap<String, usize> {
-        let mut data = HashMap::new();
+    pub fn calc_consumed_len_statistics(&self) -> NameStatistics<usize> {
+        let mut data = NameStatistics::new();
 
         for agent in &self.agents {
             data.insert(agent.name.clone(), agent.state.consumed.len());
@@ -442,8 +450,8 @@ impl Simulation {
 
     /// Calculates the length of the produced messages for each Agent.
     #[must_use]
-    pub fn calc_produced_len_statistics(&self) -> HashMap<String, usize> {
-        let mut data = HashMap::new();
+    pub fn calc_produced_len_statistics(&self) -> NameStatistics<usize> {
+        let mut data = NameStatistics::new();
 
         for agent in &self.agents {
             data.insert(agent.name.clone(), agent.state.produced.len());

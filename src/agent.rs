@@ -2,7 +2,8 @@ use crate::{message::Message, DiscreteTime};
 use dyn_clone::DynClone;
 use rand_distr::Distribution;
 use rand_distr::Poisson;
-use std::collections::{HashMap, VecDeque};
+use rustc_hash::FxHashMap;
+use std::collections::VecDeque;
 
 /// Possible states an Agent can be in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
@@ -129,7 +130,7 @@ pub struct AgentContext<'a> {
     pub(crate) peers: Option<(&'a [SimulationAgent], &'a [SimulationAgent])>,
 
     /// Maps agent names to stable handles when `peers` is absent.
-    pub(crate) agent_name_handle_map: &'a HashMap<String, usize>,
+    pub(crate) agent_name_handle_map: &'a FxHashMap<String, usize>,
 
     pub state: &'a AgentState,
 

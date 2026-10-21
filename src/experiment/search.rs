@@ -1,8 +1,9 @@
 //! Tokenized deterministic ask/tell search strategies.
 
 use super::{CandidateId, CandidateSummary, MasterSeed, SeedDeriver, SelectionPolicy, TrialRng};
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 /// Largest tell batch checked for repeated identities by scanning earlier
 /// entries, which avoids allocating and hashing two sets per call.
@@ -129,7 +130,7 @@ pub struct SeededRandomSearch<C, S, P, G> {
     /// longer pending has already been told.
     pending: BTreeMap<ProposalToken, C>,
     /// Candidate identities already incorporated by `tell`.
-    completed_candidates: HashSet<CandidateId>,
+    completed_candidates: FxHashSet<CandidateId>,
     /// Current winner and its original selecting evidence.
     best: Option<SearchResult<C, S>>,
 }
@@ -152,7 +153,7 @@ where
             generator,
             policy,
             pending: BTreeMap::new(),
-            completed_candidates: HashSet::new(),
+            completed_candidates: FxHashSet::default(),
             best: None,
         }
     }
@@ -179,8 +180,10 @@ where
                 )?;
             }
         } else {
-            let mut batch_tokens = HashSet::with_capacity(evaluated.len());
-            let mut batch_candidates = HashSet::with_capacity(evaluated.len());
+            let mut batch_tokens =
+                FxHashSet::with_capacity_and_hasher(evaluated.len(), FxBuildHasher);
+            let mut batch_candidates =
+                FxHashSet::with_capacity_and_hasher(evaluated.len(), FxBuildHasher);
             for told in evaluated {
                 self.validate_tell(
                     told,

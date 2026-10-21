@@ -1,11 +1,11 @@
 //! An example of running simulations for different billiards rule sets.
 use rand::prelude::*;
 use rand_distr::weighted::WeightedIndex;
+use rustc_hash::FxHashMap;
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
@@ -248,7 +248,7 @@ fn main() {
     println!("luck_chance\tbetter_player_win_percent");
 
     for pct in [0.00, 0.20, 0.40, 0.50] {
-        let mut count: HashMap<String, u32> = HashMap::new();
+        let mut count: FxHashMap<String, u32> = FxHashMap::default();
         for _ in 0..32768 {
             *count
                 .entry(nine_ball_apa_rules_simulation_alice_vs_john(
@@ -271,7 +271,7 @@ fn main() {
     println!("luck_chance\tbetter_player_win_percent");
 
     for pct in [0.00, 0.20, 0.40, 0.50] {
-        let mut count: HashMap<String, u32> = HashMap::new();
+        let mut count: FxHashMap<String, u32> = FxHashMap::default();
         let mut starting_player = 0;
         for _ in 0..32768 {
             *count

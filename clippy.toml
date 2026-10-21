@@ -1,0 +1,4 @@
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use rustc_hash::FxHashMap: SipHash dominated short-key lookups (STD-1, STD-2)" },
+    { path = "std::collections::HashSet", reason = "use rustc_hash::FxHashSet: SipHash dominated short-key lookups (STD-1, STD-2)" },
+]
