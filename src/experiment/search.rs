@@ -570,8 +570,7 @@ mod tests {
         let sampled = sample_bounded(seed, 16, &bounds).expect("finite bounds should sample");
         let deriver = SeedDeriver::new(seed);
         for (token, candidate) in sampled.iter().enumerate() {
-            for (dimension, (&actual, &(lower, upper))) in
-                candidate.iter().zip(&bounds).enumerate()
+            for (dimension, (&actual, &(lower, upper))) in candidate.iter().zip(&bounds).enumerate()
             {
                 let mut rng = deriver
                     .proposal_dimension_seed(
