@@ -156,7 +156,7 @@ pub enum MessageProcessingStatus {
     InProgress,
 }
 
-// The Context holds the capability for Agents to act on the world
+/// The capability for agents to act on the world.
 ///
 /// Routing identities are read-only to callbacks.
 ///

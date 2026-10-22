@@ -645,8 +645,9 @@ impl Simulation {
         callbacks
     }
 
-    /// A helper to calculate the average waiting time to process items.
-    /// Note: This function will likely go away; it is an artifact of prototyping.
+    /// Returns each agent's mean wait from queueing to completion over its
+    /// consumed messages, keyed by agent name. Agents that consumed nothing
+    /// are omitted.
     #[must_use]
     pub fn calc_avg_wait_statistics(&self) -> NameStatistics<f64> {
         let mut data = NameStatistics::new();

@@ -111,8 +111,8 @@ pub trait SearchStrategy<C, S> {
 ///
 /// Untold candidates lie in a window that begins at the oldest untold token
 /// and ends at the next token to issue. A told slot becomes `None` until the
-/// window's front advances past it, so every operation is O(1) without the
-/// node allocations of an ordered map.
+/// window's front advances past it, so `push` and `contains` are O(1) and
+/// `remove` is amortized O(1).
 struct PendingProposals<C> {
     /// Token of the window's first slot.
     first_token: u64,

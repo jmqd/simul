@@ -708,7 +708,7 @@ pub fn run_serial_bounded<C, O, E>(
     Ok(records)
 }
 
-/// Collects a bounded batch and validates its allocation-free canonical ordering.
+/// Collects at most `limit` trials, sorts them by identity, and rejects duplicates.
 fn collect_canonical<C>(
     trials: impl IntoIterator<Item = TrialSpec<C>>,
     limit: NonZeroUsize,

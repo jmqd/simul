@@ -36,7 +36,7 @@ audit:
 doc:
     cargo doc --all-features
 
-# Check licenses (logic ported from check.sh)
+# Check that every dependency is MIT, Apache-2.0, or BSD-2/3 licensed
 check-licenses:
     @echo "Checking licenses..."
     @# Only grep's "no disallowed licenses" status is a successful check.
