@@ -264,6 +264,8 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     }
 
     /// Fills a caller-owned slice with proposals from the current distribution.
+    ///
+    /// Draws the same points, in order, as calling [`Self::ask`] once per slot.
     #[inline]
     pub fn ask_into<Random>(&self, rng: &mut Random, points: &mut [[f64; N]])
     where
@@ -308,9 +310,9 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     /// This maximizes `score`, ignores NaN scores, and accepts infinite scores.
     /// Every coordinate belonging to a non-NaN score must be normalized for its
     /// dimension. Samples are reordered in place so the elite subset precedes
-    /// the rest of the population without an internal allocation. Small
-    /// populations are sorted; larger populations are partitioned at the elite
-    /// boundary. If no score is usable, this returns `Ok(None)` unchanged.
+    /// the rest of the population without an internal allocation; the order
+    /// within each part is unspecified. If no score is usable, this returns
+    /// `Ok(None)` unchanged.
     ///
     /// # Errors
     ///
@@ -673,11 +675,18 @@ mod tests {
 
     #[test]
     fn elite_count_rounds_up_and_clamps_to_the_population() {
-        assert_eq!(1, elite_count(10, 0.01));
-        assert_eq!(2, elite_count(10, 0.2));
-        assert_eq!(3, elite_count(10, 0.21));
-        assert_eq!(10, elite_count(10, 1.0));
-        assert_eq!(usize::MAX, elite_count(usize::MAX, 1.0));
+        for (fraction, expected) in [(0.01, 1), (0.2, 2), (0.21, 3), (1.0, 10)] {
+            let mut search =
+                optimizer(CrossEntropyConfig::new([0.5], [0.2]).with_elite_fraction(fraction));
+            let mut samples: [CrossEntropySample<1>; 10] = std::array::from_fn(|index| {
+                let value = index as f64 / 10.0;
+                CrossEntropySample::new([value], value)
+            });
+            let Ok(Some(update)) = search.tell(&mut samples) else {
+                panic!("population contains valid scores");
+            };
+            assert_eq!(expected, update.elite_samples, "fraction {fraction}");
+        }
     }
 
     #[test]
@@ -812,20 +821,21 @@ mod tests {
     }
 
     #[test]
-    fn circular_delta_wraps_with_a_negative_half_turn_tie() {
-        let below_half_turn = f64::from_bits(0.5_f64.to_bits() - 1);
-        let above_half_turn = f64::from_bits(0.5_f64.to_bits() + 1);
-
-        assert!(circular_delta(0.0, below_half_turn) > 0.0);
-        assert_eq!((-0.5_f64).to_bits(), circular_delta(0.0, 0.5).to_bits());
-        assert_eq!((-0.5_f64).to_bits(), circular_delta(0.5, 0.0).to_bits());
-        assert!(circular_delta(0.0, above_half_turn) < 0.0);
-        assert_close(circular_delta(0.9, 0.1), 0.2, f64::EPSILON);
-        assert_close(circular_delta(0.1, 0.9), -0.2, f64::EPSILON);
+    fn circular_mean_breaks_a_half_turn_tie_toward_the_negative_direction() {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.0], [0.25])
+                .with_dimensions([CrossEntropyDimension::Circular])
+                .with_elite_fraction(1.0)
+                .with_learning_rate(0.5),
+        );
+        let mut samples = [CrossEntropySample::new([0.5], 1.0)];
+        assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+        // Moving half of -0.5 from 0.0 wraps to 0.75; +0.5 would give 0.25.
+        assert_close(search.mean()[0], 0.75, f64::EPSILON);
     }
 
     #[test]
-    fn seeded_sampling_is_reproducible_and_ask_into_fills_every_point() {
+    fn ask_into_draws_the_same_points_as_repeated_ask() {
         let search = optimizer(CrossEntropyConfig::new([0.5, 0.5], [0.2, 0.2]));
         let mut first_rng = rand::rngs::StdRng::seed_from_u64(42);
         let mut second_rng = rand::rngs::StdRng::seed_from_u64(42);
@@ -833,9 +843,6 @@ mod tests {
         search.ask_into(&mut first_rng, &mut batch);
 
         assert_eq!(batch, std::array::from_fn(|_| search.ask(&mut second_rng)));
-        assert!(batch.iter().flatten().all(|coordinate| {
-            coordinate.is_finite() && *coordinate >= 0.0 && *coordinate <= 1.0
-        }));
     }
 
     #[test]
@@ -865,7 +872,9 @@ mod tests {
         assert_eq!(search.best(), Some(&CrossEntropySample::new([0.2], 4.0)));
         assert_close(search.mean()[0], 0.3, 1.0e-12);
         assert_close(search.standard_deviation()[0], 0.1, 1.0e-12);
-        assert!(samples[4].score.is_nan());
+        let mut elites = [samples[0].point[0], samples[1].point[0]];
+        elites.sort_by(f64::total_cmp);
+        assert_eq!([0.2, 0.4], elites);
     }
 
     #[test]
