@@ -20,7 +20,6 @@
 //!   distributed systems, performance engineering/analysis, and so on.
 //!
 
-extern crate self as simul;
 pub mod agent;
 /// Deterministic engine-independent experiment, reduction, and search APIs.
 pub mod experiment;
