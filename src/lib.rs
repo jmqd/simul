@@ -764,18 +764,6 @@ impl Simulation {
                     info!("Received a halt interrupt: {reason:?}");
                     self.mode = SimulationMode::Completed;
                 }
-
-                AgentCommandType::Sleep(ticks) => {
-                    let Some(sleep_until) = self.time.checked_add(ticks) else {
-                        panic!("agent wake time exceeds u64::MAX");
-                    };
-                    let commanding_agent = &mut self.agents[command.agent_handle];
-
-                    commanding_agent.state.mode = AgentMode::AsleepUntil(sleep_until);
-                    if let Some(active) = schedule.as_deref_mut() {
-                        active.sleep(command.agent_handle, sleep_until);
-                    }
-                }
             }
         }
     }

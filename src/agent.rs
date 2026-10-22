@@ -145,8 +145,6 @@ pub struct AgentCommand {
 pub enum AgentCommandType {
     /// Send a message to another agent
     SendMessage(Message),
-    /// Sleep for a relative number of ticks
-    Sleep(DiscreteTime),
     /// Stop the simulation
     HaltSimulation(String),
 }
@@ -176,7 +174,7 @@ pub struct AgentContext<'a> {
     /// The current simulation time.
     pub time: DiscreteTime,
 
-    /// Internal buffer for commands (messages, sleep requests, etc.)
+    /// Internal buffer for messages and halt requests.
     pub(crate) commands: &'a mut Vec<AgentCommand>,
 
     /// Sleep requested by the agent during the current tick.
