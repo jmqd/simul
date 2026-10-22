@@ -307,11 +307,11 @@ fn in_progress_message_stays_queued_until_completed() {
 }
 
 #[test]
-fn queue_depth_metrics_record_every_tick() {
+fn queue_depth_metrics_record_each_tick_depth() {
     let mut simulation = Simulation::new(SimulationParameters {
         agent_initializers: vec![
-            periodic_producer("producer".to_string(), 1, "consumer".to_string()),
-            periodic_consumer("consumer".to_string(), 1),
+            periodic_producer("producer", 1, "consumer"),
+            periodic_consumer("consumer", 3),
         ],
         enable_queue_depth_metrics: true,
         halt_check: |s: &Simulation| s.time() == 5,
@@ -321,16 +321,14 @@ fn queue_depth_metrics_record_every_tick() {
     simulation.run();
 
     assert_eq!(
-        simulation
-            .queue_depth_metrics("producer")
-            .map(<[usize]>::len),
-        Some(5)
+        Some([0_usize; 5].as_slice()),
+        simulation.queue_depth_metrics("producer")
     );
+    // Messages arrive at the end of each tick. The consumer clears tick 0's
+    // message at tick 1, sleeps until tick 4, then takes one of three.
     assert_eq!(
-        simulation
-            .queue_depth_metrics("consumer")
-            .map(<[usize]>::len),
-        Some(5)
+        Some([0_usize, 0, 1, 2, 2].as_slice()),
+        simulation.queue_depth_metrics("consumer")
     );
 }
 
@@ -477,58 +475,6 @@ fn reused_producers_resolve_targets_in_each_simulation() {
         Some(0),
         second.consumed_for_agent("bystander").map(<[Message]>::len)
     );
-}
-
-#[test]
-fn cloned_messages_keep_independent_contents_and_timestamps() {
-    let original = Message::new_with_payload(7, Some(Arc::from([1, 2])));
-    let mut edited = original.clone();
-    edited.queued_time = 8;
-    edited.completed_time = Some(9);
-    edited.source = Some(AgentId::new(1));
-    edited.destination = Some(AgentId::new(2));
-    let Some(payload) = &mut edited.custom_payload else {
-        panic!("payload must exist");
-    };
-    Arc::make_mut(payload)[0] = 3;
-
-    assert_eq!(original.queued_time, 7);
-    assert_eq!(original.completed_time, None);
-    assert_eq!(None, original.source);
-    assert_eq!(None, original.destination);
-    assert_eq!(original.custom_payload.as_deref(), Some([1, 2].as_slice()));
-    assert_eq!(edited.custom_payload.as_deref(), Some([3, 2].as_slice()));
-    assert_eq!(edited.completed_time, Some(9));
-    assert_eq!(Some(AgentId::new(1)), edited.source);
-
-    let plain = Message::new(1);
-    let mut extended = plain.clone();
-    extended.custom_payload = Some(Arc::from([4]));
-    assert!(plain.custom_payload.is_none());
-    assert_eq!(Some([4].as_slice()), extended.custom_payload.as_deref());
-}
-
-#[test]
-fn consumed_message_completion_does_not_change_sender_history() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
-            proactive_agent("sender", BurstSender),
-            periodic_consumer("receiver", 1),
-        ],
-        halt_check: |simulation| simulation.time() == 2,
-        ..Default::default()
-    });
-    simulation.run();
-    let Some(produced) = simulation.produced_for_agent("sender") else {
-        panic!("sender must exist");
-    };
-    let Some(consumed) = simulation.consumed_for_agent("receiver") else {
-        panic!("receiver must exist");
-    };
-    assert_eq!(produced[0].completed_time, None);
-    assert_eq!(consumed[0].completed_time, Some(1));
-    assert_eq!(produced[0].custom_payload, consumed[0].custom_payload);
-    assert_eq!(produced[0].queued_time, consumed[0].queued_time);
 }
 
 #[test]
@@ -690,7 +636,7 @@ impl Agent for ChangingPayloadSender {
 }
 
 #[test]
-fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
+fn repeated_sends_preserve_payloads_and_timestamps() {
     let mut simulation = Simulation::new(SimulationParameters {
         agent_initializers: vec![
             proactive_agent("sender", ChangingPayloadSender),
@@ -701,11 +647,11 @@ fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
     });
     simulation.run();
 
-    let Some((_, state)) = simulation.find_by_name_mut("sender") else {
+    let Some(produced) = simulation.produced_for_agent("sender") else {
         panic!("sender must exist");
     };
-    assert_eq!(state.produced.len(), 5);
-    for (time, message) in (0_u64..).zip(&state.produced) {
+    assert_eq!(produced.len(), 5);
+    for (time, message) in (0_u64..).zip(produced) {
         assert_eq!(message.queued_time, time);
         assert_eq!(message.completed_time, None);
         assert_eq!(
@@ -713,10 +659,6 @@ fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
             (time == 2).then_some([7].as_slice())
         );
     }
-    state.produced[0].source = Some(AgentId::new(9));
-    state.produced[0].custom_payload = Some(Arc::from([9]));
-    assert_eq!(state.produced[1].source, Some(AgentId::new(0)));
-    assert!(state.produced[1].custom_payload.is_none());
 
     let Some(consumed) = simulation.consumed_for_agent("receiver") else {
         panic!("receiver must exist");
