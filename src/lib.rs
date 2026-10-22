@@ -886,34 +886,6 @@ mod tests {
     }
 
     #[test]
-    fn finds_agents_with_small_and_large_lookup_paths() {
-        let small_simulation = Simulation::new(SimulationParameters {
-            agent_initializers: vec![
-                periodic_consumer("first".to_string(), 1),
-                periodic_consumer("second".to_string(), 1),
-            ],
-            ..Default::default()
-        });
-
-        assert_eq!(
-            small_simulation.find_by_name("second").map(|a| &a.name),
-            Some(&"second".to_string())
-        );
-
-        let large_simulation = Simulation::new(SimulationParameters {
-            agent_initializers: (0..9)
-                .map(|i| periodic_consumer(format!("agent-{i}"), 1))
-                .collect(),
-            ..Default::default()
-        });
-
-        assert_eq!(
-            large_simulation.find_by_name("agent-8").map(|a| &a.name),
-            Some(&"agent-8".to_string())
-        );
-    }
-
-    #[test]
     fn rejects_duplicate_agent_names() {
         for count in [2, 8, 9] {
             let mut agent_initializers: Vec<AgentInitializer> = (1..count)

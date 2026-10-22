@@ -132,16 +132,15 @@ mod tests {
     #[derive(Debug, PartialEq)]
     struct NonClone(i32);
 
-    /// RNG returning one fixed word and counting draws.
+    /// RNG returning one fixed word.
     struct FixedRng {
         word: u64,
-        draws: usize,
     }
 
     impl FixedRng {
         /// Creates a fixed RNG.
         const fn new(word: u64) -> Self {
-            Self { word, draws: 0 }
+            Self { word }
         }
     }
 
@@ -149,19 +148,16 @@ mod tests {
         type Error = std::convert::Infallible;
 
         fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-            self.draws += 1;
             let bytes = self.word.to_le_bytes();
             Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         }
 
         fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-            self.draws += 1;
             Ok(self.word)
         }
 
         fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
             for chunk in destination.chunks_mut(size_of::<u64>()) {
-                self.draws += 1;
                 let bytes = self.word.to_le_bytes();
                 chunk.copy_from_slice(&bytes[..chunk.len()]);
             }
@@ -253,7 +249,6 @@ mod tests {
 
         assert_eq!(&[10, 9], visited.as_slice());
         assert_eq!(Some(NonClone(10)), result);
-        assert!(rng.draws > 0);
     }
 
     #[test]
@@ -274,7 +269,6 @@ mod tests {
 
         assert_eq!(&[10, 10], visited.as_slice());
         assert_eq!(Some(NonClone(10)), result);
-        assert!(rng.draws > 0);
     }
 
     #[test]

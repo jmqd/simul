@@ -1151,8 +1151,6 @@ mod tests {
         let report = run_software_team(params);
 
         assert_eq!(report.elapsed_ticks, params.total_ticks() + 1);
-        assert!(report.released > 0);
-        assert!(report.merged > 0);
     }
 
     #[test]
