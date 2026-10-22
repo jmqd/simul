@@ -667,12 +667,7 @@ pub fn run_serial<C, O, E>(
     trials: impl IntoIterator<Item = TrialSpec<C>>,
     evaluate: impl FnMut(&C, &TrialContext) -> Result<O, E>,
 ) -> Result<Vec<TrialRecord<O, E>>, RunError> {
-    run_serial_bounded(
-        master_seed,
-        trials,
-        NonZeroUsize::new(usize::MAX).unwrap_or(NonZeroUsize::MIN),
-        evaluate,
-    )
+    run_serial_bounded(master_seed, trials, NonZeroUsize::MAX, evaluate)
 }
 
 /// Runs a serial batch while enforcing a maximum number of retained records.

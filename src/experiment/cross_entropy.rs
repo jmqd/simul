@@ -348,22 +348,20 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
                 generation_best = *sample;
             }
         }
-        if self
-            .best
-            .is_none_or(|best| generation_best.score >= best.score)
-        {
-            self.best = Some(generation_best);
-        }
+        let best = match self.best {
+            Some(best) if best.score > generation_best.score => best,
+            _ => generation_best,
+        };
+        self.best = Some(best);
 
         self.fit(elites);
         self.generation += 1;
-        let best_score = self.best.map_or(generation_best.score, |best| best.score);
         Ok(Some(CrossEntropyUpdate {
             generation: self.generation,
             valid_samples,
             elite_samples,
             generation_best_score: generation_best.score,
-            best_score,
+            best_score: best.score,
         }))
     }
 
