@@ -105,3 +105,84 @@ any state.
 panic on the third candidate leaves =asked: 2, outstanding: 2= for tokens the
 caller never received; the search can never finish. Fix: generate the whole
 batch locally, then commit it to the pending window once.
+** TODO [low] Initial-queue messages are consumed with =destination: None=
+=Message::new= leaves =destination= empty and =Simulation::try_new= keeps
+initial-queue entries as given, so a consumed initial message looks
+undeliverable. This contradicts =src/message.rs:21= and README's description
+of =destination=. Fix: set the owner as destination in =try_new=, or
+document the exception.
+** TODO [low] A callback panic half-applies the tick, and =run()= replays it
+The command buffer is local to =run= and dropped on unwind, but queue pops,
+consumed history, and sleeps are committed per visit. After a caught panic
+and resume: a message counts as consumed while its reply is lost, and agents
+visited before the panic run again at the same time. CHANGELOG ("wake
+transitions stay ordered even if a callback panics") and
+=callback_panic_does_not_wake_later_agents_early= treat resuming as
+supported. Fix: mark the simulation =Failed= and refuse to resume, or keep
+the buffer on the simulation with a per-tick visited guard.
+** TODO [low] Linear reflection at 0 loses precision
+=normalize= in =src/experiment/cross_entropy.rs= reflects via
+=rem_euclid(2.0)=, which rounds =2 + value=. Mean 0, std 0.3: a +1 draw gives
+0.3, a -1 draw gives 0.30000000000000004; with std 1e-200 the -1 draw becomes
+0.0. Fix: reflect =value.abs()= (=r = |v| % 2; if r <= 1 { r } else { 2 - r }=),
+which is exact.
+** TODO [low] Elite count overshoots when the f64 product rounds up
+=elite_count= takes =ceil(n * fraction)= of the rounded product: 100 x 0.07
+gives 7.000000000000001, so 8 elites instead of 7 (also 0.14, 0.28, 0.56).
+The existing test expects decimal meaning (10 x 0.2 -> 2). Fix: snap products
+within a few ulps of an integer before =ceil=, or document the f64 semantics.
+** TODO [low] NaN samples and input order change the CEM update
+Above 12 samples, =select_nth_unstable_by= leaves elites in input-dependent
+order and ties are unbroken. One NaN in front of 16 tied samples moved the
+mean from 0.09375 to 0.15625 and changed =best()=; without ties the fitted
+mean differs in the last bit in ~9% of random populations. Docs say NaN
+scores are "ignored". Fix: break ties with a fixed key (e.g. =total_cmp= on
+the point) and sort the selected elites.
+** TODO [low] =select_best= is order-dependent for NaN Bernoulli summaries
+=BernoulliSummary= fields are =pub=, and =MaximizeBernoulliRate= /
+=MaximizeWilsonLowerBound= compare with =partial_cmp(..).unwrap_or(Equal)=.
+A NaN rate is "equal" to everything, so the fold is intransitive: rates
+(0.9, NaN, 0.5) pick candidate 1 in one order and 2 in another, never the
+0.9 candidate. Fix: =total_cmp= with NaN ranked lowest, or private fields
+so only =finish()= builds summaries.
+** TODO [medium] README documents an API that published 0.5.1 lacks
+README pins =simul = "0.5.1"= but describes =send_to=, =agent_id=, and
+=Option<Arc<[u8]>>= payloads, which docs.rs 0.5.1 does not have; CHANGELOG
+calls the payload change breaking while =Cargo.toml= is still 0.5.1. Fix:
+bump the version (e.g. 0.6.0-dev) or mark those sections unpublished.
+** TODO [low] "M/M/c queues" overstates the engine
+=README.md:4-5= and =src/lib.rs:4-6= promise M/M/c queues; each agent is one
+FIFO server with caller-defined service times, and the built-in "Poisson"
+agents are not exponential (see above). Fix: say "per-agent FIFO queues".
+** TODO [low] README's plotting example does not exist
+"Poisson-distributed example w/ Plotting" (=README.md:159=) describes a cafe
+simulation with plotting; no such example or plotting feature exists.
+Fix: remove the section or label the image as historical.
+** TODO [low] =SimulationMode::Failed= is never set
+Documented as "The Simulation catastrophically crashed", but nothing assigns
+it, and =mode= has no accessor. Ties to "Gracefully degrade Simulations into
+Failed state" above. Fix: implement it or remove the variant.
+** TODO [low] PERFORMANCE.md contradicts the release profile
+It says =opt-level = 3= regressed, yet =[profile.release]= sets no
+=opt-level=, so Cargo uses 3. Fix: set the preferred level or drop the note.
+** TODO [low] CHANGELOG string/payload-sharing entries are superseded
+The "share retained contents ... names" and "share strings and payloads with
+copy-on-write" entries describe a =Message= that no longer holds strings.
+Fix: mark them superseded by "Identify message agents by AgentId".
+** TODO [low] Nine-ball comment names the wrong player
+=examples/nine_ball_simulation.rs:50= says the opponent gets another turn on
+luck; the code keeps the turn with the current player (=ctx.name=), as the APA
+twin's comment says.
+** TODO Prune stale items in this file
+- Done: "same experiment over and over ... confidence interval"
+  (=FixedReplications=, Wilson and standard-error reducers), "Parallelize
+  experiment running" (=run_parallel=, =ParallelExecutor=), "Experiment
+  structure" (=simul::experiment=).
+- Obsolete: "plotters feature" (no such feature), the =ObjectiveFunction=
+  WAIT snippet (uses private fields and =common_traits=; replaced by
+  =ObjectiveScore= and generic objectives).
+- Out of date: the =AgentId= interning plan (newtype, =send_to=, cached
+  targets exist; only the =start(&AgentDirectory)= hook was not built), the
+  "unwraps" rationale for message types (the engine has no =unwrap=).
+- Still open: next-event tick skipping; the sparse schedule skips idle
+  agents, not idle ticks.
