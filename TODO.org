@@ -67,7 +67,8 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
   ProducedMessage to dodge the unwraps and solve w/ type system
 ** IDEA Should Messages be an algebraic type, in fact?
 * Audit findings (2026-10-22)
-Each entry was reproduced with a scratch test; severity in brackets.
+Code findings were reproduced with scratch tests or Miri; doc findings were
+checked against the code. Severity in brackets.
 ** TODO [medium] Poisson agents' mean period is λ + e^{-λ}, not λ
 =src/agent.rs= poisson producer/consumer call =sleep_for(sample)=, and
 =sleep_for(0)= acts like =sleep_for(1)= (=src/lib.rs= =SparseSchedule::sleep=
