@@ -7,8 +7,8 @@ forwarding =message.custom_payload.clone()= only increments a reference count,
 and =Arc::make_mut= edits copy-on-write. The engine never set or read the
 =Message::interrupt= field, so it, =Interrupt=, and =MessageBody= are removed;
 halt with =ctx.send_halt_interrupt=. =AgentId= stores =index + 1= so =Message=
-stays 48 bytes, and =AgentId::new(u32::MAX)= panics. The nine-ball example now
-signals wins in its payload and runs to completion. Payload forwarding in a
+stays 48 bytes, and =AgentId::new(u32::MAX)= panics. The nine-ball and
+software-team examples build payloads from stack arrays. Payload forwarding in a
 16-agent ring retires 57% fewer instructions; the software-team example 17%.
 
 * DONE Reuse bounded parallel workers across batches
