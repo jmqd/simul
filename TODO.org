@@ -66,3 +66,42 @@ pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
 ** TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
   ProducedMessage to dodge the unwraps and solve w/ type system
 ** IDEA Should Messages be an algebraic type, in fact?
+* Audit findings (2026-10-22)
+Each entry was reproduced with a scratch test; severity in brackets.
+** TODO [medium] Poisson agents' mean period is λ + e^{-λ}, not λ
+=src/agent.rs= poisson producer/consumer call =sleep_for(sample)=, and
+=sleep_for(0)= acts like =sleep_for(1)= (=src/lib.rs= =SparseSchedule::sleep=
+defers even zero-length sleeps). Observed over 20,000 ticks: λ=0.1 gives a
+mean period of 1.005, λ=1 gives 1.368. Fix: document the one-tick minimum,
+or sample 1 + Poisson(λ-1).
+** TODO [low] The "Poisson" producer is not a Poisson arrival process
+It draws each gap from Poisson(λ), so gap variance is about λ (observed 60.1
+at mean 60.0) rather than the mean² that the M/M/c claims in =src/lib.rs:4-5=
+and =README.md= need (about 3,600). Fix: sample exponential or geometric
+gaps, or drop the M/M/c and arrival-rate wording.
+** TODO [low] Messages sent to a Proactive agent never reach =on_message=
+The engine pops the queue only for Reactive agents, so a Proactive target
+accumulates messages (1,000 queued, 0 =on_message= calls in the repro) while
+they are recorded as delivered. No doc says so, and =examples/CANDIDATES.md=
+(Calendar -> Proactive Door) assumes otherwise. Fix: document it and fix
+CANDIDATES.md, or deliver queued messages to Proactive agents.
+** TODO [low] Writable =AgentContext::name= changes routing in small simulations
+=pub name= (and =pub time=) contradict "Routing identities are read-only to
+callbacks". With 8 or fewer agents, =agent_id= recognizes the sender by
+=ctx.name=, so overwriting it reroutes sends; with 9+ agents it does not.
+Fix: make both fields private with getters, or recognize the sender by slot.
+** TODO [low] Poisson agents cannot be seeded
+They sample =rand::rng()=, so identical simulations differ between runs
+(3,247 vs 3,281 produced). This conflicts with deterministic experiments.
+Fix: accept a seed or seeded RNG, or document the nondeterminism.
+** TODO [low] A panicking =SelectionPolicy= in =tell= loses a proposal
+=RandomSearch= =incorporate= removes the pending proposal before calling the
+policy and updates counters after. A panic caught by the caller leaves
+=asked: 3, told: 2, outstanding: 0, finished: true=, and the lost token
+returns =DuplicateToken= if told again. Fix: run the policy before changing
+any state.
+** TODO [low] A panicking generator in =ask= strands outstanding tokens
+=ask= records each proposal and advances =next_token= inside the loop, so a
+panic on the third candidate leaves =asked: 2, outstanding: 2= for tokens the
+caller never received; the search can never finish. Fix: generate the whole
+batch locally, then commit it to the pending window once.
