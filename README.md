@@ -136,17 +136,22 @@ fn main() {
 
 The simulation runs all the logic of calling `process()`, distributing messages,
 tracking metrics, incrementing time, and when to halt. A `Simulation` is
-finished when the provided `halt_check` function returns `true`, or if an
-`Agent` responds with a special `Interrupt` to halt the `Simulation`.
+finished when the provided `halt_check` function returns `true`, or after the
+tick in which an `Agent` calls `ctx.send_halt_interrupt(reason)`.
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the
 target matched no agent, in which case the message is recorded but not
 delivered). `Simulation::agent(id)` and `Simulation::agent_id(name)` translate
 between identities and agents. Create initial messages with `Message::new` or
-`Message::new_with_payload`, not struct literals. A message without a payload
-allocates nothing; clones share payloads until modified, and timestamps and
-identities remain independent.
+`Message::new_with_payload`, not struct literals.
+
+Payloads are `Option<Arc<[u8]>>`. Building one allocates once, for example
+`Some(Arc::from([tag, value]))`; clones, histories, and forwarded payloads such
+as `ctx.send(next, message.custom_payload.clone())` share the bytes. Edit a
+payload with `Arc::make_mut`, which copies it only while shared. A message
+without a payload allocates nothing, and clones keep independent timestamps and
+identities.
 
 Simulations with more than 64 agents and neither per-tick metric use an ordered
 ready bitmap and wake heap during sparse phases, switching to dense scans as

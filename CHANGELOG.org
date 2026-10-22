@@ -1,5 +1,16 @@
 #+title: Changelog
 
+* DONE Share message payloads as Arc<[u8]> (breaking)
+=Message::custom_payload= is a public =Option<Arc<[u8]>>=, and =send=, =send_to=,
+and =Message::new_with_payload= take that type. A new payload allocates once,
+forwarding =message.custom_payload.clone()= only increments a reference count,
+and =Arc::make_mut= edits copy-on-write. The engine never set or read the
+=Message::interrupt= field, so it, =Interrupt=, and =MessageBody= are removed;
+halt with =ctx.send_halt_interrupt=. =AgentId= stores =index + 1= so =Message=
+stays 48 bytes, and =AgentId::new(u32::MAX)= panics. The nine-ball example now
+signals wins in its payload and runs to completion. Payload forwarding in a
+16-agent ring retires 57% fewer instructions; the software-team example 17%.
+
 * DONE Reuse bounded parallel workers across batches
 =ParallelExecutor= retains a dedicated Rayon pool with construction-time capacity.
 Each run still validates and allocates before initializing fresh caller-thread

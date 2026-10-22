@@ -6,6 +6,7 @@ use simul::agent::{
 };
 use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
+use std::sync::Arc;
 
 fn proactive_agent(name: &str, agent: impl Agent + 'static) -> AgentInitializer {
     proactive_agent_boxed(name, Box::new(agent))
@@ -222,8 +223,8 @@ impl Agent for BurstSender {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        ctx.send("receiver", Some(vec![1]));
-        ctx.send("receiver", Some(vec![2]));
+        ctx.send("receiver", Some(Arc::from([1])));
+        ctx.send("receiver", Some(Arc::from([2])));
     }
 }
 
@@ -246,11 +247,13 @@ fn messages_sent_by_one_callback_preserve_call_order() {
             .map(|message| message.custom_payload.clone())
             .collect::<Vec<_>>()
     };
+    let expected = Some(vec![Some(Arc::from([1])), Some(Arc::from([2]))]);
     assert_eq!(
-        simulation.produced_for_agent("sender").map(payloads),
-        Some(vec![Some(vec![1]), Some(vec![2])])
+        expected,
+        simulation.produced_for_agent("sender").map(payloads)
     );
     assert_eq!(
+        expected,
         simulation.find_by_name("receiver").map(|agent| {
             agent
                 .state
@@ -258,8 +261,7 @@ fn messages_sent_by_one_callback_preserve_call_order() {
                 .iter()
                 .map(|message| message.custom_payload.clone())
                 .collect::<Vec<_>>()
-        }),
-        Some(vec![Some(vec![1]), Some(vec![2])])
+        })
     );
 }
 
@@ -479,7 +481,7 @@ fn reused_producers_resolve_targets_in_each_simulation() {
 
 #[test]
 fn cloned_messages_keep_independent_contents_and_timestamps() {
-    let original = Message::new_with_payload(7, Some(vec![1, 2]));
+    let original = Message::new_with_payload(7, Some(Arc::from([1, 2])));
     let mut edited = original.clone();
     edited.queued_time = 8;
     edited.completed_time = Some(9);
@@ -488,22 +490,20 @@ fn cloned_messages_keep_independent_contents_and_timestamps() {
     let Some(payload) = &mut edited.custom_payload else {
         panic!("payload must exist");
     };
-    payload[0] = 3;
-    edited.interrupt = Some(simul::message::Interrupt::HaltSimulation("done".into()));
+    Arc::make_mut(payload)[0] = 3;
 
     assert_eq!(original.queued_time, 7);
     assert_eq!(original.completed_time, None);
     assert_eq!(None, original.source);
     assert_eq!(None, original.destination);
     assert_eq!(original.custom_payload.as_deref(), Some([1, 2].as_slice()));
-    assert!(original.interrupt.is_none());
     assert_eq!(edited.custom_payload.as_deref(), Some([3, 2].as_slice()));
     assert_eq!(edited.completed_time, Some(9));
     assert_eq!(Some(AgentId::new(1)), edited.source);
 
     let plain = Message::new(1);
     let mut extended = plain.clone();
-    extended.custom_payload = Some(vec![4]);
+    extended.custom_payload = Some(Arc::from([4]));
     assert!(plain.custom_payload.is_none());
     assert_eq!(Some([4].as_slice()), extended.custom_payload.as_deref());
 }
@@ -572,7 +572,7 @@ impl Agent for ScheduledAgent {
             .unwrap_or_else(|error| panic!("{error}"))
             .push((ctx.time, ctx.id().index()));
         if ctx.id().index() == 0 {
-            ctx.send("agent-65", Some(vec![1]));
+            ctx.send("agent-65", Some(Arc::from([1])));
             ctx.sleep_for(ctx.time % 3);
         } else {
             ctx.sleep_for(if ctx.time < 6 { 1 } else { 100 });
@@ -685,7 +685,7 @@ impl Agent for ChangingPayloadSender {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        ctx.send("receiver", (ctx.time == 2).then(|| vec![7]));
+        ctx.send("receiver", (ctx.time == 2).then(|| Arc::from([7])));
     }
 }
 
@@ -714,7 +714,7 @@ fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
         );
     }
     state.produced[0].source = Some(AgentId::new(9));
-    state.produced[0].custom_payload = Some(vec![9]);
+    state.produced[0].custom_payload = Some(Arc::from([9]));
     assert_eq!(state.produced[1].source, Some(AgentId::new(0)));
     assert!(state.produced[1].custom_payload.is_none());
 
@@ -736,13 +736,10 @@ fn repeated_sends_preserve_payloads_timestamps_and_independent_mutation() {
 
 #[test]
 fn new_sends_do_not_inherit_edited_history() {
-    let mutations: [fn(&mut Message); 6] = [
+    let mutations: [fn(&mut Message); 5] = [
         |message| message.source = Some(AgentId::new(9)),
         |message| message.destination = None,
-        |message| message.custom_payload = Some(vec![]),
-        |message| {
-            message.interrupt = Some(simul::message::Interrupt::HaltSimulation("old".into()));
-        },
+        |message| message.custom_payload = Some(Arc::from([])),
         |message| message.queued_time = u64::MAX,
         |message| message.completed_time = Some(u64::MAX),
     ];
@@ -770,7 +767,6 @@ fn new_sends_do_not_inherit_edited_history() {
         assert_eq!(message.source, Some(AgentId::new(0)));
         assert_eq!(message.destination, Some(AgentId::new(1)));
         assert!(message.custom_payload.is_none());
-        assert!(message.interrupt.is_none());
         assert_eq!(message.queued_time, 1);
         assert_eq!(message.completed_time, None);
     }

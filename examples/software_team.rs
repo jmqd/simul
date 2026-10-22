@@ -12,6 +12,7 @@ use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOption
 use simul::message::Message;
 use simul::{DiscreteTime, Simulation, SimulationParameters};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 const TICKS_PER_DAY: DiscreteTime = 16;
 const WORK_DAYS_PER_YEAR: DiscreteTime = 260;
@@ -183,20 +184,24 @@ enum Payload {
 }
 
 impl Payload {
-    fn encode(self) -> Vec<u8> {
+    fn encode(self) -> Arc<[u8]> {
         match self {
-            Self::Tick => vec![0],
+            Self::Tick => Arc::from([0]),
             Self::Work {
                 ticket_id,
                 coding_ticks,
                 needs_decision,
             } => {
-                let mut bytes = Vec::with_capacity(6);
-                bytes.push(1);
-                bytes.extend_from_slice(&ticket_id.to_le_bytes());
-                bytes.extend_from_slice(&coding_ticks.to_le_bytes());
-                bytes.push(u8::from(needs_decision));
-                bytes
+                let [id_low, id_high] = ticket_id.to_le_bytes();
+                let [coding_low, coding_high] = coding_ticks.to_le_bytes();
+                Arc::from([
+                    1,
+                    id_low,
+                    id_high,
+                    coding_low,
+                    coding_high,
+                    u8::from(needs_decision),
+                ])
             }
             Self::Meeting { ticks } => encode_u16(2, ticks),
             Self::Slack { ticks } => encode_u16(3, ticks),
@@ -210,19 +215,16 @@ impl Payload {
                 author,
                 review_ticks,
             } => {
-                let mut bytes = Vec::with_capacity(6);
-                bytes.push(6);
-                bytes.extend_from_slice(&ticket_id.to_le_bytes());
-                bytes.push(author);
-                bytes.extend_from_slice(&review_ticks.to_le_bytes());
-                bytes
+                let [id_low, id_high] = ticket_id.to_le_bytes();
+                let [review_low, review_high] = review_ticks.to_le_bytes();
+                Arc::from([6, id_low, id_high, author, review_low, review_high])
             }
             Self::ReviewApproved { ticket_id } => encode_u16(7, ticket_id),
             Self::CiRequest { ticket_id, author } => encode_u16_u8(8, ticket_id, author),
             Self::CiPassed { ticket_id } => encode_u16(9, ticket_id),
             Self::CiFailed { ticket_id } => encode_u16(10, ticket_id),
             Self::Merge { ticket_id, author } => encode_u16_u8(11, ticket_id, author),
-            Self::Metric { kind } => vec![12, kind.tag()],
+            Self::Metric { kind } => Arc::from([12, kind.tag()]),
         }
     }
 
@@ -278,19 +280,14 @@ impl Payload {
     }
 }
 
-fn encode_u16(tag: u8, value: u16) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(3);
-    bytes.push(tag);
-    bytes.extend_from_slice(&value.to_le_bytes());
-    bytes
+fn encode_u16(tag: u8, value: u16) -> Arc<[u8]> {
+    let [low, high] = value.to_le_bytes();
+    Arc::from([tag, low, high])
 }
 
-fn encode_u16_u8(tag: u8, value: u16, second: u8) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(4);
-    bytes.push(tag);
-    bytes.extend_from_slice(&value.to_le_bytes());
-    bytes.push(second);
-    bytes
+fn encode_u16_u8(tag: u8, value: u16, second: u8) -> Arc<[u8]> {
+    let [low, high] = value.to_le_bytes();
+    Arc::from([tag, low, high, second])
 }
 
 const fn decode_u16(low: u8, high: u8) -> u16 {

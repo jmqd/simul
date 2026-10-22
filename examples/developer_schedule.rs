@@ -1,6 +1,7 @@
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
+use std::sync::Arc;
 
 /// Calculates productivity from each contiguous block of uninterrupted maker time.
 #[derive(Debug, Clone)]
@@ -57,7 +58,7 @@ impl Agent for Developer {
         ctx.sleep_for(u64::try_from(time_block).unwrap_or(18));
         ctx.send(
             "productivity_recorder",
-            Some(productivity.to_le_bytes().to_vec()),
+            Some(Arc::from(productivity.to_le_bytes())),
         );
     }
 }
@@ -71,10 +72,10 @@ struct ProductivityRecorder {
 
 impl Agent for ProductivityRecorder {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        let Some(payload) = &msg.custom_payload else {
+        let Some(payload) = msg.custom_payload.as_deref() else {
             return;
         };
-        let Ok(encoded) = <[u8; std::mem::size_of::<usize>()]>::try_from(payload.as_slice()) else {
+        let Ok(encoded) = <[u8; std::mem::size_of::<usize>()]>::try_from(payload) else {
             return;
         };
         let productivity = usize::from_le_bytes(encoded);

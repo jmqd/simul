@@ -37,6 +37,7 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::Instant;
 
 const SEED: MasterSeed = MasterSeed::from_u64(0x494E_5354_5255_4354);
@@ -478,7 +479,7 @@ fn sim_relay_ring() -> Fingerprint {
         .map(|index| {
             let name = format!("relay-{index}");
             let initial_queue: VecDeque<Message> = (0..3_u8)
-                .map(|seed| Message::new_with_payload(0, Some(vec![index ^ seed; 24])))
+                .map(|seed| Message::new_with_payload(0, Some(Arc::from([index ^ seed; 24]))))
                 .collect();
             AgentInitializer {
                 agent: Box::new(Relay {

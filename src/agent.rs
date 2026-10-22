@@ -4,6 +4,9 @@ use rand_distr::Distribution;
 use rand_distr::Poisson;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
+use std::fmt;
+use std::num::NonZeroU32;
+use std::sync::Arc;
 
 /// Possible states an Agent can be in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
@@ -26,30 +29,44 @@ pub enum AgentMode {
 /// [`SimulationParameters::agent_initializers`](crate::SimulationParameters).
 ///
 /// Sending by identity with [`AgentContext::send_to`] skips the name lookup
-/// that [`AgentContext::send`] performs.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct AgentId(u32);
+/// that [`AgentContext::send`] performs. Identities store `index + 1`, so
+/// `Option<AgentId>` takes four bytes.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AgentId(NonZeroU32);
 
 impl AgentId {
     /// Creates the identity of the agent at `index` in construction order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is `u32::MAX`; no simulation has that many agents.
     #[must_use]
     pub const fn new(index: u32) -> Self {
-        Self(index)
+        match NonZeroU32::new(index.wrapping_add(1)) {
+            Some(stored) => Self(stored),
+            None => panic!("agent index u32::MAX has no identity"),
+        }
     }
 
     /// Returns the agent's position in construction order.
     #[must_use]
     pub const fn index(self) -> usize {
-        self.0 as usize
+        (self.0.get() - 1) as usize
     }
 
     /// Converts the handle of an agent in a constructed simulation.
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "simulations reject more than u32::MAX agents"
+        reason = "simulations reject more than u32::MAX agents, so handles stay below u32::MAX"
     )]
     pub(crate) const fn from_handle(handle: usize) -> Self {
-        Self(handle as u32)
+        Self(NonZeroU32::MIN.saturating_add(handle as u32))
+    }
+}
+
+impl fmt::Debug for AgentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("AgentId").field(&self.index()).finish()
     }
 }
 
@@ -194,9 +211,10 @@ impl AgentContext<'_> {
     ///
     /// Multiple messages sent by one callback are delivered in call order. A
     /// target that names no agent is recorded in the sender's history without
-    /// a destination and is not delivered.
+    /// a destination and is not delivered. Forward a received payload by
+    /// passing `message.custom_payload.clone()`, which shares its bytes.
     #[inline]
-    pub fn send(&mut self, target: &str, payload: Option<Vec<u8>>) {
+    pub fn send(&mut self, target: &str, payload: Option<Arc<[u8]>>) {
         let destination = self.agent_id(target);
         self.queue_message(destination, payload);
     }
@@ -206,7 +224,7 @@ impl AgentContext<'_> {
     /// Delivery order matches [`Self::send`]. An identity outside this
     /// simulation is recorded like an unknown name.
     #[inline]
-    pub fn send_to(&mut self, target: AgentId, payload: Option<Vec<u8>>) {
+    pub fn send_to(&mut self, target: AgentId, payload: Option<Arc<[u8]>>) {
         let destination = (target.index() < self.agent_count).then_some(target);
         self.queue_message(destination, payload);
     }
@@ -242,7 +260,7 @@ impl AgentContext<'_> {
 
     /// Queues a message from this agent for end-of-tick processing.
     #[inline]
-    fn queue_message(&mut self, destination: Option<AgentId>, payload: Option<Vec<u8>>) {
+    fn queue_message(&mut self, destination: Option<AgentId>, payload: Option<Arc<[u8]>>) {
         self.commands.push(AgentCommand {
             ty: AgentCommandType::SendMessage(Message::sent(
                 self.time,
@@ -257,7 +275,7 @@ impl AgentContext<'_> {
     /// Queues a message to a built-in agent's target, resolving it at most once
     /// per simulation layout.
     #[inline]
-    fn send_cached(&mut self, target: &mut CachedTarget, payload: Option<Vec<u8>>) {
+    fn send_cached(&mut self, target: &mut CachedTarget, payload: Option<Arc<[u8]>>) {
         let destination = match target.resolved {
             Some((layout, destination)) if layout == self.layout => destination,
             _ => {

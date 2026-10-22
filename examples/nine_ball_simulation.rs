@@ -7,6 +7,7 @@ use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::missing_docs_in_private_items)]
@@ -53,7 +54,7 @@ impl Agent for NineBallPlayer {
             &self.opponent_name
         };
 
-        ctx.send(next_turn, Some(ball.to_le_bytes().to_vec()));
+        ctx.send(next_turn, Some(Arc::from([ball])));
     }
 }
 
@@ -103,7 +104,7 @@ impl Agent for ApaNineBallPlayer {
             &self.opponent_name
         };
 
-        ctx.send(next_turn, Some(ball.to_le_bytes().to_vec()));
+        ctx.send(next_turn, Some(Arc::from([ball])));
     }
 }
 
@@ -148,7 +149,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         .get_mut(starting_player)
         .unwrap()
         .options
-        .initial_queue = vec![Message::new_with_payload(0, Some(vec![1]))].into();
+        .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
@@ -222,7 +223,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .get_mut(starting_player)
         .unwrap()
         .options
-        .initial_queue = vec![Message::new_with_payload(0, Some(vec![1]))].into();
+        .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
     // SimulationParameters generator that holds all else static except for agents.
     let simulation_parameters_generator = move || SimulationParameters {
@@ -330,7 +331,8 @@ mod tests {
                     agent,
                     options: AgentOptions {
                         name: "player".to_string(),
-                        initial_queue: vec![Message::new_with_payload(0, Some(vec![2]))].into(),
+                        initial_queue: vec![Message::new_with_payload(0, Some(Arc::from([2])))]
+                            .into(),
                         ..Default::default()
                     },
                 }],

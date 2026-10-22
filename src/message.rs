@@ -1,21 +1,16 @@
 use crate::{AgentId, DiscreteTime};
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-
-#[derive(Clone, Debug)]
-pub enum Interrupt {
-    /// Immediately halt the simulation (with some reason why).
-    HaltSimulation(String),
-}
 
 /// A Message represents an interaction between Agents.
 ///
-/// Messages identify agents by [`AgentId`], so sending one without a payload
-/// allocates nothing. Clones share payloads and interrupts while keeping
-/// timestamps and identities independent. Mutating shared contents uses
-/// copy-on-write, so changing a clone never changes its original. Use the
+/// Messages identify agents by [`AgentId`] and share payload bytes, so a send
+/// without a payload allocates nothing, a new payload allocates once, and
+/// forwarding a received payload only increments a reference count. Clones
+/// share the payload while keeping timestamps and identities independent; edit
+/// a payload with [`Arc::make_mut`], which copies it if others hold it. Use the
 /// constructors rather than a struct literal.
 #[derive(Default, Debug, Clone)]
+#[non_exhaustive]
 pub struct Message {
     /// When the message was first created and put onto a queue.
     pub queued_time: DiscreteTime,
@@ -25,78 +20,48 @@ pub struct Message {
     pub source: Option<AgentId>,
     /// The addressed agent, or `None` when the target matched no agent.
     pub destination: Option<AgentId>,
-    /// Shared contents, absent until a message has a payload or interrupt.
-    body: Option<Arc<MessageBody>>,
+    /// Optional application-defined bytes, shared by clones.
+    pub custom_payload: Option<Arc<[u8]>>,
 }
 
-/// Message contents exposed through [`Message`]'s field access.
-#[derive(Default, Debug, Clone)]
-pub struct MessageBody {
-    /// Optional application-defined bytes.
-    pub custom_payload: Option<Vec<u8>>,
-    /// A control interrupt to bubble up to the Simulation engine.
-    pub interrupt: Option<Interrupt>,
-}
-
-/// Contents read through messages that have no shared body.
-static EMPTY_BODY: MessageBody = MessageBody {
-    custom_payload: None,
-    interrupt: None,
-};
-
-impl Deref for Message {
-    type Target = MessageBody;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.body.as_deref().unwrap_or(&EMPTY_BODY)
-    }
-}
-
-impl DerefMut for Message {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(self.body.get_or_insert_with(Arc::default))
-    }
-}
+// Every send moves messages through queues and histories several times; eight
+// more bytes cost message-heavy simulations 1.5-5% of retired instructions.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Message>() == 48);
 
 impl Message {
     /// Creates a message without a payload, such as an initial queue entry.
     #[must_use]
     pub const fn new(time: DiscreteTime) -> Self {
+        Self::new_with_payload(time, None)
+    }
+
+    /// Creates a message carrying `payload` without copying its bytes.
+    #[must_use]
+    pub const fn new_with_payload(time: DiscreteTime, payload: Option<Arc<[u8]>>) -> Self {
         Self {
             queued_time: time,
             completed_time: None,
             source: None,
             destination: None,
-            body: None,
+            custom_payload: payload,
         }
-    }
-
-    /// Creates a message, taking ownership of its payload without copying bytes.
-    #[must_use]
-    pub fn new_with_payload(time: DiscreteTime, payload: Option<Vec<u8>>) -> Self {
-        let mut message = Self::new(time);
-        if payload.is_some() {
-            message.body = Some(Arc::new(MessageBody {
-                custom_payload: payload,
-                interrupt: None,
-            }));
-        }
-        message
     }
 
     /// Creates a message sent by `source` during a callback.
     #[inline]
-    pub(crate) fn sent(
+    pub(crate) const fn sent(
         time: DiscreteTime,
         source: AgentId,
         destination: Option<AgentId>,
-        payload: Option<Vec<u8>>,
+        payload: Option<Arc<[u8]>>,
     ) -> Self {
-        let mut message = Self::new_with_payload(time, payload);
-        message.source = Some(source);
-        message.destination = destination;
-        message
+        Self {
+            queued_time: time,
+            completed_time: None,
+            source: Some(source),
+            destination,
+            custom_payload: payload,
+        }
     }
 }
