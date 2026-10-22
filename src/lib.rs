@@ -327,7 +327,6 @@ fn visit_agent(
         agent.record_queue_depth();
     }
 
-    // Proactive agents tick; reactive agents handle their queued message.
     let message = match agent.state.mode {
         AgentMode::Proactive => None,
         AgentMode::Reactive => match queued_msg {
@@ -358,7 +357,6 @@ fn visit_agent(
         message_processing_status: MessageProcessingStatus::NoError,
     };
     if let Some(msg) = message {
-        // TODO(jmqd): agent.agent is not pretty; fix this composition naming.
         agent.agent.on_message(&mut ctx, &msg);
         match ctx.message_processing_status {
             MessageProcessingStatus::InProgress => agent.state.queue.push_front(msg),
@@ -551,7 +549,6 @@ impl Simulation {
             && !self.enable_agent_asleep_cycles_metric;
         let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
 
-        // One loop serves both dense and scheduled ticks.
         while self.mode == SimulationMode::Running && !(self.halt_check)(self) {
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
@@ -568,7 +565,6 @@ impl Simulation {
                 None => self.run_dense_tick(&mut command_buffer),
             };
 
-            // Consume all the new messages in the bus and deliver to agents.
             self.process_command_buffer(&mut command_buffer, schedule.as_mut());
 
             debug!("Finished this tick; incrementing time.");

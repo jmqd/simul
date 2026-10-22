@@ -407,8 +407,6 @@ where
     impl Agent for PoissonAgent {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
-            // This agent will go to sleep for a "cooldown period",
-            // as determined by a poisson distribution function.
             let cooldown_period = self.period.sample(&mut rand::rng()) as u64;
             ctx.sleep_for(cooldown_period);
         }
@@ -440,8 +438,6 @@ where
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         fn on_tick(&mut self, ctx: &mut AgentContext) {
-            // This agent will go to sleep for a "cooldown period",
-            // as determined by a poisson distribution function.
             let cooldown_period = self.period.sample(&mut rand::rng()) as u64;
             ctx.sleep_for(cooldown_period);
             ctx.send_cached(&mut self.target, None);
@@ -478,9 +474,7 @@ where
 
     impl Agent for PeriodicProducer {
         #[allow(unused_variables)]
-        fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-            // TODO(jmqd): This is pretty jank, fix this interface.
-        }
+        fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {}
 
         fn on_tick(&mut self, ctx: &mut AgentContext) {
             ctx.sleep_for(self.period);

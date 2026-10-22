@@ -223,7 +223,6 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
 }
 
 fn main() {
-    // To vary who "breaks" first, we pass in a starting player, 0 or 1.
     let mut starting_player: usize = 0;
 
     eprintln!("APA 9-ball");
