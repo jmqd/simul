@@ -165,6 +165,17 @@ plus panic/error scratch cases, 8 scheduler seeds). Notes for a recipe:
 =--lib= never reaches the unsafe code; multi-shard paths need
 =-Zmiri-num-cpus=4=; Stacked Borrows stops inside crossbeam-epoch, so use
 =-Zmiri-tree-borrows=; CEM tests need =-Zmiri-deterministic-floats=.
+** TODO Adopt the audit's seeded property suites as permanent tests
+Seeded =ChaCha8Rng= suites (no new dependencies) held across thousands of
+cases: sparse == dense scheduling (including edits between runs and segmented
+runs), clone == original, message conservation and order, halt timing,
+metric lengths; same-seed and serial == parallel experiment records,
+aggregate counts, retention policies, search budget and atomic tell
+rejection, CEM domains and std floors. Planted engine bugs (late wake,
+missed ready mark, reversed commands, no time advance) were all caught.
+Drafts are in the untracked =plans/audit-2026-10-22/= (=laws_engine.rs=,
+=laws_experiment.rs=, and =miri_scratch.rs= for runner panic coverage);
+trim to the laws worth keeping before moving them into =tests/=.
 ** TODO [low] =select_best= is order-dependent for NaN Bernoulli summaries
 =BernoulliSummary= fields are =pub=, and =MaximizeBernoulliRate= /
 =MaximizeWilsonLowerBound= compare with =partial_cmp(..).unwrap_or(Equal)=.
