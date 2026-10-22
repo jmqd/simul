@@ -145,6 +145,21 @@ A NaN rate is "equal" to everything, so the fold is intransitive: rates
 (0.9, NaN, 0.5) pick candidate 1 in one order and 2 in another, never the
 0.9 candidate. Fix: =total_cmp= with NaN ranked lowest, or private fields
 so only =finish()= builds summaries.
+** TODO [low] =select_best= keeps whichever duplicate candidate ID came first
+Two aggregates with the same =CandidateId= tie on the ID tie-break, so the
+result follows input order (attempts 2 vs 4 for swapped inputs). Nothing
+rejects duplicates, unlike =SeededRandomSearch=. Fix: document unique IDs,
+or reject duplicates.
+** TODO [low] =CrossEntropyOptimizer::new= does not report "the first invalid field"
+=validate_config= checks =elite_fraction= and =learning_rate= before the
+per-dimension fields, then goes dimension by dimension: a NaN mean plus
+elite fraction 0 reports =InvalidEliteFraction=. Fix: document the real
+order or check in field order.
+** TODO [low] =sample_bounded= allocation doc is wrong for empty bounds
+The doc bounds allocation by =budget x bounds.len()=, but
+=Vec::with_capacity(budget)= reserves outer vectors even when =bounds= is
+empty; =budget = usize::MAX / 8= panics with capacity overflow. Fix: state
+=budget x (bounds.len() + 1)= with a =# Panics= note, or use =try_reserve=.
 ** TODO [medium] README documents an API that published 0.5.1 lacks
 README pins =simul = "0.5.1"= but describes =send_to=, =agent_id=, and
 =Option<Arc<[u8]>>= payloads, which docs.rs 0.5.1 does not have; CHANGELOG
