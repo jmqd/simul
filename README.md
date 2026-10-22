@@ -38,7 +38,7 @@ available in this checkout; it has not been published as a new crates.io release
   evaluation, and returns records ordered by `TrialId`.
   Batch independent candidates in one runner call. Pass `&candidate` to
   `FixedReplications::trials` to share large inputs without cloning their contents.
-- Replay uses the unchanged V1 keyed BLAKE3/ChaCha12 protocol. Retain `ReplayKey`,
+- Replay uses the V1 keyed BLAKE3/ChaCha12 protocol. Retain `ReplayKey`,
   candidate inputs, and evaluator configuration. Named common-random streams
   share noise across candidates; `ValidationHoldout` separates validation noise.
 - With `parallel`, `run_parallel` uses a dedicated bounded Rayon pool and one
@@ -67,12 +67,7 @@ available in this checkout; it has not been published as a new crates.io release
   engine-independent optimizer alternatives; aggregate noisy trials inside their
   objective rather than ranking a lucky single run.
 
-The duplicate `experiment::replicated` API and its SplitMix64/Box–Muller replay
-protocol are removed, not aliased. Old replay keys are not interchangeable with
-V1 BLAKE3/ChaCha12 keys. The `TrialKey` alias is removed in favor of `TrialId`;
-the simulation-coupled `monte_carlo_search` and `simulated_annealing_search`
-wrappers are removed. See `examples/simple_experiment.rs` and
-`benches/deterministic_search_benchmark.rs` for the typed replacement.
+See `examples/simple_experiment.rs` for a complete typed experiment.
 
 ## Basic usage
 
@@ -90,7 +85,7 @@ use simul::SimulationParameters;
 fn main() {
     // Runs a simulation with a producer that produces work at every tick of
     // discrete time (period=1), and a consumer that cannot keep up (can only
-    // process that work every third tick).
+    // process that work every second tick).
     let mut simulation = Simulation::new(SimulationParameters {
         // We pass in two agents:
         //   `producer`: produces a message to the consumer every tick
@@ -134,10 +129,11 @@ fn main() {
   `ctx.send(name, payload)` resolves a name; `ctx.send_to(id, payload)` skips
   the lookup, and `ctx.agent_id(name)` resolves a peer once for reuse.
 
-The simulation runs all the logic of calling `process()`, distributing messages,
-tracking metrics, incrementing time, and when to halt. A `Simulation` is
-finished when the provided `halt_check` function returns `true`, or after the
-tick in which an `Agent` calls `ctx.send_halt_interrupt(reason)`.
+The simulation runs all the logic of calling `on_tick` and `on_message`,
+distributing messages, tracking metrics, incrementing time, and when to halt.
+A `Simulation` is finished when the provided `halt_check` function returns
+`true`, or after the tick in which an `Agent` calls
+`ctx.send_halt_interrupt(reason)`.
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the
@@ -157,7 +153,7 @@ Simulations with more than 64 agents and neither per-tick metric use an ordered
 ready bitmap and wake heap during sparse phases, switching to dense scans as
 activity rises. Smaller simulations and runs with queue-depth or asleep-cycle
 metrics keep dense scans. Callback order, end-of-tick delivery, and halt checks
-on every tick are unchanged; the scheduler never jumps over quiet ticks.
+on every tick match dense scans; the scheduler never jumps over quiet ticks.
 
 ## Poisson-distributed example w/ Plotting
 

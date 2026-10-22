@@ -11,7 +11,7 @@ Simulation Logical Flow: {
   shape: sequence_diagram
 
   Simulation -> halt_check: "if halt_check() == true, stop"
-  Simulation -> agents: call process() on every active Agent
+  Simulation -> agents: call on_tick() or on_message() on every active Agent
   agents -> Simulation: new Messages
   Simulation -> agents: distribute all new Messages
 

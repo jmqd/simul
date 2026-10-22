@@ -7,7 +7,7 @@ use simul::SimulationParameters;
 fn main() {
     // Runs a simulation with a producer that produces work at every tick of
     // discrete time (period=1), and a consumer that cannot keep up (can only
-    // process that work every third tick).
+    // process that work every second tick).
     let mut simulation = Simulation::new(SimulationParameters {
         // We pass in two agents:
         //   `producer`: produces a message to the consumer every tick
