@@ -239,3 +239,12 @@ twin's comment says.
   "unwraps" rationale for message types (the engine has no =unwrap=).
 - Still open: next-event tick skipping; the sparse schedule skips idle
   agents, not idle ticks.
+** TODO Rewrite doc comments that only restate the item
+About 170 =///= docs repeat the name or signature (core.rs ~56, agent.rs ~21,
+cross_entropy.rs ~21, lib.rs ~17, search.rs ~13). Deleting them fails
+=missing_docs_in_private_items= under =-D warnings=, so rewrite them to state
+=None= cases, units, ordering, and invariants. A ranked table of 40
+code-grounded rewrites, public API first, is in the untracked
+=plans/audit-2026-10-22/doc_rewrites.md=. Two current docs are wrong, not
+just thin: =SimulationAgent::state= says the agent can mutate it, but
+callbacks get =&AgentState=; and =SimulationMode::Failed= (see above).
