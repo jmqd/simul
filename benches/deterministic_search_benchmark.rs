@@ -105,21 +105,6 @@ fn run_seeded_search() -> Option<SearchResult<u64, ScalarSummary>> {
     search.best().cloned()
 }
 
-#[allow(dead_code)]
-fn run_search_experiment() -> Option<SearchResult<u64, ScalarSummary>> {
-    let result = run_seeded_search();
-    if let Some(best) = result.as_ref() {
-        let mut final_simulation = Simulation::new(build_simulation_parameters(best.candidate));
-        final_simulation.run();
-        println!("Deterministic search found an approximate optimal configuration:");
-        println!("Optimal Consumer Period: {}", best.candidate);
-        println!("Producer is fixed at Period: {PRODUCER_PERIOD}");
-        println!("Selecting Score: {:.2}", best.summary.statistics.mean);
-        println!("Final Simulation Time: {}", final_simulation.time());
-    }
-    result
-}
-
 fn deterministic_search_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("deterministic_experiment_benchmarks");
 

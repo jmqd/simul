@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 struct Developer {
     /// A developer's schedule for an 8-hour day is from 9am - 6pm. (Lunch is
-    /// generally assumed at 12pm.)  This vector then indicates 30-minute
+    /// generally assumed at 12pm.)  This array then indicates 30-minute
     /// intervals, with true = meeting/interruption, false = maker time.
     /// Every 18 steps of the simulation will simulate a full work day for the
     /// developer.
@@ -18,32 +18,13 @@ impl Agent for Developer {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        let mut time_of_day = usize::try_from(ctx.time % 18).unwrap_or_default();
+        let time_of_day = usize::try_from(ctx.time % 18).unwrap_or_default();
         let time_block = self
             .schedule
             .iter()
             .skip(time_of_day)
             .take_while(|&&slot| !slot)
             .count();
-        let time_block_from_loop = {
-            let mut time_block = 0;
-
-            while !self.schedule[time_of_day] {
-                time_block += 1;
-
-                // If it's the end of the day, we don't loop back around.
-                if time_of_day == 17 {
-                    break;
-                }
-
-                time_of_day += 1;
-            }
-
-            time_block
-        };
-
-        assert_eq!(time_block, time_block_from_loop);
-
         // Being in a meeting or having only 30 minutes is 0 productivity.
         // After that, productivity is very slightly superlinear with available time.
         let productivity = match time_block {

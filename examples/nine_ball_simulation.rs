@@ -2,7 +2,7 @@
 use rand::prelude::*;
 use rand_distr::weighted::WeightedIndex;
 use rustc_hash::FxHashMap;
-use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
+use simul::agent::{Agent, AgentContext, AgentInitializer, AgentOptions};
 use simul::message::Message;
 use simul::{Simulation, SimulationParameters};
 use std::cell::Cell;
@@ -67,7 +67,6 @@ struct ApaNineBallPlayer {
     winning_threshold: u8,
     score: u8,
     opponent_name: String,
-    agent_options: AgentOptions,
     winner: Rc<Cell<Option<usize>>>,
 }
 
@@ -151,14 +150,11 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         .options
         .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
-    // SimulationParameters generator that holds all else static except for agents.
-    let simulation_parameters_generator = move || SimulationParameters {
+    let mut sim = Simulation::new(SimulationParameters {
         agent_initializers,
         halt_check: halt_condition,
         ..Default::default()
-    };
-
-    let mut sim = Simulation::new(simulation_parameters_generator());
+    });
     sim.run();
 
     winner
@@ -182,12 +178,6 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         winning_threshold: 55,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_distribution: WeightedIndex::new([5, 10, 20, 20, 18, 12, 5, 4, 3, 2]).unwrap(),
-        agent_options: AgentOptions {
-            initial_mode: AgentMode::Reactive,
-            wake_mode: AgentMode::Reactive,
-            name: "alice".to_string(),
-            ..Default::default()
-        },
         opponent_name: "john".to_string(),
         winner: Rc::clone(&winner),
     };
@@ -198,24 +188,18 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         winning_threshold: 55,
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_distribution: WeightedIndex::new([6, 11, 18, 18, 15, 9, 3, 2, 2, 1]).unwrap(),
-        agent_options: AgentOptions {
-            initial_mode: AgentMode::Reactive,
-            wake_mode: AgentMode::Reactive,
-            name: "john".to_string(),
-            ..Default::default()
-        },
         opponent_name: "alice".to_string(),
         winner: Rc::clone(&winner),
     };
 
     let mut agent_initializers = vec![
         AgentInitializer {
-            options: alice.agent_options.clone(),
             agent: Box::new(alice),
+            options: AgentOptions::defaults_with_name("alice".to_string()),
         },
         AgentInitializer {
-            options: john.agent_options.clone(),
             agent: Box::new(john),
+            options: AgentOptions::defaults_with_name("john".to_string()),
         },
     ];
 
@@ -225,14 +209,11 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .options
         .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
-    // SimulationParameters generator that holds all else static except for agents.
-    let simulation_parameters_generator = move || SimulationParameters {
+    let mut sim = Simulation::new(SimulationParameters {
         agent_initializers,
         halt_check: halt_condition,
         ..Default::default()
-    };
-
-    let mut sim = Simulation::new(simulation_parameters_generator());
+    });
     sim.run();
 
     winner
@@ -312,7 +293,6 @@ mod tests {
                     winning_threshold: 9,
                     score: 0,
                     opponent_name: "opponent".to_string(),
-                    agent_options: AgentOptions::default(),
                     winner: Rc::clone(&winner),
                 })
             } else {
