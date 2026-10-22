@@ -138,6 +138,33 @@ mean from 0.09375 to 0.15625 and changed =best()=; without ties the fitted
 mean differs in the last bit in ~9% of random populations. Docs say NaN
 scores are "ignored". Fix: break ties with a fixed key (e.g. =total_cmp= on
 the point) and sort the selected elites.
+** TODO [low] Circular half-turn tie direction depends on libm rounding
+=circular_mean= goes through =atan2(sin, cos)=, so whether an exact half-turn
+tie moves negative (as =circular_mean_breaks_a_half_turn_tie_toward_the_negative_direction=
+pins) depends on trig rounding: 10 of 64 dyadic centers k/64 move positive
+natively, and under Miri the pinned test gives 0.25 instead of 0.75. A
+refit on one elite also does not reproduce its coordinate exactly. Fix:
+average deltas from a reference elite via =circular_delta=.
+** TODO [low] A panic payload whose =Drop= panics escapes the runners
+=catch_callback= (=core.rs:734=) drops the payload outside =catch_unwind=,
+so such a payload unwinds out of =run_parallel= instead of becoming the
+documented typed error. Records are still cleaned up; Miri finds no UB.
+Fix: forget the payload or drop it inside a second =catch_unwind=.
+** TODO [low] =RecordRange::drop= leaks the rest if one record's =Drop= panics
+The guard calls =assume_init_drop= per element and stops at the first panic;
+Miri reports the later records leaked. Fix: one =ptr::drop_in_place= over the
+initialized slice, which keeps dropping after a panic.
+** TODO [low] Check the =set_len= invariant instead of assuming it
+The SAFETY comment at =core.rs:1096= relies on unchecked facts: =zip= pairs
+equal-length lists, rayon runs each shard once, and each shard's trial count
+equals its storage length. Fix: =assert_eq!(initialized, storage.len())= in
+the disarm loop and cite it in the comment.
+** TODO Run Miri on the parallel runner in CI or =just=
+Miri is clean for the unsafe runner code (13 tests in =tests/experiment.rs=
+plus panic/error scratch cases, 8 scheduler seeds). Notes for a recipe:
+=--lib= never reaches the unsafe code; multi-shard paths need
+=-Zmiri-num-cpus=4=; Stacked Borrows stops inside crossbeam-epoch, so use
+=-Zmiri-tree-borrows=; CEM tests need =-Zmiri-deterministic-floats=.
 ** TODO [low] =select_best= is order-dependent for NaN Bernoulli summaries
 =BernoulliSummary= fields are =pub=, and =MaximizeBernoulliRate= /
 =MaximizeWilsonLowerBound= compare with =partial_cmp(..).unwrap_or(Equal)=.
