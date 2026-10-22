@@ -64,6 +64,11 @@ compilation, and the Nix package and dev shell on Apple Silicon. All four Nix
 platforms evaluate; Intel macOS and Linux builds were not exercised.
 Dylint completes with non-fatal assertion-order and crate-wide-allow warnings.
 
+* DONE Add a catalogue of example candidates
+Describe example programs worth writing, each chosen for a real-world dynamic
+that averaged models miss. Include a worked brief for a billiards cafe that maps
+onto the agent engine and the experiment module, and link it from the README.
+
 * DONE Avoid temporary allocations for singleton search results
 Skip within-batch duplicate sets and the canonical sorting buffer when a tell
 contains one result. Preserve identity validation and atomic rejection of invalid

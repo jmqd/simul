@@ -24,6 +24,7 @@ Use-cases:
 > Experimental and unstable. Almost all APIs are expected to change.
 
 - For some examples, see the `examples` subdirectory.
+- For ideas not yet implemented, see [`examples/CANDIDATES.md`](./examples/CANDIDATES.md).
 - For use cases where your agents need their own custom state, define a struct,
   implement `Agent`, and pass your agents into `Simulation` via constructing
   `AgentInitializers`.
