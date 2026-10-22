@@ -24,8 +24,8 @@ pub struct Message {
     pub custom_payload: Option<Arc<[u8]>>,
 }
 
-// Every send moves messages through queues and histories several times; eight
-// more bytes cost message-heavy simulations 1.5-5% of retired instructions.
+// Every send moves messages through queues and histories several times, so
+// keep the layout from growing unnoticed.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Message>() == 48);
 

@@ -26,10 +26,8 @@ const EXECUTION_NOISE_NAMESPACE: &[u8] = b"simul/v1/execution-noise";
 const HOLDOUT_NAMESPACE: &[u8] = b"simul/v1/validation-holdout";
 /// Scale converting the high 53 bits of a `u64` to the unit interval.
 const U64_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 53) as f64);
-/// Longest derivation input hashed from a stack buffer instead of the heap.
-///
-/// Protocol prefixes and fixed-width fields take at most 104 bytes, so tags of
-/// up to 152 bytes avoid allocation.
+/// Longest derivation input hashed from a stack buffer; longer inputs use the
+/// heap. Both paths hash identical bytes.
 const STACK_DERIVATION_INPUT: usize = 256;
 
 /// A stable candidate identity.
@@ -297,7 +295,7 @@ impl SeedDeriver {
     /// Hashes length-delimited protocol fields under one domain separator.
     ///
     /// The fields are concatenated and hashed in one call, which yields the
-    /// same digest as streaming them through an incremental hasher at lower cost.
+    /// same digest as streaming them through an incremental hasher.
     fn derive(self, namespace: &[u8], fields: &[&[u8]]) -> DerivedSeed {
         let namespace_length = u64::try_from(namespace.len())
             .unwrap_or(u64::MAX)

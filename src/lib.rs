@@ -283,11 +283,10 @@ impl SparseSchedule {
 /// applies the sleep it requested. Returns whether a callback ran and the
 /// requested wake time.
 ///
-/// Dense and sparse ticks share this body. Out of line, its callback setup cost
-/// dense simulations 10-13% more instructions.
+/// Dense and sparse ticks share this body, so it must inline into both loops.
 #[allow(
     clippy::inline_always,
-    reason = "measured: out of line, dense simulations ran 10-13% more instructions"
+    reason = "per-agent hot path shared by the dense and sparse tick loops"
 )]
 #[inline(always)]
 fn visit_agent(
@@ -433,8 +432,8 @@ impl Simulation {
             }
         }
 
-        // Small simulations are often run by the thousand in experiments, where
-        // growing each history from four messages dominated allocation.
+        // Small simulations are often run by the thousand in experiments;
+        // reserving histories up front avoids repeated growth.
         let history_capacity = if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
             SMALL_SIMULATION_HISTORY
         } else {
@@ -553,8 +552,7 @@ impl Simulation {
             && !self.enable_agent_asleep_cycles_metric;
         let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
 
-        // One loop serves both paths: separate dense and scheduled loops moved
-        // the dense tick and delivery out of line and cost small simulations 8%.
+        // One loop serves both dense and scheduled ticks.
         while self.mode == SimulationMode::Running && !(self.halt_check)(self) {
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
@@ -624,8 +622,8 @@ impl Simulation {
     }
 
     /// Visits only scheduled agents in handle order, keeps the schedule in step,
-    /// and returns how many callbacks ran. Kept out of `run` so the dense loop
-    /// compiles as before.
+    /// and returns how many callbacks ran. Kept out of line so the sparse path
+    /// does not enlarge the dense loop in `run`.
     #[inline(never)]
     fn run_sparse_tick(
         &mut self,

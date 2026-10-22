@@ -232,8 +232,7 @@ impl AgentContext<'_> {
     /// Returns the identity of the agent named `name`, if one exists.
     ///
     /// Callbacks that message one peer repeatedly can resolve it once and use
-    /// [`Self::send_to`]. Inlining keeps the hash probe in each caller; out of
-    /// line, the call cost large simulations ~2%.
+    /// [`Self::send_to`].
     #[must_use]
     #[inline]
     pub fn agent_id(&self, name: &str) -> Option<AgentId> {
@@ -319,8 +318,7 @@ impl AgentContext<'_> {
 /// A built-in agent's message target and its identity in the last layout.
 ///
 /// Agents can be cloned into simulations with other layouts, so the resolved
-/// identity is reused only while the layout matches. Caching removed a name
-/// lookup from every send: 13% of instructions with two agents, 20% with 65.
+/// identity is reused only while the layout matches.
 #[derive(Clone)]
 struct CachedTarget {
     /// Name of the target agent.
