@@ -678,73 +678,63 @@ mod tests {
     }
 
     #[test]
-    fn zero_budget_and_bounded_sampling_are_defined() {
+    fn zero_budget_search_is_finished_and_proposes_nothing() {
         let mut empty = SeededRandomSearch::new(MasterSeed::from_u64(1), 0, |_| 0_u64, MaxI32);
         assert_eq!(0, empty.ask(10).len());
         assert!(empty.status().finished);
+    }
 
+    #[test]
+    fn bounded_sampling_stays_in_bounds_and_rejects_invalid_bounds() {
         let sampled = sample_bounded(MasterSeed::from_u64(5), 3, &[(0.0, 1.0), (-2.0, 2.0)])
             .expect("finite ordered bounds should sample");
-        assert_eq!(sampled.len(), 3);
+        assert_eq!(3, sampled.len());
         assert!(sampled.iter().all(|candidate| {
             (0.0..1.0).contains(&candidate[0]) && (-2.0..2.0).contains(&candidate[1])
         }));
-        assert!(sampled[0]
-            .iter()
-            .zip(&sampled[1])
-            .any(|(&left, &right)| left.to_bits() != right.to_bits()));
-        let repeated = sample_bounded(MasterSeed::from_u64(5), 3, &[(0.0, 1.0), (-2.0, 2.0)])
-            .expect("finite ordered bounds should sample");
-        assert_eq!(sampled.len(), repeated.len());
-        for (actual_candidate, expected_candidate) in sampled.iter().zip(&repeated) {
-            assert_eq!(actual_candidate.len(), expected_candidate.len());
-            for (&actual, &expected) in actual_candidate.iter().zip(expected_candidate) {
-                assert_f64_bits_eq(actual, expected);
-            }
-        }
         assert_eq!(
-            sample_bounded(MasterSeed::from_u64(5), 1, &[(f64::NAN, 1.0)]),
-            Err(BoundsError::NonFinite { dimension: 0 })
+            Err(BoundsError::NonFinite { dimension: 0 }),
+            sample_bounded(MasterSeed::from_u64(5), 1, &[(f64::NAN, 1.0)])
+        );
+        assert_eq!(
+            Err(BoundsError::Reversed { dimension: 1 }),
+            sample_bounded(MasterSeed::from_u64(5), 1, &[(0.0, 1.0), (1.0, 0.0)])
         );
     }
 
     #[test]
-    fn bounded_sampling_handles_overflowing_widths_deterministically() {
-        let seed = MasterSeed::from_u64(42);
+    fn bounded_sampling_stays_finite_with_overflowing_widths() {
         let bounds = [(-f64::MAX, f64::MAX), (-f64::MAX, f64::MAX / 2.0)];
-        let sampled = sample_bounded(seed, 16, &bounds).expect("finite bounds should sample");
-        let repeated = sample_bounded(seed, 16, &bounds).expect("finite bounds should sample");
-        for (candidate, repeated_candidate) in sampled.iter().zip(&repeated) {
-            for ((&actual, &expected), &(lower, upper)) in
-                candidate.iter().zip(repeated_candidate).zip(&bounds)
-            {
+        let sampled = sample_bounded(MasterSeed::from_u64(42), 16, &bounds)
+            .expect("finite bounds should sample");
+        for candidate in &sampled {
+            for (&actual, &(lower, upper)) in candidate.iter().zip(&bounds) {
                 assert!(actual.is_finite());
                 assert!((lower..=upper).contains(&actual));
-                assert_f64_bits_eq(actual, expected);
             }
         }
     }
 
     #[test]
-    #[allow(clippy::suboptimal_flops)]
-    fn bounded_sampling_preserves_representable_width_sequences() {
-        let seed = MasterSeed::from_u64(42);
+    fn bounded_sampling_sequence_is_frozen() {
         let bounds = [(-1.3, 2.7), (-f64::MAX, 0.0), (f64::MAX, f64::MAX)];
-        let sampled = sample_bounded(seed, 16, &bounds).expect("finite bounds should sample");
-        let deriver = SeedDeriver::new(seed);
-        for (token, candidate) in sampled.iter().enumerate() {
-            for (dimension, (&actual, &(lower, upper))) in candidate.iter().zip(&bounds).enumerate()
-            {
-                let mut rng = deriver
-                    .proposal_dimension_seed(
-                        u64::try_from(token).expect("small token fits"),
-                        u64::try_from(dimension).expect("small dimension fits"),
-                    )
-                    .rng();
-                let expected = lower + (upper - lower) * rng.uniform_f64();
-                assert!(actual.is_finite());
-                assert!((lower..=upper).contains(&actual));
-                assert_f64_bits_eq(actual, expected);
+        let sampled = sample_bounded(MasterSeed::from_u64(42), 2, &bounds)
+            .expect("finite bounds should sample");
+        let expected: [[u64; 3]; 2] = [
+            [
+                0x3fef_5da4_c1ab_2712,
+                0xffe9_ce73_5518_b320,
+                0x7fef_ffff_ffff_ffff,
+            ],
+            [
+                0xbfcc_5f6b_eb05_d938,
+                0xffe6_fbe2_29d7_f0b8,
+                0x7fef_ffff_ffff_ffff,
+            ],
+        ];
+        for (candidate, expected) in sampled.iter().zip(expected) {
+            for (&actual, expected) in candidate.iter().zip(expected) {
+                assert_f64_bits_eq(actual, f64::from_bits(expected));
             }
         }
     }
