@@ -441,7 +441,7 @@ fn visit_agent(
         state: &agent.state,
         message_processing_status: MessageProcessingStatus::NoError,
         seeds: tick.seeds,
-        rng: None,
+        streams: 0,
     };
     // Every awake agent handles at most one queued message per tick; proactive
     // agents then also tick.

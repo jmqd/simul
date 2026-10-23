@@ -58,9 +58,10 @@ tick from =AgentContext::rng()=, with exactly the requested mean (at least 1),
 and the public API no longer exposes =rand_distr= types.
 
 * DONE Seed simulations and give agents per-tick random streams (breaking)
-=SimulationParameters::seed= roots =AgentContext::rng()=, a =TrialRng= derived
-from the seed, the agent's =AgentId=, and the tick under the new
-=simul/v1/agent= namespace (=SeedDeriver::agent_seed=). Draws do not depend on
+=Simulation::builder(..).seed(..)= roots =AgentContext::rng()=, which returns
+a =TrialRng= derived from the seed, the agent's =AgentId=, the tick, and the
+call's index within the tick, under the new =simul/v1/agent= namespace
+(=SeedDeriver::agent_seed=). Draws do not depend on
 other agents, sparse or dense scheduling, clones, or how a run is split into
 segments. Frozen V1 experiment streams are unchanged.
 

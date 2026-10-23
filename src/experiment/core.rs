@@ -251,16 +251,20 @@ impl SeedDeriver {
         )
     }
 
-    /// Derives the stream an agent draws from during one simulation tick.
+    /// Derives the `stream`th stream an agent draws during one simulation tick.
     ///
-    /// The stream depends only on the master seed, the agent's index, and the
-    /// tick, so it is unaffected by other agents, scheduling, clones, or how a
-    /// run is split into segments.
+    /// The seed depends only on the master seed, the agent's index, the tick,
+    /// and the stream number, so it is unaffected by other agents, scheduling,
+    /// clones, or how a run is split into segments.
     #[must_use]
-    pub fn agent_seed(self, agent: u64, tick: u64) -> DerivedSeed {
+    pub fn agent_seed(self, agent: u64, tick: u64, stream: u64) -> DerivedSeed {
         self.derive(
             AGENT_NAMESPACE,
-            &[&agent.to_le_bytes(), &tick.to_le_bytes()],
+            &[
+                &agent.to_le_bytes(),
+                &tick.to_le_bytes(),
+                &stream.to_le_bytes(),
+            ],
         )
     }
 

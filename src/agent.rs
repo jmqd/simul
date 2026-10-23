@@ -204,11 +204,11 @@ pub struct AgentContext<'a> {
     /// Whether the current message finished or stays queued.
     pub(crate) message_processing_status: MessageProcessingStatus,
 
-    /// Derives this agent's stream for the current tick.
+    /// Derives this agent's streams for the current tick.
     pub(crate) seeds: SeedDeriver,
 
-    /// The stream for this visit, created on first use.
-    pub(crate) rng: Option<TrialRng>,
+    /// Number of streams handed out during this visit.
+    pub(crate) streams: u64,
 }
 
 impl<'a> AgentContext<'a> {
@@ -218,17 +218,21 @@ impl<'a> AgentContext<'a> {
         self.id
     }
 
-    /// Returns this agent's random stream for the current tick.
+    /// Returns a new random stream for this agent and tick.
     ///
-    /// The stream is derived from the simulation seed, the agent's
-    /// [`AgentId`], and the tick, so equal seeds give equal draws regardless
-    /// of other agents, scheduling, clones, or how a run is split. Draws
-    /// within one tick, including across `on_message` and `on_tick`, continue
-    /// one stream.
-    pub fn rng(&mut self) -> &mut TrialRng {
-        let (seeds, agent, tick) = (self.seeds, self.id.index() as u64, self.time);
-        self.rng
-            .get_or_insert_with(|| seeds.agent_seed(agent, tick).rng())
+    /// The `n`th call during a tick (counting `on_message` and `on_tick`
+    /// together) returns the stream derived from the simulation seed, the
+    /// agent's [`AgentId`], the tick, and `n`. Equal seeds therefore give
+    /// equal draws regardless of other agents, scheduling, clones, or how a
+    /// run is split. Each call hashes a seed, so keep the stream for several
+    /// draws rather than calling this per draw.
+    #[must_use]
+    pub fn rng(&mut self) -> TrialRng {
+        let stream = self.streams;
+        self.streams += 1;
+        self.seeds
+            .agent_seed(self.id.index() as u64, self.time, stream)
+            .rng()
     }
 
     /// Returns the agent's name.
@@ -502,7 +506,7 @@ where
 
     impl Agent for GeometricConsumer {
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
-            let ticks = self.service.sample(ctx.rng());
+            let ticks = self.service.sample(&mut ctx.rng());
             ctx.sleep_for(ticks);
         }
     }
@@ -539,7 +543,7 @@ where
 
     impl Agent for GeometricProducer {
         fn on_tick(&mut self, ctx: &mut AgentContext) {
-            let ticks = self.interarrival.sample(ctx.rng());
+            let ticks = self.interarrival.sample(&mut ctx.rng());
             ctx.sleep_for(ticks);
             ctx.send_cached(&mut self.target, None);
         }

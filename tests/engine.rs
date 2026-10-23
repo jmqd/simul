@@ -332,7 +332,7 @@ fn agent_streams_depend_only_on_seed_agent_and_tick() {
     assert_eq!(base, draws(7, 0), "equal seeds give equal draws");
     assert_eq!(base, draws(7, 100), "later agents do not shift the stream");
     assert_ne!(base, draws(8, 0), "different seeds give different draws");
-    assert_ne!(base[0], base[1], "draws within a tick continue one stream");
+    assert_ne!(base[0], base[1], "each call in a tick returns a new stream");
     assert_ne!(base[..2], base[2..4], "each tick starts a fresh stream");
 }
 
