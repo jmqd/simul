@@ -293,8 +293,8 @@ where
 
     /// Incorporates a validated batch in canonical order.
     ///
-    /// Every policy comparison runs before any state changes, so a panicking
-    /// policy leaves the search exactly as it was.
+    /// Every policy comparison and summary clone runs before any state
+    /// changes, so a panicking policy or `Clone` leaves the search unchanged.
     fn incorporate<'a>(
         &mut self,
         canonical: impl Iterator<Item = &'a Told<S>> + Clone,
@@ -302,7 +302,12 @@ where
     where
         S: 'a,
     {
-        let winner = self.batch_winner(canonical.clone());
+        let mut winner = self.batch_winner(canonical.clone()).and_then(|index| {
+            canonical
+                .clone()
+                .nth(index)
+                .map(|told| (index, told.summary.clone()))
+        });
         for (index, told) in canonical.enumerate() {
             let candidate = self
                 .pending
@@ -310,11 +315,11 @@ where
                 .ok_or(TellError::UnknownToken(told.token))?;
             self.completed_candidates.insert(told.candidate);
             self.told_count += 1;
-            if winner == Some(index) {
+            if let Some((_, summary)) = winner.take_if(|(winner, _)| *winner == index) {
                 self.best = Some(SearchResult {
                     candidate_id: told.candidate,
                     candidate,
-                    summary: told.summary.clone(),
+                    summary,
                 });
             }
         }
@@ -363,17 +368,19 @@ where
         let remaining = self.budget.saturating_sub(self.next_token);
         let count = usize::try_from(remaining).unwrap_or(usize::MAX).min(limit);
         let mut asked = Vec::with_capacity(count);
+        let mut issued = Vec::with_capacity(count);
         for value in (self.next_token..).take(count) {
             let token = ProposalToken::new(value);
             let mut rng = self.deriver.proposal_seed(value).rng();
             let candidate = (self.generator)(&mut rng);
+            issued.push(candidate.clone());
             asked.push(Asked { token, candidate });
         }
-        // Issue tokens only after every generator call returned, so a panicking
-        // generator leaves no outstanding tokens the caller never received.
+        // Issue tokens only after every generator and clone call returned, so a
+        // panic leaves no outstanding tokens the caller never received.
         self.pending.reserve(count);
-        for proposal in &asked {
-            self.pending.push(proposal.candidate.clone());
+        for candidate in issued {
+            self.pending.push(candidate);
             self.next_token += 1;
         }
         asked
@@ -601,6 +608,78 @@ mod tests {
             .expect("the untouched batch can be retold");
         assert!(search.status().finished);
         assert_eq!(3, search.status().told);
+    }
+
+    /// A value whose clone panics once `CLONES_UNTIL_PANIC` counts down to it.
+    #[derive(Debug, PartialEq)]
+    struct CloneBomb(i32);
+
+    thread_local! {
+        /// Zero disarms; otherwise the clone that brings it to zero panics.
+        static CLONES_UNTIL_PANIC: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    impl Clone for CloneBomb {
+        fn clone(&self) -> Self {
+            let remaining = CLONES_UNTIL_PANIC.get();
+            if remaining > 0 {
+                CLONES_UNTIL_PANIC.set(remaining - 1);
+                assert_ne!(remaining, 1, "clone failed");
+            }
+            Self(self.0)
+        }
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn panicking_candidate_clone_issues_no_tokens() {
+        let mut search = SeededRandomSearch::new(
+            MasterSeed::from_u64(1),
+            2,
+            |_: &mut TrialRng| CloneBomb(7),
+            MaxI32,
+        );
+        CLONES_UNTIL_PANIC.set(2);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| search.ask(2)));
+        assert!(outcome.is_err());
+        assert_eq!(0, search.status().asked);
+        assert_eq!(2, search.ask(2).len());
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn panicking_summary_clone_leaves_the_search_unchanged() {
+        struct ByValue;
+        impl SelectionPolicy<CloneBomb> for ByValue {
+            fn compare(&self, left: &CloneBomb, right: &CloneBomb) -> Ordering {
+                left.0.cmp(&right.0)
+            }
+        }
+        let mut search = SeededRandomSearch::new(MasterSeed::from_u64(1), 2, |_| 7_u64, ByValue);
+        let asked = search.ask(2);
+        let batch: Vec<_> = (0..2)
+            .map(|index| Told {
+                token: asked[index].token,
+                candidate: CandidateId::new(index as u64),
+                summary: CandidateSummary {
+                    candidate: CandidateId::new(index as u64),
+                    requested: 1,
+                    completed: 1,
+                    failed: 0,
+                    statistics: CloneBomb(1),
+                },
+            })
+            .collect();
+        let before = search.status();
+        CLONES_UNTIL_PANIC.set(1);
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| search.tell(&batch)));
+        assert!(outcome.is_err());
+        assert_eq!(before, search.status());
+        search
+            .tell(&batch)
+            .expect("the untouched batch can be retold");
+        assert_eq!(2, search.status().told);
     }
 
     #[test]
