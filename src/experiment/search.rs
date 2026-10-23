@@ -482,7 +482,7 @@ pub fn sample_bounded(
 #[allow(clippy::expect_used, clippy::missing_docs_in_private_items)]
 mod tests {
     use super::*;
-    use crate::experiment::ScalarSummary;
+    use crate::experiment::{ScalarReducer, ScalarSummary};
 
     #[derive(Clone, Copy)]
     struct MaxI32;
@@ -910,8 +910,8 @@ mod tests {
         struct MaxMean;
         impl SelectionPolicy<ScalarSummary> for MaxMean {
             fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
-                left.mean
-                    .partial_cmp(&right.mean)
+                left.mean()
+                    .partial_cmp(&right.mean())
                     .unwrap_or(Ordering::Equal)
             }
         }
@@ -923,14 +923,8 @@ mod tests {
         };
         let mut search = SeededRandomSearch::new(MasterSeed::from_u64(4), 1, generator, MaxMean);
         let asked = search.ask(1);
-        let selecting = ScalarSummary {
-            count: 2,
-            mean: 10.0,
-            sample_variance: Some(2.0),
-            standard_error: Some(1.0),
-            min: 9.0,
-            max: 11.0,
-        };
+        let selecting =
+            ScalarReducer::from_results([9.0, 11.0]).expect("finite observations should reduce");
         search
             .tell(&[Told {
                 token: asked[0].token,
@@ -956,17 +950,17 @@ mod tests {
             .expect("a told candidate should become best")
             .summary
             .statistics;
-        assert_eq!(actual.count, selecting.count);
-        assert_f64_bits_eq(actual.mean, selecting.mean);
+        assert_eq!(actual.count(), selecting.count());
+        assert_f64_bits_eq(actual.mean(), selecting.mean());
         assert_eq!(
-            actual.sample_variance.map(f64::to_bits),
-            selecting.sample_variance.map(f64::to_bits)
+            actual.sample_variance().map(f64::to_bits),
+            selecting.sample_variance().map(f64::to_bits)
         );
         assert_eq!(
-            actual.standard_error.map(f64::to_bits),
-            selecting.standard_error.map(f64::to_bits)
+            actual.standard_error().map(f64::to_bits),
+            selecting.standard_error().map(f64::to_bits)
         );
-        assert_f64_bits_eq(actual.min, selecting.min);
-        assert_f64_bits_eq(actual.max, selecting.max);
+        assert_f64_bits_eq(actual.min(), selecting.min());
+        assert_f64_bits_eq(actual.max(), selecting.max());
     }
 }

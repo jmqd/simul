@@ -510,7 +510,7 @@ struct MaximizeMean;
 
 impl SelectionPolicy<ScalarSummary> for MaximizeMean {
     fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
-        left.mean.total_cmp(&right.mean)
+        left.mean().total_cmp(&right.mean())
     }
 }
 
@@ -559,7 +559,7 @@ fn exp_search_sim() -> Fingerprint {
     Fingerprint::new()
         .mix(best.candidate_id.value())
         .mix(best.candidate)
-        .mix_f64(best.summary.statistics.mean)
+        .mix_f64(best.summary.statistics.mean())
 }
 
 fn trial_score(offset: f64, context: &TrialContext) -> f64 {
@@ -583,12 +583,12 @@ fn summarize_trials(records: &[TrialRecord<f64, Infallible>]) -> Fingerprint {
     )
     .expect("nonempty records");
     Fingerprint::new()
-        .mix_f64(scalar.statistics.mean)
-        .mix_f64(scalar.statistics.sample_variance.unwrap_or(f64::NAN))
-        .mix_f64(scalar.statistics.min)
-        .mix_f64(scalar.statistics.max)
-        .mix(bernoulli.statistics.successes)
-        .mix_f64(bernoulli.statistics.wilson_lower)
+        .mix_f64(scalar.statistics.mean())
+        .mix_f64(scalar.statistics.sample_variance().unwrap_or(f64::NAN))
+        .mix_f64(scalar.statistics.min())
+        .mix_f64(scalar.statistics.max())
+        .mix(bernoulli.statistics.successes())
+        .mix_f64(bernoulli.statistics.wilson_lower())
 }
 
 /// Replicated trials drawing independent and common named streams.
@@ -676,7 +676,7 @@ fn exp_random_search() -> Fingerprint {
     Fingerprint::new()
         .mix(best.candidate_id.value())
         .mix(best.candidate)
-        .mix_f64(best.summary.statistics.mean)
+        .mix_f64(best.summary.statistics.mean())
 }
 
 const DIMENSIONS: usize = 5;

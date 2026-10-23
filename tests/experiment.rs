@@ -1,6 +1,5 @@
 use simul::experiment::{
-    run_serial, run_serial_bounded, select_best, BernoulliSummary, CandidateId, MasterSeed,
-    MaximizeBernoulliRate, MaximizeWilsonLowerBound, ReplicationId, RunError, TrialContext,
+    run_serial, run_serial_bounded, CandidateId, MasterSeed, ReplicationId, RunError, TrialContext,
     TrialId, TrialSpec, TrialStream,
 };
 use std::convert::Infallible;
@@ -159,42 +158,6 @@ fn serial_panic_with_panicking_payload_returns_workload_panic() {
         std::panic::resume_unwind(Box::new(PayloadBomb))
     });
     assert!(matches!(result, Err(RunError::WorkloadPanic)));
-}
-
-#[test]
-fn bernoulli_selection_ranks_nan_lowest_regardless_of_order() {
-    let summary = |value| BernoulliSummary {
-        attempts: 10,
-        successes: 5,
-        rate: value,
-        wilson_lower: value,
-        wilson_upper: value,
-    };
-    let candidates = [
-        (CandidateId::new(3), summary(0.9)),
-        (CandidateId::new(2), summary(f64::NAN)),
-        (CandidateId::new(1), summary(0.5)),
-    ];
-    for order in [
-        [0, 1, 2],
-        [0, 2, 1],
-        [1, 0, 2],
-        [1, 2, 0],
-        [2, 0, 1],
-        [2, 1, 0],
-    ] {
-        let shuffled = order.map(|index| candidates[index]);
-        for selected in [
-            select_best(&shuffled, &MaximizeBernoulliRate),
-            select_best(&shuffled, &MaximizeWilsonLowerBound),
-        ] {
-            assert_eq!(
-                Some(CandidateId::new(3)),
-                selected.map(|(id, _)| id),
-                "order {order:?}"
-            );
-        }
-    }
 }
 
 #[cfg(feature = "parallel")]

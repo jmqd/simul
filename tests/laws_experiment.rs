@@ -344,15 +344,15 @@ fn check_bernoulli(r: &mut ChaCha8Rng, records: &[TrialRecord<f64, u8>], case: u
         Ok(summary) => {
             assert_eq!(summary.requested, summary.completed + summary.failed);
             assert_eq!(summary.failed as usize, failed);
-            assert_eq!(summary.statistics.attempts, attempts as u64);
-            assert_eq!(summary.statistics.successes, successes as u64);
+            assert_eq!(summary.statistics.attempts(), attempts as u64);
+            assert_eq!(summary.statistics.successes(), successes as u64);
             let stats = summary.statistics;
             assert!(
-                0.0 <= stats.wilson_lower && stats.wilson_lower <= stats.rate,
+                0.0 <= stats.wilson_lower() && stats.wilson_lower() <= stats.rate(),
                 "case {case}: {stats:?}"
             );
             assert!(
-                stats.rate <= stats.wilson_upper && stats.wilson_upper <= 1.0,
+                stats.rate() <= stats.wilson_upper() && stats.wilson_upper() <= 1.0,
                 "case {case}: {stats:?}"
             );
         }
@@ -418,22 +418,22 @@ fn aggregation_counts_balance_and_policies_apply_with_documented_precedence() {
                 assert_eq!(summary.statistics, expected, "case {case}");
                 let stats = summary.statistics;
                 assert!(
-                    stats.mean.is_finite() && stats.min.is_finite() && stats.max.is_finite(),
+                    stats.mean().is_finite() && stats.min().is_finite() && stats.max().is_finite(),
                     "case {case}"
                 );
                 assert!(
-                    stats.min <= stats.mean && stats.mean <= stats.max,
+                    stats.min() <= stats.mean() && stats.mean() <= stats.max(),
                     "case {case}: {stats:?}"
                 );
                 assert!(
-                    stats.sample_variance.is_none_or(f64::is_finite),
+                    stats.sample_variance().is_none_or(f64::is_finite),
                     "case {case}"
                 );
                 assert!(
-                    stats.standard_error.is_none_or(f64::is_finite),
+                    stats.standard_error().is_none_or(f64::is_finite),
                     "case {case}"
                 );
-                assert_eq!(stats.count, observed.len() as u64);
+                assert_eq!(stats.count(), observed.len() as u64);
             }
             (got, want) => assert_eq!(got.map(|_| ()), want.map(|_| ()), "case {case}"),
         }
@@ -532,11 +532,11 @@ fn select_best_is_order_independent_and_breaks_ties_by_lower_id() {
             .collect();
         let rate_reference = bernoulli
             .iter()
-            .max_by(|a, b| ordered(a.1.rate, b.1.rate).then(b.0.cmp(&a.0)))
+            .max_by(|a, b| ordered(a.1.rate(), b.1.rate()).then(b.0.cmp(&a.0)))
             .map(|c| c.0);
         let wilson_reference = bernoulli
             .iter()
-            .max_by(|a, b| ordered(a.1.wilson_lower, b.1.wilson_lower).then(b.0.cmp(&a.0)))
+            .max_by(|a, b| ordered(a.1.wilson_lower(), b.1.wilson_lower()).then(b.0.cmp(&a.0)))
             .map(|c| c.0);
         let feasible: Vec<(CandidateId, Feasible<FiniteValue, FiniteValue>)> = finite_values
             .iter()
@@ -1356,22 +1356,25 @@ fn wilson_interval_brackets_the_rate_within_the_unit_interval() {
         let summary = reducer
             .finish()
             .unwrap_or_else(|error| panic!("case {case}: nonempty: {error:?}"));
-        assert_eq!((summary.attempts, summary.successes), (trials, successes));
         assert_eq!(
-            summary.rate,
+            (summary.attempts(), summary.successes()),
+            (trials, successes)
+        );
+        assert_eq!(
+            summary.rate(),
             successes as f64 / trials as f64,
             "case {case}"
         );
         assert!(
-            summary.wilson_lower.is_finite() && summary.wilson_upper.is_finite(),
+            summary.wilson_lower().is_finite() && summary.wilson_upper().is_finite(),
             "case {case}: {summary:?} z {wilson_z}"
         );
         assert!(
-            0.0 <= summary.wilson_lower && summary.wilson_lower <= summary.rate,
+            0.0 <= summary.wilson_lower() && summary.wilson_lower() <= summary.rate(),
             "case {case}: {summary:?} z {wilson_z}"
         );
         assert!(
-            summary.rate <= summary.wilson_upper && summary.wilson_upper <= 1.0,
+            summary.rate() <= summary.wilson_upper() && summary.wilson_upper() <= 1.0,
             "case {case}: {summary:?} z {wilson_z}"
         );
     }

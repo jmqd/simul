@@ -27,7 +27,7 @@ struct MaximizeMean;
 
 impl SelectionPolicy<ScalarSummary> for MaximizeMean {
     fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
-        left.mean.total_cmp(&right.mean)
+        left.mean().total_cmp(&right.mean())
     }
 }
 

@@ -1285,19 +1285,54 @@ impl BernoulliReducer {
     }
 }
 
-/// Final Bernoulli statistics.
+/// Final Bernoulli statistics, built only by [`BernoulliReducer`].
+///
+/// Every value is finite, the Wilson bounds lie in `[0, 1]`, and
+/// `successes <= attempts`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BernoulliSummary {
     /// Number of observations.
-    pub attempts: u64,
+    attempts: u64,
     /// Number of successful observations.
-    pub successes: u64,
+    successes: u64,
     /// Maximum-likelihood success probability.
-    pub rate: f64,
+    rate: f64,
     /// Lower Wilson-score confidence bound.
-    pub wilson_lower: f64,
+    wilson_lower: f64,
     /// Upper Wilson-score confidence bound.
-    pub wilson_upper: f64,
+    wilson_upper: f64,
+}
+
+impl BernoulliSummary {
+    /// Returns the number of observations.
+    #[must_use]
+    pub const fn attempts(&self) -> u64 {
+        self.attempts
+    }
+
+    /// Returns the number of successful observations.
+    #[must_use]
+    pub const fn successes(&self) -> u64 {
+        self.successes
+    }
+
+    /// Returns the maximum-likelihood success probability.
+    #[must_use]
+    pub const fn rate(&self) -> f64 {
+        self.rate
+    }
+
+    /// Returns the lower Wilson-score confidence bound.
+    #[must_use]
+    pub const fn wilson_lower(&self) -> f64 {
+        self.wilson_lower
+    }
+
+    /// Returns the upper Wilson-score confidence bound.
+    #[must_use]
+    pub const fn wilson_upper(&self) -> f64 {
+        self.wilson_upper
+    }
 }
 
 /// Online finite-scalar reducer using Welford's stable recurrence.
@@ -1402,21 +1437,61 @@ impl ScalarReducer {
     }
 }
 
-/// Final finite-scalar statistics.
+/// Final finite-scalar statistics, built only by [`ScalarReducer`].
+///
+/// Every value is finite.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScalarSummary {
     /// Number of observations.
-    pub count: u64,
+    count: u64,
     /// Arithmetic mean.
-    pub mean: f64,
+    mean: f64,
     /// Unbiased sample variance, absent for one observation.
-    pub sample_variance: Option<f64>,
+    sample_variance: Option<f64>,
     /// Standard error of the mean, absent for one observation.
-    pub standard_error: Option<f64>,
+    standard_error: Option<f64>,
     /// Minimum observation.
-    pub min: f64,
+    min: f64,
     /// Maximum observation.
-    pub max: f64,
+    max: f64,
+}
+
+impl ScalarSummary {
+    /// Returns the number of observations.
+    #[must_use]
+    pub const fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Returns the arithmetic mean.
+    #[must_use]
+    pub const fn mean(&self) -> f64 {
+        self.mean
+    }
+
+    /// Returns the unbiased sample variance, absent for one observation.
+    #[must_use]
+    pub const fn sample_variance(&self) -> Option<f64> {
+        self.sample_variance
+    }
+
+    /// Returns the standard error of the mean, absent for one observation.
+    #[must_use]
+    pub const fn standard_error(&self) -> Option<f64> {
+        self.standard_error
+    }
+
+    /// Returns the minimum observation.
+    #[must_use]
+    pub const fn min(&self) -> f64 {
+        self.min
+    }
+
+    /// Returns the maximum observation.
+    #[must_use]
+    pub const fn max(&self) -> f64 {
+        self.max
+    }
 }
 
 /// Explicit treatment of typed evaluator failures during aggregation.

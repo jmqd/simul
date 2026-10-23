@@ -1,5 +1,12 @@
 #+title: Changelog
 
+* DONE Seal Bernoulli and scalar summaries (breaking)
+=BernoulliSummary= and =ScalarSummary= fields are private; read them with
+same-named getters such as =rate()= and =mean()=. Only =BernoulliReducer= and
+=ScalarReducer= build them, so summaries are always finite and selection
+policies never see a NaN rate. =CandidateSummary= stays a public data carrier
+for caller-defined statistics.
+
 * DONE Build simulations with Simulation::builder (breaking)
 =SimulationParameters=, =Simulation::new=, and =Simulation::try_new= are
 replaced by =Simulation::builder(halt)=, which takes the required =Halt= up
