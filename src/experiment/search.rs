@@ -363,13 +363,17 @@ where
         let remaining = self.budget.saturating_sub(self.next_token);
         let count = usize::try_from(remaining).unwrap_or(usize::MAX).min(limit);
         let mut asked = Vec::with_capacity(count);
-        self.pending.reserve(count);
-        for _ in 0..count {
-            let token = ProposalToken::new(self.next_token);
-            let mut rng = self.deriver.proposal_seed(token.value()).rng();
+        for value in (self.next_token..).take(count) {
+            let token = ProposalToken::new(value);
+            let mut rng = self.deriver.proposal_seed(value).rng();
             let candidate = (self.generator)(&mut rng);
-            self.pending.push(candidate.clone());
             asked.push(Asked { token, candidate });
+        }
+        // Issue tokens only after every generator call returned, so a panicking
+        // generator leaves no outstanding tokens the caller never received.
+        self.pending.reserve(count);
+        for proposal in &asked {
+            self.pending.push(proposal.candidate.clone());
             self.next_token += 1;
         }
         asked
@@ -506,6 +510,28 @@ mod tests {
         assert_eq!(0, split.ask(1).len());
         assert_eq!(split.status().asked, 5);
         assert_eq!(split.status().outstanding, 5);
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn panicking_generator_issues_no_tokens_and_retries_identically() {
+        let seed = MasterSeed::from_u64(88);
+        let mut calls = 0_u32;
+        let generator = |rng: &mut TrialRng| {
+            calls += 1;
+            assert_ne!(calls, 3, "generator failed");
+            rng.next_u64()
+        };
+        let mut search = SeededRandomSearch::new(seed, 3, generator, MaxI32);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| search.ask(3)));
+        assert!(outcome.is_err());
+        assert_eq!(0, search.status().asked);
+        assert_eq!(0, search.status().outstanding);
+
+        let retried = search.ask(3);
+        let generator = |rng: &mut TrialRng| rng.next_u64();
+        let mut fresh = SeededRandomSearch::new(seed, 3, generator, MaxI32);
+        assert_eq!(fresh.ask(3), retried);
     }
 
     #[test]

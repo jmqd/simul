@@ -101,7 +101,7 @@ policy and updates counters after. A panic caught by the caller leaves
 =asked: 3, told: 2, outstanding: 0, finished: true=, and the lost token
 returns =DuplicateToken= if told again. Fix: run the policy before changing
 any state.
-** TODO [low] A panicking generator in =ask= strands outstanding tokens
+** DONE [low] A panicking generator in =ask= strands outstanding tokens
 =ask= records each proposal and advances =next_token= inside the loop, so a
 panic on the third candidate leaves =asked: 2, outstanding: 2= for tokens the
 caller never received; the search can never finish. Fix: generate the whole
