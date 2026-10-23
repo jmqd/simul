@@ -154,29 +154,74 @@ impl std::fmt::Debug for Halt {
     }
 }
 
-/// The parameters to create a Simulation.
+/// Configures and validates a [`Simulation`]; create one with
+/// [`Simulation::builder`].
 #[derive(Clone, Debug)]
-pub struct SimulationParameters {
-    /// The agents within the simulation, e.g. adaptive agents.
-    /// See here: <https://authors.library.caltech.edu/60491/1/MGM%20113.pdf>
-    pub agent_initializers: Vec<AgentInitializer>,
-
+#[must_use]
+pub struct SimulationBuilder {
+    /// Agents in construction order, which fixes their [`AgentId`]s.
+    agent_initializers: Vec<AgentInitializer>,
     /// When the run stops.
-    pub halt: Halt,
+    halt: Halt,
+    /// The tick the simulation starts at.
+    starting_time: DiscreteTime,
+    /// Whether every tick records each agent's queue depth.
+    queue_depth_metrics: bool,
+    /// Whether visits to sleeping agents count asleep ticks.
+    asleep_cycles_metric: bool,
+    /// Root of every agent's [`AgentContext::rng`] stream.
+    seed: MasterSeed,
+}
 
-    /// The discrete time at which the simulation should begin.
-    /// For the vast majority of simulations, 0 is the correct default.
-    pub starting_time: DiscreteTime,
+impl SimulationBuilder {
+    /// Appends one agent.
+    pub fn agent(mut self, agent: AgentInitializer) -> Self {
+        self.agent_initializers.push(agent);
+        self
+    }
 
-    /// Whether to record metrics on queue depths at every tick of the simulation.
-    pub enable_queue_depth_metrics: bool,
+    /// Appends agents in order.
+    pub fn agents(mut self, agents: impl IntoIterator<Item = AgentInitializer>) -> Self {
+        self.agent_initializers.extend(agents);
+        self
+    }
 
-    /// Records a metric on the number of cycles an agent was asleep for.
-    pub enable_agent_asleep_cycles_metric: bool,
+    /// Sets the first tick to run. Defaults to 0.
+    pub const fn starting_time(mut self, time: DiscreteTime) -> Self {
+        self.starting_time = time;
+        self
+    }
 
-    /// Root of every agent's [`AgentContext::rng`] stream. Equal seeds give
-    /// equal runs; the default is `MasterSeed::from_u64(0)`.
-    pub seed: MasterSeed,
+    /// Sets the root of every agent's [`AgentContext::rng`] stream. Equal
+    /// seeds give equal runs. Defaults to `MasterSeed::from_u64(0)`.
+    pub const fn seed(mut self, seed: MasterSeed) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Records each agent's queue depth on every tick. Off by default; it
+    /// forces dense scheduling.
+    pub const fn queue_depth_metrics(mut self, enabled: bool) -> Self {
+        self.queue_depth_metrics = enabled;
+        self
+    }
+
+    /// Counts the ticks each agent spends asleep. Off by default; it forces
+    /// dense scheduling.
+    pub const fn asleep_cycles_metric(mut self, enabled: bool) -> Self {
+        self.asleep_cycles_metric = enabled;
+        self
+    }
+
+    /// Validates the configuration and builds the simulation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a
+    /// name, or [`SimulationError::TooManyAgents`] beyond `u32::MAX` agents.
+    pub fn build(self) -> Result<Simulation, SimulationError> {
+        Simulation::try_new(self)
+    }
 }
 
 /// Errors returned when simulation parameters are invalid.
@@ -195,7 +240,7 @@ impl std::fmt::Display for SimulationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicateAgentName(name) => {
-                write!(f, "duplicate agent name in simulation parameters: {name}")
+                write!(f, "duplicate agent name: {name}")
             }
             Self::TooManyAgents { count } => {
                 write!(f, "{count} agents exceed the limit of {MAX_AGENTS}")
@@ -205,19 +250,6 @@ impl std::fmt::Display for SimulationError {
 }
 
 impl std::error::Error for SimulationError {}
-
-impl Default for SimulationParameters {
-    fn default() -> Self {
-        Self {
-            agent_initializers: vec![],
-            halt: Halt::AtTime(0),
-            starting_time: 0,
-            enable_queue_depth_metrics: false,
-            enable_agent_asleep_cycles_metric: false,
-            seed: MasterSeed::from_u64(0),
-        }
-    }
-}
 
 /// Per-tick inputs shared by every agent visit.
 struct Tick<'a> {
@@ -438,26 +470,20 @@ fn visit_agent(
 }
 
 impl Simulation {
-    /// Builds a simulation.
-    ///
-    /// # Panics
-    ///
-    /// Panics when parameters are invalid. Use [`Self::try_new`] to handle errors explicitly.
-    #[must_use]
-    pub fn new(parameters: SimulationParameters) -> Self {
-        match Self::try_new(parameters) {
-            Ok(simulation) => simulation,
-            Err(err) => panic!("{err}"),
+    /// Starts configuring a simulation that stops according to `halt`.
+    pub const fn builder(halt: Halt) -> SimulationBuilder {
+        SimulationBuilder {
+            agent_initializers: Vec::new(),
+            halt,
+            starting_time: 0,
+            queue_depth_metrics: false,
+            asleep_cycles_metric: false,
+            seed: MasterSeed::from_u64(0),
         }
     }
 
-    /// Builds a simulation, returning an error when parameters are invalid.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a
-    /// name, or [`SimulationError::TooManyAgents`] beyond `u32::MAX` agents.
-    pub fn try_new(parameters: SimulationParameters) -> Result<Self, SimulationError> {
+    /// Builds a validated simulation from a builder.
+    fn try_new(parameters: SimulationBuilder) -> Result<Self, SimulationError> {
         let initializers = &parameters.agent_initializers;
         if initializers.len() > MAX_AGENTS {
             return Err(SimulationError::TooManyAgents {
@@ -528,8 +554,8 @@ impl Simulation {
             agents,
             halt: parameters.halt,
             time: parameters.starting_time,
-            enable_queue_depth_metric: parameters.enable_queue_depth_metrics,
-            enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
+            enable_queue_depth_metric: parameters.queue_depth_metrics,
+            enable_agent_asleep_cycles_metric: parameters.asleep_cycles_metric,
             agent_name_handle_map,
             layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
             seeds: SeedDeriver::new(parameters.seed),
@@ -904,14 +930,13 @@ mod tests {
     #[test]
     fn basic_periodic_test() {
         init();
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: vec![
+        let mut simulation = Simulation::builder(Halt::AtTime(5))
+            .agents(vec![
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 periodic_consumer("consumer".to_string(), 1),
-            ],
-            halt: Halt::AtTime(5),
-            ..Default::default()
-        });
+            ])
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
         let produced_stats = simulation.calc_produced_len_statistics();
         assert_eq!(produced_stats.get("producer"), Some(&5));
@@ -927,14 +952,13 @@ mod tests {
         let mut consumer = periodic_consumer("consumer".to_string(), 1);
         consumer.options.initial_mode = AgentMode::AsleepUntil(3);
         consumer.options.wake_mode = AgentMode::Reactive;
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: vec![
+        let mut simulation = Simulation::builder(Halt::AtTime(5))
+            .agents(vec![
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 consumer,
-            ],
-            halt: Halt::AtTime(5),
-            ..Default::default()
-        });
+            ])
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
 
         simulation.run();
 
@@ -959,10 +983,9 @@ mod tests {
                 .map(|i| periodic_consumer(format!("worker-{i}"), 1))
                 .collect();
             agent_initializers.push(periodic_consumer("worker-1".to_string(), 2));
-            let result = Simulation::try_new(SimulationParameters {
-                agent_initializers,
-                ..Default::default()
-            });
+            let result = Simulation::builder(Halt::AtTime(0))
+                .agents(agent_initializers)
+                .build();
 
             assert!(
                 matches!(&result, Err(SimulationError::DuplicateAgentName(name)) if name == "worker-1"),

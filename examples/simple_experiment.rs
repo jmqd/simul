@@ -11,7 +11,7 @@ use simul::experiment::{
     aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
     NonFinitePolicy, ScalarSummary, SelectionPolicy,
 };
-use simul::{Halt, Simulation, SimulationParameters};
+use simul::{Halt, Simulation, SimulationBuilder};
 use std::cmp::Ordering;
 use std::convert::Infallible;
 
@@ -31,8 +31,8 @@ impl SelectionPolicy<ScalarSummary> for MaximizeMean {
     }
 }
 
-/// Creates simulation parameters for one typed consumer-period candidate.
-fn build_simulation_parameters(consumer_period: u64) -> SimulationParameters {
+/// Configures the simulation for one typed consumer-period candidate.
+fn simulation_builder(consumer_period: u64) -> SimulationBuilder {
     let halt_condition = |simulation: &Simulation| {
         simulation
             .find_by_name("consumer")
@@ -43,19 +43,16 @@ fn build_simulation_parameters(consumer_period: u64) -> SimulationParameters {
             > HALT_CONSUMED_COUNT
     };
 
-    SimulationParameters {
-        agent_initializers: vec![
+    Simulation::builder(Halt::when(halt_condition))
+        .agents(vec![
             periodic_producer(
                 "producer".to_string(),
                 PRODUCER_PERIOD,
                 "consumer".to_string(),
             ),
             periodic_consumer("consumer".to_string(), consumer_period),
-        ],
-        halt: Halt::when(halt_condition),
-        enable_agent_asleep_cycles_metric: true,
-        ..Default::default()
-    }
+        ])
+        .asleep_cycles_metric(true)
 }
 
 /// Rewards short completion time while preferring less eager consumers on ties.
@@ -81,7 +78,9 @@ fn run_experiment() -> Simulation {
             MASTER_SEED,
             schedule.trials(candidate_id, consumer_period),
             |period, _context| {
-                let mut simulation = Simulation::new(build_simulation_parameters(*period));
+                let mut simulation = simulation_builder(*period)
+                    .build()
+                    .unwrap_or_else(|error| panic!("{error}"));
                 simulation.run();
                 Ok::<_, Infallible>(simulation)
             },

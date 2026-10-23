@@ -5,7 +5,7 @@ extern crate criterion;
 
 use criterion::{criterion_group, Criterion};
 use simul::agent::{periodic_consumer, periodic_producer, AgentMode};
-use simul::{Halt, Simulation, SimulationParameters};
+use simul::{Halt, Simulation};
 use std::hint::black_box;
 
 fn run_periodic_simulation(
@@ -22,12 +22,11 @@ fn run_periodic_simulation(
         agent.options.initial_mode = AgentMode::AsleepUntil(u64::MAX);
         agent
     }));
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers,
-        halt: Halt::AtTime(ticks),
-        enable_queue_depth_metrics,
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::AtTime(ticks))
+        .agents(agent_initializers)
+        .queue_depth_metrics(enable_queue_depth_metrics)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     simulation
 }

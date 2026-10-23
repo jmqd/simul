@@ -4,7 +4,7 @@ use rand_distr::weighted::WeightedIndex;
 use rustc_hash::FxHashMap;
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentOptions};
 use simul::message::Message;
-use simul::{Halt, Simulation, SimulationParameters};
+use simul::{Halt, Simulation};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -150,11 +150,10 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         .options
         .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
-    let mut sim = Simulation::new(SimulationParameters {
-        agent_initializers,
-        halt: Halt::when(halt_condition),
-        ..Default::default()
-    });
+    let mut sim = Simulation::builder(Halt::when(halt_condition))
+        .agents(agent_initializers)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     sim.run();
 
     winner
@@ -209,11 +208,10 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .options
         .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
-    let mut sim = Simulation::new(SimulationParameters {
-        agent_initializers,
-        halt: Halt::when(halt_condition),
-        ..Default::default()
-    });
+    let mut sim = Simulation::builder(Halt::when(halt_condition))
+        .agents(agent_initializers)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     sim.run();
 
     winner
@@ -305,8 +303,8 @@ mod tests {
                     winner: Rc::clone(&winner),
                 })
             };
-            let mut simulation = Simulation::new(SimulationParameters {
-                agent_initializers: vec![AgentInitializer {
+            let mut simulation = Simulation::builder(Halt::AtTime(2))
+                .agents(vec![AgentInitializer {
                     agent,
                     options: AgentOptions {
                         name: "player".to_string(),
@@ -314,10 +312,9 @@ mod tests {
                             .into(),
                         ..Default::default()
                     },
-                }],
-                halt: Halt::AtTime(2),
-                ..Default::default()
-            });
+                }])
+                .build()
+                .unwrap_or_else(|error| panic!("{error}"));
             simulation.run();
 
             assert_eq!(winner.get(), Some(0));

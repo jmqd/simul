@@ -32,7 +32,7 @@ use simul::experiment::{
     TrialStream,
 };
 use simul::message::Message;
-use simul::{Halt, Simulation, SimulationParameters};
+use simul::{Halt, Simulation, SimulationBuilder};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -335,8 +335,8 @@ fn main() {
     }
 }
 
-fn simulate(parameters: SimulationParameters) -> Simulation {
-    let mut simulation = Simulation::new(parameters);
+fn simulate(builder: SimulationBuilder) -> Simulation {
+    let mut simulation = builder.build().unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     simulation
 }
@@ -367,15 +367,14 @@ fn histories(simulation: &Simulation) -> Fingerprint {
 }
 
 fn periodic_pair(enable_queue_depth_metrics: bool) -> Fingerprint {
-    let simulation = simulate(SimulationParameters {
-        agent_initializers: vec![
-            periodic_producer("producer".to_string(), 1, "consumer".to_string()),
-            periodic_consumer("consumer".to_string(), 1),
-        ],
-        halt: Halt::AtTime(10_000),
-        enable_queue_depth_metrics,
-        ..Default::default()
-    });
+    let simulation = simulate(
+        Simulation::builder(Halt::AtTime(10_000))
+            .agents(vec![
+                periodic_producer("producer".to_string(), 1, "consumer".to_string()),
+                periodic_consumer("consumer".to_string(), 1),
+            ])
+            .queue_depth_metrics(enable_queue_depth_metrics),
+    );
     let depths = simulation.queue_depth_metrics("consumer").unwrap_or(&[]);
     depths
         .iter()
@@ -404,15 +403,14 @@ fn sim_fan_in() -> Fingerprint {
         })
         .collect();
     agent_initializers.push(periodic_consumer("sink".to_string(), 1));
-    let simulation = simulate(SimulationParameters {
-        agent_initializers,
-        halt: Halt::when(|simulation: &Simulation| {
+    let simulation = simulate(
+        Simulation::builder(Halt::when(|simulation: &Simulation| {
             simulation
                 .find_by_name("sink")
                 .is_some_and(|sink| sink.state.consumed.len() >= 1_500)
-        }),
-        ..Default::default()
-    });
+        }))
+        .agents(agent_initializers),
+    );
     histories(&simulation)
 }
 
@@ -429,12 +427,11 @@ fn sparse_simulation(enable_agent_asleep_cycles_metric: bool) -> Simulation {
         .collect();
     agent_initializers
         .extend((0..8).map(|index| periodic_consumer(format!("consumer-{index}"), 1)));
-    simulate(SimulationParameters {
-        agent_initializers,
-        halt: Halt::AtTime(3_000),
-        enable_agent_asleep_cycles_metric,
-        ..Default::default()
-    })
+    simulate(
+        Simulation::builder(Halt::AtTime(3_000))
+            .agents(agent_initializers)
+            .asleep_cycles_metric(enable_agent_asleep_cycles_metric),
+    )
 }
 
 /// The sparse population with sleep metrics, which require dense scans.
@@ -475,7 +472,7 @@ impl Agent for Relay {
 
 fn sim_relay_ring() -> Fingerprint {
     const RELAYS: u8 = 16;
-    let agent_initializers = (0..RELAYS)
+    let agent_initializers: Vec<_> = (0..RELAYS)
         .map(|index| {
             let name = format!("relay-{index}");
             let initial_queue: VecDeque<Message> = (0..3_u8)
@@ -496,11 +493,7 @@ fn sim_relay_ring() -> Fingerprint {
             }
         })
         .collect();
-    let simulation = simulate(SimulationParameters {
-        agent_initializers,
-        halt: Halt::AtTime(4_000),
-        ..Default::default()
-    });
+    let simulation = simulate(Simulation::builder(Halt::AtTime(4_000)).agents(agent_initializers));
     simulation
         .agents()
         .iter()
@@ -531,19 +524,18 @@ fn exp_search_sim() -> Fingerprint {
             SEED,
             schedule.trials(candidate, proposal.candidate),
             |&consumer_period, _context| {
-                let simulation = simulate(SimulationParameters {
-                    agent_initializers: vec![
-                        periodic_producer("producer".to_string(), 2, "consumer".to_string()),
-                        periodic_consumer("consumer".to_string(), consumer_period),
-                    ],
-                    halt: Halt::when(|simulation: &Simulation| {
+                let simulation = simulate(
+                    Simulation::builder(Halt::when(|simulation: &Simulation| {
                         simulation
                             .find_by_name("consumer")
                             .is_some_and(|consumer| consumer.state.consumed.len() > 10)
-                    }),
-                    enable_agent_asleep_cycles_metric: true,
-                    ..Default::default()
-                });
+                    }))
+                    .agents(vec![
+                        periodic_producer("producer".to_string(), 2, "consumer".to_string()),
+                        periodic_consumer("consumer".to_string(), consumer_period),
+                    ])
+                    .asleep_cycles_metric(true),
+                );
                 Ok::<_, Infallible>(consumer_period as f64 - simulation.time() as f64)
             },
         )

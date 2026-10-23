@@ -1,6 +1,6 @@
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
-use simul::{Halt, Simulation, SimulationParameters};
+use simul::{Halt, Simulation};
 use std::sync::Arc;
 
 /// Calculates productivity from each contiguous block of uninterrupted maker time.
@@ -70,8 +70,8 @@ impl Agent for ProductivityRecorder {
 }
 
 fn main() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut simulation = Simulation::builder(Halt::AtTime(128))
+        .agents(vec![
             AgentInitializer {
                 agent: Box::new(Developer {
                     schedule: [
@@ -95,10 +95,9 @@ fn main() {
                     ..Default::default()
                 },
             },
-        ],
-        halt: Halt::AtTime(128),
-        ..Default::default()
-    });
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
 
     simulation.run();
 }

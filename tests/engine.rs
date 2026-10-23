@@ -5,7 +5,7 @@ use simul::agent::{
     AgentMode, AgentOptions, MessageProcessingStatus,
 };
 use simul::message::Message;
-use simul::{Halt, Simulation, SimulationMode, SimulationParameters};
+use simul::{Halt, Simulation, SimulationMode};
 use std::sync::Arc;
 
 fn proactive_agent(name: &str, agent: impl Agent + 'static) -> AgentInitializer {
@@ -58,22 +58,19 @@ fn messages_route_to_lower_own_and_higher_handles() {
     for count in [3_u32, 8, 9] {
         let name = |handle: u32| format!("agent-{handle}");
         let neighbors = |handle: u32| [(handle + count - 1) % count, handle, (handle + 1) % count];
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: (0..count)
-                .map(|handle| {
-                    let [previous, _, next] = neighbors(handle);
-                    proactive_agent(
-                        &name(handle),
-                        NeighborSender {
-                            previous: name(previous),
-                            next: name(next),
-                        },
-                    )
-                })
-                .collect(),
-            halt: Halt::AtTime(1),
-            ..Default::default()
-        });
+        let mut simulation = Simulation::builder(Halt::AtTime(1))
+            .agents((0..count).map(|handle| {
+                let [previous, _, next] = neighbors(handle);
+                proactive_agent(
+                    &name(handle),
+                    NeighborSender {
+                        previous: name(previous),
+                        next: name(next),
+                    },
+                )
+            }))
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
 
         for handle in 0..count {
@@ -130,13 +127,12 @@ impl Agent for IdentitySender {
 #[test]
 fn send_to_delivers_by_identity_and_records_unknown_identities() {
     for count in [3_u32, 9] {
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: (0..count)
-                .map(|handle| proactive_agent(&format!("agent-{handle}"), IdentitySender { count }))
-                .collect(),
-            halt: Halt::AtTime(1),
-            ..Default::default()
-        });
+        let mut simulation = Simulation::builder(Halt::AtTime(1))
+            .agents((0..count).map(|handle| {
+                proactive_agent(&format!("agent-{handle}"), IdentitySender { count })
+            }))
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
 
         let expected: Vec<Option<AgentId>> = (0..count)
@@ -168,11 +164,10 @@ fn send_to_delivers_by_identity_and_records_unknown_identities() {
 
 #[test]
 fn halt_interrupt_stops_simulation() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![proactive_agent("halter", HaltImmediately)],
-        halt: Halt::Never,
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::Never)
+        .agents(vec![proactive_agent("halter", HaltImmediately)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
 
     simulation.run();
 
@@ -192,11 +187,10 @@ impl Agent for MissingTargetSender {
 
 #[test]
 fn unknown_destination_records_produced_message_without_delivery() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![proactive_agent("sender", MissingTargetSender)],
-        halt: Halt::AtTime(1),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::AtTime(1))
+        .agents(vec![proactive_agent("sender", MissingTargetSender)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
 
     simulation.run();
 
@@ -230,14 +224,13 @@ impl Agent for BurstSender {
 
 #[test]
 fn messages_sent_by_one_callback_preserve_call_order() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut simulation = Simulation::builder(Halt::AtTime(1))
+        .agents(vec![
             proactive_agent("sender", BurstSender),
             periodic_consumer("receiver".to_string(), 1),
-        ],
-        halt: Halt::AtTime(1),
-        ..Default::default()
-    });
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
 
     simulation.run();
 
@@ -278,21 +271,20 @@ impl Agent for SlowConsumer {
 
 #[test]
 fn in_progress_message_stays_queued_until_completed() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![AgentInitializer {
-            agent: Box::new(SlowConsumer),
-            options: AgentOptions {
-                initial_queue: vec![Message::new(0)].into(),
-                name: "consumer".to_string(),
-                ..Default::default()
-            },
-        }],
-        halt: Halt::when(|s: &Simulation| {
-            s.consumed_for_agent("consumer")
-                .is_some_and(|messages| messages.len() == 1)
-        }),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::when(|s: &Simulation| {
+        s.consumed_for_agent("consumer")
+            .is_some_and(|messages| messages.len() == 1)
+    }))
+    .agents(vec![AgentInitializer {
+        agent: Box::new(SlowConsumer),
+        options: AgentOptions {
+            initial_queue: vec![Message::new(0)].into(),
+            name: "consumer".to_string(),
+            ..Default::default()
+        },
+    }])
+    .build()
+    .unwrap_or_else(|error| panic!("{error}"));
 
     simulation.run();
 
@@ -323,12 +315,11 @@ fn draws(seed: u64, extra_agents: usize) -> Vec<u64> {
     let drawer = Drawer::default();
     let mut agents = vec![proactive_agent("drawer", drawer.clone())];
     agents.extend((0..extra_agents).map(|i| periodic_consumer(format!("idle-{i}"), 1)));
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: agents,
-        halt: Halt::AtTime(4),
-        seed: simul::experiment::MasterSeed::from_u64(seed),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::AtTime(4))
+        .agents(agents)
+        .seed(simul::experiment::MasterSeed::from_u64(seed))
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     let draws = drawer.0.lock().unwrap_or_else(|error| panic!("{error}"));
     draws.clone()
@@ -348,15 +339,14 @@ fn agent_streams_depend_only_on_seed_agent_and_tick() {
 #[test]
 fn halt_variants_stop_at_the_documented_tick() {
     let run = |starting_time, halt| {
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: vec![
+        let mut simulation = Simulation::builder(halt)
+            .agents(vec![
                 periodic_producer("producer", 1, "consumer"),
                 periodic_consumer("consumer", 1),
-            ],
-            starting_time,
-            halt,
-            ..Default::default()
-        });
+            ])
+            .starting_time(starting_time)
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
         simulation.time()
     };
@@ -377,15 +367,14 @@ fn halt_variants_stop_at_the_documented_tick() {
 #[test]
 fn geometric_producer_arrival_gaps_have_the_configured_mean_and_spread() {
     let mean = 4.0;
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut simulation = Simulation::builder(Halt::AtTime(40_000))
+        .agents(vec![
             simul::agent::geometric_producer("producer", mean, "consumer"),
             periodic_consumer("consumer", 1),
-        ],
-        halt: Halt::AtTime(40_000),
-        seed: simul::experiment::MasterSeed::from_u64(3),
-        ..Default::default()
-    });
+        ])
+        .seed(simul::experiment::MasterSeed::from_u64(3))
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     let Some(produced) = simulation.produced_for_agent("producer") else {
         panic!("producer must exist");
@@ -413,14 +402,13 @@ fn geometric_producer_arrival_gaps_have_the_configured_mean_and_spread() {
 
 #[test]
 fn geometric_agents_with_a_one_tick_mean_act_every_tick() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut simulation = Simulation::builder(Halt::AtTime(10))
+        .agents(vec![
             simul::agent::geometric_producer("producer", 1.0, "consumer"),
             simul::agent::geometric_consumer("consumer", 1.0),
-        ],
-        halt: Halt::AtTime(10),
-        ..Default::default()
-    });
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     assert_eq!(
         Some(10),
@@ -457,14 +445,13 @@ fn proactive_agents_handle_one_message_then_tick() {
         }
     }
     let log = Logger::default();
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut simulation = Simulation::builder(Halt::AtTime(3))
+        .agents(vec![
             periodic_producer("producer", 1, "door"),
             proactive_agent("door", log.clone()),
-        ],
-        halt: Halt::AtTime(3),
-        ..Default::default()
-    });
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
 
     let events = log
@@ -492,11 +479,10 @@ fn proactive_agents_handle_one_message_then_tick() {
 fn initial_queue_messages_are_addressed_to_their_owner() {
     let mut owner = periodic_consumer("owner", 1);
     owner.options.initial_queue.push_back(Message::new(0));
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![periodic_consumer("other", 1), owner],
-        halt: Halt::AtTime(1),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::AtTime(1))
+        .agents(vec![periodic_consumer("other", 1), owner])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
 
     let consumed = simulation.consumed_for_agent("owner");
@@ -508,15 +494,14 @@ fn initial_queue_messages_are_addressed_to_their_owner() {
 
 #[test]
 fn queue_depth_metrics_record_each_tick_depth() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut simulation = Simulation::builder(Halt::AtTime(5))
+        .agents(vec![
             periodic_producer("producer", 1, "consumer"),
             periodic_consumer("consumer", 3),
-        ],
-        enable_queue_depth_metrics: true,
-        halt: Halt::AtTime(5),
-        ..Default::default()
-    });
+        ])
+        .queue_depth_metrics(true)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
 
     simulation.run();
 
@@ -537,11 +522,10 @@ fn mutable_agent_access_preserves_identity_and_routing() {
     for count in [2, 9] {
         let mut agents = vec![proactive_agent("sender", MissingTargetSender)];
         agents.extend((1..count).map(|i| periodic_consumer(format!("receiver-{i}"), 1)));
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: agents,
-            halt: Halt::AtTime(2),
-            ..Default::default()
-        });
+        let mut simulation = Simulation::builder(Halt::AtTime(2))
+            .agents(agents)
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
         let Some((behavior, state)) = simulation.find_by_name_mut("sender") else {
             panic!("sender must exist");
         };
@@ -580,12 +564,14 @@ impl Agent for BoundaryCallback {
 #[test]
 fn time_overflow_fails_before_callbacks() {
     let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![proactive_agent("worker", BoundaryCallback(called.clone()))],
-        starting_time: u64::MAX,
-        halt: Halt::Never,
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::Never)
+        .agents(vec![proactive_agent(
+            "worker",
+            BoundaryCallback(called.clone()),
+        )])
+        .starting_time(u64::MAX)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
     assert!(result.is_err());
     assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
@@ -594,12 +580,11 @@ fn time_overflow_fails_before_callbacks() {
 
 #[test]
 fn sleep_overflow_does_not_wrap_or_change_mode() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![periodic_producer("sender", u64::MAX, "missing")],
-        starting_time: 1,
-        halt: Halt::AtTime(2),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::AtTime(2))
+        .agents(vec![periodic_producer("sender", u64::MAX, "missing")])
+        .starting_time(1)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
     assert!(result.is_err());
     assert_eq!(simulation.time(), 1);
@@ -613,12 +598,11 @@ fn sleep_overflow_does_not_wrap_or_change_mode() {
 
 #[test]
 fn final_representable_tick_and_wake_time_are_allowed() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![periodic_producer("sender", 1, "missing")],
-        starting_time: u64::MAX - 1,
-        halt: Halt::AtTime(u64::MAX),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::AtTime(u64::MAX))
+        .agents(vec![periodic_producer("sender", 1, "missing")])
+        .starting_time(u64::MAX - 1)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     assert_eq!(simulation.time(), u64::MAX);
     assert_eq!(
@@ -637,29 +621,27 @@ fn final_representable_tick_and_wake_time_are_allowed() {
 
 #[test]
 fn reused_producers_resolve_targets_in_each_simulation() {
-    let mut first = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut first = Simulation::builder(Halt::AtTime(2))
+        .agents(vec![
             periodic_producer("producer", 1, "consumer"),
             periodic_consumer("consumer", 1),
-        ],
-        halt: Halt::AtTime(2),
-        ..Default::default()
-    });
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     first.run();
     let Some(producer) = first.find_by_name("producer") else {
         panic!("producer must exist");
     };
 
     // The consumer's identity from the first simulation names the bystander here.
-    let mut second = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut second = Simulation::builder(Halt::AtTime(2))
+        .agents(vec![
             periodic_consumer("consumer", 1),
             periodic_consumer("bystander", 1),
             proactive_agent_boxed("producer", producer.agent.clone()),
-        ],
-        halt: Halt::AtTime(2),
-        ..Default::default()
-    });
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     second.run();
 
     let Some(sent) = second.produced_for_agent("producer") else {
@@ -680,19 +662,18 @@ fn reused_producers_resolve_targets_in_each_simulation() {
 #[test]
 fn average_wait_preserves_short_durations_at_large_timestamps() {
     for starting_time in [0, 1_u64 << 53, u64::MAX - 2] {
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: vec![
-                periodic_producer("sender", 1, "receiver"),
-                periodic_consumer("receiver", 1),
-            ],
-            starting_time,
-            halt: Halt::when(|simulation: &Simulation| {
-                simulation
-                    .consumed_for_agent("receiver")
-                    .is_some_and(|messages| !messages.is_empty())
-            }),
-            ..Default::default()
-        });
+        let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation| {
+            simulation
+                .consumed_for_agent("receiver")
+                .is_some_and(|messages| !messages.is_empty())
+        }))
+        .agents(vec![
+            periodic_producer("sender", 1, "receiver"),
+            periodic_consumer("receiver", 1),
+        ])
+        .starting_time(starting_time)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
 
         assert_eq!(
@@ -740,7 +721,7 @@ impl Agent for ScheduledAgent {
 
 fn scheduling_scenario(metrics: bool) -> (Simulation, CallbackTrace) {
     let trace = CallbackTrace::default();
-    let agents = (0..130)
+    let agents: Vec<_> = (0..130)
         .map(|index| {
             let (initial_mode, wake_mode) = match index {
                 0 => (AgentMode::Proactive, AgentMode::Proactive),
@@ -760,13 +741,12 @@ fn scheduling_scenario(metrics: bool) -> (Simulation, CallbackTrace) {
             }
         })
         .collect();
-    let simulation = Simulation::new(SimulationParameters {
-        agent_initializers: agents,
-        halt: Halt::AtTime(12),
-        enable_queue_depth_metrics: metrics,
-        enable_agent_asleep_cycles_metric: metrics,
-        ..Default::default()
-    });
+    let simulation = Simulation::builder(Halt::AtTime(12))
+        .agents(agents)
+        .queue_depth_metrics(metrics)
+        .asleep_cycles_metric(metrics)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     (simulation, trace)
 }
 
@@ -838,14 +818,13 @@ impl Agent for ChangingPayloadSender {
 
 #[test]
 fn repeated_sends_preserve_payloads_and_timestamps() {
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    let mut simulation = Simulation::builder(Halt::AtTime(5))
+        .agents(vec![
             proactive_agent("sender", ChangingPayloadSender),
             periodic_consumer("receiver", 1),
-        ],
-        halt: Halt::AtTime(5),
-        ..Default::default()
-    });
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
 
     let Some(produced) = simulation.produced_for_agent("sender") else {
@@ -887,15 +866,14 @@ fn new_sends_do_not_inherit_edited_history() {
         |message| message.completed_time = Some(u64::MAX),
     ];
     for mutate in mutations {
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: vec![
+        let mut simulation = Simulation::builder(Halt::Never)
+            .agents(vec![
                 periodic_producer("sender", 1, "receiver"),
                 periodic_consumer("receiver", 1),
                 proactive_agent("halter", HaltImmediately),
-            ],
-            halt: Halt::Never,
-            ..Default::default()
-        });
+            ])
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
         let Some((_, state)) = simulation.find_by_name_mut("sender") else {
             panic!("sender must exist");
@@ -930,16 +908,15 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
         .collect();
     agents[65].options.initial_mode = AgentMode::AsleepUntil(5);
     agents[65].options.initial_queue.push_back(Message::new(0));
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: agents,
-        halt: Halt::when(|simulation: &Simulation| {
-            simulation.find_by_name("agent-65").is_some_and(|agent| {
-                (simulation.time() == 5 && agent.state.mode == AgentMode::AsleepUntil(5))
-                    || !agent.state.consumed.is_empty()
-            })
-        }),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation| {
+        simulation.find_by_name("agent-65").is_some_and(|agent| {
+            (simulation.time() == 5 && agent.state.mode == AgentMode::AsleepUntil(5))
+                || !agent.state.consumed.is_empty()
+        })
+    }))
+    .agents(agents)
+    .build()
+    .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     assert_eq!(5, simulation.time());
     assert!(trace
@@ -969,7 +946,7 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
 #[test]
 fn all_sleeping_agents_still_check_halt_between_wakeups() {
     let trace = CallbackTrace::default();
-    let agents = (0..130)
+    let agents: Vec<_> = (0..130)
         .map(|index| {
             let mut agent =
                 proactive_agent(&format!("agent-{index}"), ScheduledAgent(trace.clone()));
@@ -977,11 +954,10 @@ fn all_sleeping_agents_still_check_halt_between_wakeups() {
             agent
         })
         .collect();
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: agents,
-        halt: Halt::AtTime(3),
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::AtTime(3))
+        .agents(agents)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     assert_eq!(3, simulation.time());
     assert!(trace
@@ -1009,11 +985,10 @@ fn callback_panic_fails_the_simulation_without_waking_later_agents() {
         .collect();
     agents[0] = proactive_agent("agent-0", PanicTick);
     agents[65].options.initial_mode = AgentMode::AsleepUntil(0);
-    let mut simulation = Simulation::new(SimulationParameters {
-        agent_initializers: agents,
-        halt: Halt::Never,
-        ..Default::default()
-    });
+    let mut simulation = Simulation::builder(Halt::Never)
+        .agents(agents)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
     assert!(result.is_err());
     assert_eq!(SimulationMode::Failed, simulation.mode());

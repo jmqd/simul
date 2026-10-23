@@ -10,7 +10,7 @@
 
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
-use simul::{DiscreteTime, Halt, Simulation, SimulationParameters};
+use simul::{DiscreteTime, Halt, Simulation};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -1029,8 +1029,8 @@ fn reactive_agent(
 }
 
 fn build_simulation(params: SoftwareTeamParameters) -> Simulation {
-    Simulation::new(SimulationParameters {
-        agent_initializers: vec![
+    Simulation::builder(Halt::Never)
+        .agents(vec![
             proactive_agent(PRODUCT, ProductManager::new(params)),
             proactive_agent(MEETINGS, MeetingScheduler { params }),
             proactive_agent(SLACK, CommunicationScheduler { params }),
@@ -1067,12 +1067,10 @@ fn build_simulation(params: SoftwareTeamParameters) -> Simulation {
                     stop_at: params.total_ticks(),
                 },
             ),
-        ],
-        halt: Halt::Never,
-        enable_queue_depth_metrics: true,
-        enable_agent_asleep_cycles_metric: false,
-        ..Default::default()
-    })
+        ])
+        .queue_depth_metrics(true)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn run_software_team(params: SoftwareTeamParameters) -> SoftwareTeamReport {

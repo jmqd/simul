@@ -1,5 +1,13 @@
 #+title: Changelog
 
+* DONE Build simulations with Simulation::builder (breaking)
+=SimulationParameters=, =Simulation::new=, and =Simulation::try_new= are
+replaced by =Simulation::builder(halt)=, which takes the required =Halt= up
+front and offers =agent=, =agents=, =starting_time=, =seed=,
+=queue_depth_metrics=, and =asleep_cycles_metric=. =build()= returns
+=Result<Simulation, SimulationError>=. The old =Default= halted before the
+first tick, so a forgotten halt check silently ran nothing.
+
 * DONE Declare halt conditions with Halt (breaking)
 =SimulationParameters::halt_check: fn(&Simulation) -> bool= is replaced by
 =halt: Halt=: =Halt::AtTime(t)= stops once time reaches =t=, =Halt::Never= runs

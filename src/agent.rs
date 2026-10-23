@@ -24,8 +24,8 @@ pub enum AgentMode {
     Dead,
 }
 
-/// A dense agent identity: the agent's position in
-/// [`SimulationParameters::agent_initializers`](crate::SimulationParameters).
+/// A dense agent identity: the agent's position in the order agents were
+/// added to the [`SimulationBuilder`](crate::SimulationBuilder).
 ///
 /// Sending by identity with [`AgentContext::send_to`] skips the name lookup
 /// that [`AgentContext::send`] performs. Identities store `index + 1`, so

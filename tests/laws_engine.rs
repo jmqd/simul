@@ -12,7 +12,7 @@ use simul::agent::{
 };
 use simul::experiment::MasterSeed;
 use simul::message::Message;
-use simul::{DiscreteTime, Halt, Simulation, SimulationParameters};
+use simul::{DiscreteTime, Halt, Simulation};
 use std::cell::{Cell, RefCell};
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
@@ -258,7 +258,7 @@ fn build(seed: u64, size: Size, queue_metric: bool, asleep_metric: bool, halts: 
     let names: Arc<[String]> = names.into();
 
     let mut initial_queues = Vec::with_capacity(count);
-    let agent_initializers = (0..count)
+    let agent_initializers: Vec<_> = (0..count)
         .map(|handle| {
             let name = names[handle].clone();
             let target = names[rng.random_range(0..names.len())].clone();
@@ -314,14 +314,14 @@ fn build(seed: u64, size: Size, queue_metric: bool, asleep_metric: bool, halts: 
         })
         .collect();
 
-    let simulation = Simulation::new(SimulationParameters {
-        agent_initializers,
-        halt: Halt::when(halt_at_time),
-        starting_time: start,
-        enable_queue_depth_metrics: queue_metric,
-        enable_agent_asleep_cycles_metric: asleep_metric,
-        seed: MasterSeed::from_u64(seed),
-    });
+    let simulation = Simulation::builder(Halt::when(halt_at_time))
+        .agents(agent_initializers)
+        .starting_time(start)
+        .queue_depth_metrics(queue_metric)
+        .asleep_cycles_metric(asleep_metric)
+        .seed(MasterSeed::from_u64(seed))
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     Case {
         simulation,
         start,
