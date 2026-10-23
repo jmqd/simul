@@ -135,7 +135,7 @@ plus panic/error scratch cases, 8 scheduler seeds). Notes for a recipe:
 =--lib= never reaches the unsafe code; multi-shard paths need
 =-Zmiri-num-cpus=4=; Stacked Borrows stops inside crossbeam-epoch, so use
 =-Zmiri-tree-borrows=; CEM tests need =-Zmiri-deterministic-floats=.
-** TODO Adopt the audit's seeded property suites as permanent tests
+** DONE Adopt the audit's seeded property suites as permanent tests
 Seeded =ChaCha8Rng= suites (no new dependencies) held across thousands of
 cases: sparse == dense scheduling (including edits between runs and segmented
 runs), clone == original, message conservation and order, halt timing,
