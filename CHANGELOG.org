@@ -1,5 +1,12 @@
 #+title: Changelog
 
+* DONE Measure circular means from a reference elite
+=circular_mean= sums angles relative to the best elite, so one elite or
+identical elites refit to their exact coordinate, and an exact half-turn tie
+always moves in the negative direction instead of depending on how the
+platform's =sin=, =cos=, and =atan2= round. Circular CEM results change in
+their last bits.
+
 * DONE Make CEM updates independent of sample order
 Elites are ordered best first with ties broken by point, and the selection
 path sorts them before fitting, so =tell= gives bit-identical updates for any

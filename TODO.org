@@ -109,7 +109,7 @@ mean from 0.09375 to 0.15625 and changed =best()=; without ties the fitted
 mean differs in the last bit in ~9% of random populations. Docs say NaN
 scores are "ignored". Fix: break ties with a fixed key (e.g. =total_cmp= on
 the point) and sort the selected elites.
-** TODO [low] Circular half-turn tie direction depends on libm rounding
+** DONE [low] Circular half-turn tie direction depends on libm rounding
 =circular_mean= goes through =atan2(sin, cos)=, so whether an exact half-turn
 tie moves negative (as =circular_mean_breaks_a_half_turn_tie_toward_the_negative_direction=
 pins) depends on trig rounding: 10 of 64 dyadic centers k/64 move positive

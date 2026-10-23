@@ -605,20 +605,27 @@ fn elite_count(valid_samples: usize, elite_fraction: f64) -> usize {
 }
 
 /// Computes a circular mean, retaining `fallback` for an undefined resultant.
+///
+/// Angles are measured from the first elite, so one elite, or identical
+/// elites, give that coordinate exactly instead of a trig round trip of it.
+/// That keeps exact half-turn ties to the old mean on the rule in
+/// [`circular_delta`] rather than on how `sin`, `cos`, and `atan2` round.
 fn circular_mean<const N: usize>(
     elites: &[CrossEntropySample<N>],
     dimension: usize,
     fallback: f64,
 ) -> f64 {
+    let reference = elites[0].point[dimension];
     let (sine_sum, cosine_sum) = elites.iter().fold((0.0, 0.0), |(sines, cosines), sample| {
-        let (sine, cosine) = (sample.point[dimension] * TAU).sin_cos();
+        let offset = circular_delta(reference, sample.point[dimension]);
+        let (sine, cosine) = (offset * TAU).sin_cos();
         (sines + sine, cosines + cosine)
     });
     if sine_sum.hypot(cosine_sum) <= f64::EPSILON * elites.len() as f64 {
         fallback
     } else {
         normalize(
-            sine_sum.atan2(cosine_sum) / TAU,
+            reference + sine_sum.atan2(cosine_sum) / TAU,
             CrossEntropyDimension::Circular,
         )
     }
@@ -884,16 +891,40 @@ mod tests {
 
     #[test]
     fn circular_mean_breaks_a_half_turn_tie_toward_the_negative_direction() {
-        let mut search = optimizer(
-            CrossEntropyConfig::new([0.0], [0.25])
-                .with_dimensions([CrossEntropyDimension::Circular])
-                .with_elite_fraction(1.0)
-                .with_learning_rate(0.5),
-        );
-        let mut samples = [CrossEntropySample::new([0.5], 1.0)];
-        assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
-        // Moving half of -0.5 from 0.0 wraps to 0.75; +0.5 would give 0.25.
-        assert_close(search.mean()[0], 0.75, f64::EPSILON);
+        // Dyadic centers make the half-turn difference exact, so only the tie
+        // rule decides the direction.
+        for k in 0..64_u32 {
+            let old = f64::from(k) / 64.0;
+            let opposite = (old + 0.5) % 1.0;
+            let mut search = optimizer(
+                CrossEntropyConfig::new([old], [0.25])
+                    .with_dimensions([CrossEntropyDimension::Circular])
+                    .with_elite_fraction(1.0)
+                    .with_learning_rate(0.5),
+            );
+            let mut samples = [CrossEntropySample::new([opposite], 1.0)];
+            assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+            // Moving half of -0.5 from 0.0 wraps to 0.75; +0.5 would give 0.25.
+            let expected = (old + 0.75) % 1.0;
+            assert_eq!(expected.to_bits(), search.mean()[0].to_bits(), "center {old}");
+        }
+    }
+
+    #[test]
+    fn a_full_refit_on_one_circular_elite_reproduces_it_exactly() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+        for _ in 0..200 {
+            let point = rng.random_range(0.0..1.0);
+            let mut search = optimizer(
+                CrossEntropyConfig::new([rng.random_range(0.0..1.0)], [0.25])
+                    .with_dimensions([CrossEntropyDimension::Circular])
+                    .with_elite_fraction(1.0)
+                    .with_learning_rate(1.0),
+            );
+            let mut samples = [CrossEntropySample::new([point], 1.0)];
+            assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+            assert_eq!(point.to_bits(), search.mean()[0].to_bits());
+        }
     }
 
     #[test]
