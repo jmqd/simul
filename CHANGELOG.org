@@ -1,5 +1,13 @@
 #+title: Changelog
 
+* DONE Record queue depths as changes (breaking)
+=Simulation::queue_depth_metrics= returns =&[QueueDepthChange]= (=time=,
+=depth=), recorded only when a pop, a delivery, or an in-progress requeue
+changes the depth an agent's visit observes; expanding the changes step-wise
+reproduces the old per-tick series. The metric no longer forces dense
+scheduling. 10,000 idle agents over 10,000 ticks with the metric on run in
+6.2 ms and 7.6 MB instead of 824 ms and 1.95 GB.
+
 * DONE Measure circular means from a reference elite
 =circular_mean= sums angles relative to the best elite, so one elite or
 identical elites refit to their exact coordinate, and an exact half-turn tie

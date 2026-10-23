@@ -27,7 +27,7 @@ pub mod message;
 
 use agent::{
     Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
-    AgentMode, AgentState, MessageProcessingStatus, SimulationAgent,
+    AgentMode, AgentState, MessageProcessingStatus, QueueDepthChange, SimulationAgent,
 };
 use experiment::{MasterSeed, SeedDeriver};
 use message::Message;
@@ -201,8 +201,7 @@ impl SimulationBuilder {
         self
     }
 
-    /// Records each agent's queue depth on every tick. Off by default; it
-    /// forces dense scheduling.
+    /// Records each agent's queue depth whenever it changes. Off by default.
     pub const fn queue_depth_metrics(mut self, enabled: bool) -> Self {
         self.queue_depth_metrics = enabled;
         self
@@ -389,10 +388,7 @@ fn visit_agent(
     if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
         if tick.time < wakeup_at {
             // A sleeping agent pops no message, runs no callback, and requests
-            // no sleep; only the optional metrics change.
-            if tick.queue_depth_metric {
-                agent.record_queue_depth();
-            }
+            // no sleep; only the optional asleep count changes.
             if tick.asleep_cycles_metric {
                 agent.metadata.asleep_cycle_count += 1;
             }
@@ -404,24 +400,16 @@ fn visit_agent(
         AgentMode::Proactive => true,
         AgentMode::Reactive => false,
         AgentMode::AsleepUntil(_) => {
-            if tick.queue_depth_metric {
-                agent.record_queue_depth();
-            }
             if tick.asleep_cycles_metric {
                 agent.metadata.asleep_cycle_count += 1;
             }
             return (false, None);
         }
-        AgentMode::Dead => {
-            if tick.queue_depth_metric {
-                agent.record_queue_depth();
-            }
-            return (false, None);
-        }
+        AgentMode::Dead => return (false, None),
     };
     let message = agent.state.queue.pop_front();
-    if tick.queue_depth_metric {
-        agent.record_queue_depth();
+    if tick.queue_depth_metric && message.is_some() {
+        agent.record_queue_depth(tick.time);
     }
     if !proactive && message.is_none() {
         return (false, None);
@@ -457,7 +445,13 @@ fn visit_agent(
     }
     if let Some(msg) = message {
         match status {
-            MessageProcessingStatus::InProgress => agent.state.queue.push_front(msg),
+            MessageProcessingStatus::InProgress => {
+                agent.state.queue.push_front(msg);
+                if tick.queue_depth_metric {
+                    // The message is back in the queue from the next tick on.
+                    agent.record_queue_depth(tick.time.saturating_add(1));
+                }
+            }
             MessageProcessingStatus::NoError => {
                 let mut msg = msg;
                 msg.completed_time = Some(tick.time);
@@ -617,9 +611,10 @@ impl Simulation {
         Some(&self.find_by_name(name)?.state.produced)
     }
 
-    /// Returns the queue depth timeseries for a given Agent during the Simulation.
+    /// Returns the agent's queue depth changes in time order, or `None` if no
+    /// agent has this name. Empty unless queue depth metrics are enabled.
     #[must_use]
-    pub fn queue_depth_metrics(&self, name: &str) -> Option<&[usize]> {
+    pub fn queue_depth_metrics(&self, name: &str) -> Option<&[QueueDepthChange]> {
         Some(&self.find_by_name(name)?.metadata.queue_depth_metrics)
     }
 
@@ -679,10 +674,16 @@ impl Simulation {
         self.mode = SimulationMode::Running;
         self.halt_reason = None;
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
-        // Small scans are cheaper than maintaining the schedule, and metrics need
-        // every agent visited every tick, so either keeps dense scans.
+        if self.enable_queue_depth_metric {
+            // Queues may have been edited between runs.
+            let time = self.time;
+            for agent in &mut self.agents {
+                agent.record_queue_depth(time);
+            }
+        }
+        // Small scans are cheaper than maintaining the schedule, and the asleep
+        // metric needs every agent visited every tick, so either keeps dense scans.
         let sparse_eligible = self.agents.len() > SPARSE_SCHEDULE_MIN_AGENTS
-            && !self.enable_queue_depth_metric
             && !self.enable_agent_asleep_cycles_metric;
         let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
 
@@ -701,7 +702,7 @@ impl Simulation {
                 None => self.run_dense_tick(&mut command_buffer),
             };
 
-            self.process_command_buffer(&mut command_buffer, schedule.as_mut());
+            self.process_command_buffer(&mut command_buffer, schedule.as_mut(), next_time);
 
             self.time = next_time;
             // Separate low and high watermarks amortize rebuilding across busy and
@@ -856,6 +857,7 @@ impl Simulation {
         &mut self,
         command_buffer: &mut Vec<AgentCommand>,
         mut schedule: Option<&mut SparseSchedule>,
+        next_time: DiscreteTime,
     ) {
         for command in command_buffer.drain(..) {
             match command.ty {
@@ -863,6 +865,10 @@ impl Simulation {
                     if let Some(destination) = message.destination {
                         let receiver = &mut self.agents[destination.index()];
                         receiver.state.queue.push_back(message.clone());
+                        if self.enable_queue_depth_metric {
+                            // Deliveries become visible at the next tick.
+                            receiver.record_queue_depth(next_time);
+                        }
                         if let Some(active) = schedule.as_deref_mut() {
                             if receiver.state.mode == AgentMode::Reactive {
                                 active.set_ready(destination.index(), true);

@@ -69,12 +69,24 @@ impl fmt::Debug for AgentId {
     }
 }
 
+/// A queue depth that holds from `time` until the next change.
+///
+/// The depth is the one an agent's visit at that tick observes: after it pops
+/// its message, before end-of-tick deliveries. Expanding the changes step-wise
+/// over the ticks run reproduces a per-tick series.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct QueueDepthChange {
+    /// The first tick with this depth.
+    pub time: DiscreteTime,
+    /// The number of queued messages.
+    pub depth: usize,
+}
+
 /// Per-agent bookkeeping collected by the simulation engine.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AgentMetadata {
-    /// Metrics recording the depth of the queue at each tick of the Sim.
-    /// TODO: We should store (time, depth) to minimize pushing here.
-    pub queue_depth_metrics: Vec<usize>,
+    /// Queue depth changes in time order, without repeated depths.
+    pub queue_depth_metrics: Vec<QueueDepthChange>,
 
     /// The number of cycles this agent was sleeping for.
     pub asleep_cycle_count: DiscreteTime,
@@ -98,12 +110,26 @@ pub struct SimulationAgent {
 }
 
 impl SimulationAgent {
-    /// Records the current queue depth for this tick.
-    #[inline]
-    pub(crate) fn record_queue_depth(&mut self) {
-        self.metadata
-            .queue_depth_metrics
-            .push(self.state.queue.len());
+    /// Records that the current queue depth holds from `time` on.
+    ///
+    /// Several events can land on one tick (a delivery visible from tick `t`,
+    /// then the pop at `t`), so a change at the latest time is overwritten and
+    /// dropped if it no longer differs from the one before it.
+    pub(crate) fn record_queue_depth(&mut self, time: DiscreteTime) {
+        let depth = self.state.queue.len();
+        let changes = &mut self.metadata.queue_depth_metrics;
+        match changes.last_mut() {
+            Some(last) if last.time == time => {
+                last.depth = depth;
+                if let [.., previous, _] = changes.as_slice() {
+                    if previous.depth == depth {
+                        changes.pop();
+                    }
+                }
+            }
+            Some(last) if last.depth == depth => {}
+            _ => changes.push(QueueDepthChange { time, depth }),
+        }
     }
 }
 

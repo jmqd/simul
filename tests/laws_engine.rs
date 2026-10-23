@@ -8,7 +8,7 @@ use rand::{RngExt as _, SeedableRng as _};
 use rand_chacha::ChaCha8Rng;
 use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
-    AgentMode, AgentOptions, MessageProcessingStatus, SimulationAgent,
+    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent,
 };
 use simul::experiment::MasterSeed;
 use simul::message::Message;
@@ -339,7 +339,7 @@ fn snapshot(simulation: &Simulation) -> String {
     out
 }
 
-fn metrics(simulation: &Simulation) -> Vec<(Vec<usize>, DiscreteTime)> {
+fn metrics(simulation: &Simulation) -> Vec<(Vec<QueueDepthChange>, DiscreteTime)> {
     simulation
         .agents()
         .iter()
@@ -691,18 +691,37 @@ fn metrics_cover_every_tick_run() {
         };
         let mut case = build(seed, Size::Any, queue_metric, asleep_metric, true);
         run(&mut case);
-        let ticks = case.simulation.time() - case.start;
+        let end = case.simulation.time();
+        let ticks = end - case.start;
         for agent in case.simulation.agents() {
             let name = &agent.name;
-            let depths = case
+            let changes = case
                 .simulation
                 .queue_depth_metrics(name)
                 .unwrap_or_else(|| panic!("seed {seed}: agent {name:?} has queue depth metrics"));
-            assert_eq!(
-                if queue_metric { ticks } else { 0 },
-                depths.len() as u64,
-                "seed {seed}"
-            );
+            if queue_metric {
+                // Changes start at the first tick, move forward in time within
+                // the run, always change the depth, and end at the final depth.
+                assert_eq!(
+                    Some(case.start),
+                    changes.first().map(|c| c.time),
+                    "seed {seed}"
+                );
+                assert!(
+                    changes
+                        .windows(2)
+                        .all(|pair| pair[0].time < pair[1].time && pair[0].depth != pair[1].depth),
+                    "seed {seed}: {changes:?}"
+                );
+                assert!(changes.iter().all(|c| c.time <= end), "seed {seed}");
+                assert_eq!(
+                    Some(agent.state.queue.len()),
+                    changes.last().map(|c| c.depth),
+                    "seed {seed}"
+                );
+            } else {
+                assert!(changes.is_empty(), "seed {seed}");
+            }
             let asleep = case
                 .simulation
                 .asleep_cycle_count(name)
@@ -712,6 +731,24 @@ fn metrics_cover_every_tick_run() {
                 assert_eq!(0, asleep, "seed {seed}");
             }
         }
+    }
+}
+
+#[test]
+fn queue_depth_metrics_agree_between_sparse_and_dense_scheduling() {
+    for seed in 0..LARGE_CASES {
+        // The asleep metric forces dense scans; the queue metric alone does not.
+        let mut sparse = build(seed, Size::Large, true, false, true);
+        let mut dense = build(seed, Size::Large, true, true, true);
+        run(&mut sparse);
+        run(&mut dense);
+        let queue_changes = |case: &Case| -> Vec<Vec<QueueDepthChange>> {
+            metrics(&case.simulation)
+                .into_iter()
+                .map(|(changes, _)| changes)
+                .collect()
+        };
+        assert_eq!(queue_changes(&dense), queue_changes(&sparse), "seed {seed}");
     }
 }
 

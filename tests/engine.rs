@@ -2,7 +2,7 @@
 
 use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
-    AgentMode, AgentOptions, MessageProcessingStatus,
+    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange,
 };
 use simul::message::Message;
 use simul::{Halt, Simulation, SimulationMode};
@@ -505,14 +505,16 @@ fn queue_depth_metrics_record_each_tick_depth() {
 
     simulation.run();
 
+    let change = |time, depth| QueueDepthChange { time, depth };
     assert_eq!(
-        Some([0_usize; 5].as_slice()),
+        Some([change(0, 0)].as_slice()),
         simulation.queue_depth_metrics("producer")
     );
     // Messages arrive at the end of each tick. The consumer clears tick 0's
-    // message at tick 1, sleeps until tick 4, then takes one of three.
+    // message at tick 1, sleeps until tick 4, then takes one of three, so its
+    // per-tick depths are 0, 0, 1, 2, 2.
     assert_eq!(
-        Some([0_usize, 0, 1, 2, 2].as_slice()),
+        Some([change(0, 0), change(2, 1), change(3, 2), change(5, 3)].as_slice()),
         simulation.queue_depth_metrics("consumer")
     );
 }
@@ -818,9 +820,11 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
         }
     }
     for agent in dense.agents() {
+        let changes = dense.queue_depth_metrics(&agent.name);
+        assert_eq!(Some(0), changes.and_then(|c| c.first()).map(|c| c.time));
         assert_eq!(
-            Some(12),
-            dense.queue_depth_metrics(&agent.name).map(<[usize]>::len)
+            Some(agent.state.queue.len()),
+            changes.and_then(|c| c.last()).map(|c| c.depth)
         );
     }
 }

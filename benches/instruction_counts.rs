@@ -375,11 +375,11 @@ fn periodic_pair(enable_queue_depth_metrics: bool) -> Fingerprint {
             ])
             .queue_depth_metrics(enable_queue_depth_metrics),
     );
-    let depths = simulation.queue_depth_metrics("consumer").unwrap_or(&[]);
-    depths
+    let changes = simulation.queue_depth_metrics("consumer").unwrap_or(&[]);
+    changes
         .iter()
-        .fold(histories(&simulation), |fingerprint, &depth| {
-            fingerprint.mix_len(depth)
+        .fold(histories(&simulation), |fingerprint, change| {
+            fingerprint.mix(change.time).mix_len(change.depth)
         })
 }
 
