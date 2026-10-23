@@ -47,7 +47,7 @@ impl Agent for NineBallPlayer {
             return;
         }
 
-        // If the opponent gets lucky, they get another turn.
+        // If the player gets lucky, they get another turn.
         let next_turn = if rng.random_range(0.0..1.0) > (1.0 - self.luck_chance) {
             ctx.name
         } else {

@@ -223,7 +223,7 @@ It says =opt-level = 3= regressed, yet =[profile.release]= sets no
 The "share retained contents ... names" and "share strings and payloads with
 copy-on-write" entries describe a =Message= that no longer holds strings.
 Fix: mark them superseded by "Identify message agents by AgentId".
-** TODO [low] Nine-ball comment names the wrong player
+** DONE [low] Nine-ball comment names the wrong player
 =examples/nine_ball_simulation.rs:50= says the opponent gets another turn on
 luck; the code keeps the turn with the current player (=ctx.name=), as the APA
 twin's comment says.
