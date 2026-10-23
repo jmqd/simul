@@ -92,7 +92,9 @@ pub struct SimulationAgent {
     /// The name for the agent. Must be unique for the simulation.
     pub name: String,
 
-    /// State that is mutable by the agent itself.
+    /// Engine-managed mode, queue, and message histories. Callbacks see it
+    /// read-only through [`AgentContext::state`]; callers may edit it between
+    /// runs.
     pub state: AgentState,
 }
 
