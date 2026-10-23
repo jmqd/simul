@@ -951,10 +951,16 @@ impl<T> RecordRange<'_, T> {
 #[cfg(feature = "parallel")]
 impl<T> Drop for RecordRange<'_, T> {
     fn drop(&mut self) {
-        for record in &mut self.storage[..self.initialized] {
-            // SAFETY: push initializes before extending the exclusively owned
-            // prefix. Success disarms this guard before the Vec takes ownership.
-            unsafe { record.assume_init_drop() };
+        let initialized = &mut self.storage[..self.initialized];
+        // SAFETY: push initializes before extending the exclusively owned
+        // prefix. Success disarms this guard before the Vec takes ownership.
+        // Dropping the prefix as one slice keeps dropping after a panicking
+        // element instead of leaking the rest.
+        unsafe {
+            std::ptr::drop_in_place(std::ptr::slice_from_raw_parts_mut(
+                initialized.as_mut_ptr().cast::<T>(),
+                initialized.len(),
+            ));
         }
     }
 }

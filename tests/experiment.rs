@@ -531,4 +531,35 @@ mod parallel {
             }
         }
     }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn discarding_partial_output_drops_records_after_a_panicking_drop() {
+        struct PanicOnDrop<'a>(&'a AtomicUsize);
+        impl Drop for PanicOnDrop<'_> {
+            fn drop(&mut self) {
+                assert_ne!(
+                    self.0.fetch_add(1, Ordering::SeqCst),
+                    0,
+                    "record drop panic"
+                );
+            }
+        }
+        let drops = AtomicUsize::new(0);
+        let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_parallel(
+                MASTER_SEED,
+                (0..4).map(|id| trial(id, 0)),
+                ParallelConfig::new(nonzero(1), nonzero(4)),
+                || Ok::<_, Infallible>(()),
+                |(), id, _| {
+                    assert_ne!(*id, 3, "discard three written records");
+                    Ok::<_, Infallible>(PanicOnDrop(&drops))
+                },
+            )
+            .map(drop)
+        }));
+        assert!(outer.is_err());
+        assert_eq!(3, drops.load(Ordering::SeqCst));
+    }
 }

@@ -151,7 +151,7 @@ average deltas from a reference elite via =circular_delta=.
 so such a payload unwinds out of =run_parallel= instead of becoming the
 documented typed error. Records are still cleaned up; Miri finds no UB.
 Fix: forget the payload or drop it inside a second =catch_unwind=.
-** TODO [low] =RecordRange::drop= leaks the rest if one record's =Drop= panics
+** DONE [low] =RecordRange::drop= leaks the rest if one record's =Drop= panics
 The guard calls =assume_init_drop= per element and stops at the first panic;
 Miri reports the later records leaked. Fix: one =ptr::drop_in_place= over the
 initialized slice, which keeps dropping after a panic.
