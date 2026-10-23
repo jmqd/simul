@@ -1103,12 +1103,18 @@ where
         return Err(ParallelRunError::WorkerWorkloadPanic { worker });
     }
     for shard in &mut shards {
+        assert_eq!(
+            shard.records.initialized,
+            shard.records.storage.len(),
+            "a shard that did not panic must have written every reserved slot"
+        );
         shard.records.initialized = 0;
     }
     drop(shards);
-    // SAFETY: successful evaluation initialized every element in the disjoint
-    // ranges covering ordered.len() reserved slots, and all parallel work joined.
-    // Guards are disarmed and no mutable slices remain; records is sole owner.
+    // SAFETY: the assertion above proved every shard initialized its whole
+    // range, the ranges are disjoint and cover ordered.len() reserved slots,
+    // and all parallel work joined. Guards are disarmed and no mutable slices
+    // remain; records is sole owner.
     unsafe { records.set_len(ordered.len()) };
     Ok(records)
 }

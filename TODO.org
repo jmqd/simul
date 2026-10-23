@@ -155,7 +155,7 @@ Fix: forget the payload or drop it inside a second =catch_unwind=.
 The guard calls =assume_init_drop= per element and stops at the first panic;
 Miri reports the later records leaked. Fix: one =ptr::drop_in_place= over the
 initialized slice, which keeps dropping after a panic.
-** TODO [low] Check the =set_len= invariant instead of assuming it
+** DONE [low] Check the =set_len= invariant instead of assuming it
 The SAFETY comment at =core.rs:1096= relies on unchecked facts: =zip= pairs
 equal-length lists, rayon runs each shard once, and each shard's trial count
 equals its storage length. Fix: =assert_eq!(initialized, storage.len())= in
