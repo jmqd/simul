@@ -145,6 +145,21 @@ fn serial_workload_panic_discards_partial_results_without_retry() {
     assert_eq!(evaluations, 2);
 }
 
+#[cfg(panic = "unwind")]
+#[test]
+fn serial_panic_with_panicking_payload_returns_workload_panic() {
+    struct PayloadBomb;
+    impl Drop for PayloadBomb {
+        fn drop(&mut self) {
+            panic!("payload drop panic");
+        }
+    }
+    let result = run_serial(MASTER_SEED, trials(), |_, _| -> Result<(), Infallible> {
+        std::panic::resume_unwind(Box::new(PayloadBomb))
+    });
+    assert!(matches!(result, Err(RunError::WorkloadPanic)));
+}
+
 #[cfg(feature = "parallel")]
 mod parallel {
     use super::*;

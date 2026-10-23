@@ -731,7 +731,14 @@ fn collect_canonical<C>(
 fn catch_callback<T>(callback: impl FnOnce() -> T) -> Result<T, ()> {
     #[cfg(panic = "unwind")]
     {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)).map_err(|_| ())
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)).map_err(|payload| {
+            // A payload whose destructor panics must not escape as a second unwind.
+            if let Err(nested) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drop(payload);
+            })) {
+                std::mem::forget(nested);
+            }
+        })
     }
     #[cfg(not(panic = "unwind"))]
     {

@@ -146,7 +146,7 @@ pins) depends on trig rounding: 10 of 64 dyadic centers k/64 move positive
 natively, and under Miri the pinned test gives 0.25 instead of 0.75. A
 refit on one elite also does not reproduce its coordinate exactly. Fix:
 average deltas from a reference elite via =circular_delta=.
-** TODO [low] A panic payload whose =Drop= panics escapes the runners
+** DONE [low] A panic payload whose =Drop= panics escapes the runners
 =catch_callback= (=core.rs:734=) drops the payload outside =catch_unwind=,
 so such a payload unwinds out of =run_parallel= instead of becoming the
 documented typed error. Records are still cleaned up; Miri finds no UB.
