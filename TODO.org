@@ -1,27 +1,24 @@
 * Features
-** TODO Add experiment in experiment.rs to support running same experiment over
+** DONE Add experiment in experiment.rs to support running same experiment over
    and over for getting precise confidence interval
+=FixedReplications= with the Wilson and standard-error reducers.
 * Performance
-** TODO Parallelize experiment running.
+** DONE Parallelize experiment running.
+=run_parallel= and =ParallelExecutor= behind the =parallel= feature.
 * Crate cleanup
-** TODO Fully-integrate plotters feature into library
 ** TODO Move Agent creaton helpers into impl proper
 * Architecture / Interface
 ** IDEA Consider replacing halt_check with a fn that returns SimulationState enum
-** IDEA Consider adding Experiment structure for better interface
+** DONE Consider adding Experiment structure for better interface
+The =simul::experiment= module.
 ** IDEA Re-evaluate targeting system architecture for messages
 Should agents be passed as a graph?
 Should agents be in charge of which tickets they receive?
-** IDEA Implement "Interning with Fallback" for Agent Identity
-Refactor the engine to use `AgentId` (usize) instead of Strings for the hot path.
-1. Define `pub type AgentId = usize`.
-2. Update `Message` to use `AgentId` for source/destination.
-3. Add a `start(&mut self, directory: &AgentDirectory)` lifecycle hook to `Agent`.
-   - This allows agents to look up and cache IDs of their peers *before* the simulation loop.
-   - Preserves O(1) messaging performance (array indexing) vs O(N) HashMap lookups.
-4. Update `AgentContext` to support both fast `send(id)` and prototyping-friendly `send_by_name(str)`.
-   - `send_by_name` would perform the lookup on the fly (slower).
-5. Note: This assumes static topology (no dynamic spawning). If dynamic spawning is added, `AgentDirectory` needs to be observable.
+** DONE Implement "Interning with Fallback" for Agent Identity
+=AgentId= is a dense newtype, messages carry identities, and =AgentContext=
+offers =send_to(id)=, =send(name)=, and =agent_id(name)=; built-in agents cache
+targets. The planned =start(&AgentDirectory)= hook was not built: agents
+resolve peers lazily with =ctx.agent_id=.
 ** TODO Remove the "stringly-typed" feel of agents currently.
 Change the API so that agent names are statically determined?
 ** TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
@@ -32,39 +29,11 @@ Change the API so that agent names are statically determined?
 ** TODO If possible, move =log= dependency to feature or remove
 What's the best practice in Rust? Do people have debug! stmts in libs?
 * Interface Ergonomics - Low Hanging
-** WAIT Add =ObjectiveFunction= type definition (once type impl Trait is supported in Stable)
-#+BEGIN_SRC rust
-/// An ObjectiveFunction is used in simulated annealing and it is the function
-/// that we try to maximize when running many simulations.
-///
-/// For more information on simulated annealing and objective functions, you can refer to the following resources:
-/// - Simulated annealing: https://en.wikipedia.org/wiki/Simulated_annealing
-/// - Objective function: https://en.wikipedia.org/wiki/Objective_function
-///
-/// Here is an example usage, in this case findinng the fastest simulation without wasting
-/// cycles on too fast of a consuming agent:
-/// ```
-/// let objective_fn: ObjectiveFunction = |s: &Simulation| {
-///    -(s.time as i64)
-///        + s.agents
-///            .iter()
-///            .find(|a| a.name == "consumer")
-///            .as_ref()
-///            .unwrap()
-///            .common_traits
-///            .as_ref()
-///            .unwrap()
-///            .period
-///            .unwrap() as i64
-/// }
-/// ```
-pub type ObjectiveFunction = impl Fn(&Simulation) -> i64;
-#+END_SRC
 ** IDEA Fix Poisson<f64> business -- f64 is the wrong type, feels weird/leaky
 * Message improvements
 ** IDEA Consider allowing Messages w/ no target -- fanout / global broadcast
 ** TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
-  ProducedMessage to dodge the unwraps and solve w/ type system
+  ProducedMessage so states like =completed_time= are typed instead of =Option=
 ** IDEA Should Messages be an algebraic type, in fact?
 * Audit findings (2026-10-22)
 Code findings were reproduced with scratch tests or Miri; doc findings were
@@ -227,7 +196,7 @@ Fix: mark them superseded by "Identify message agents by AgentId".
 =examples/nine_ball_simulation.rs:50= says the opponent gets another turn on
 luck; the code keeps the turn with the current player (=ctx.name=), as the APA
 twin's comment says.
-** TODO Prune stale items in this file
+** DONE Prune stale items in this file
 - Done: "same experiment over and over ... confidence interval"
   (=FixedReplications=, Wilson and standard-error reducers), "Parallelize
   experiment running" (=run_parallel=, =ParallelExecutor=), "Experiment
