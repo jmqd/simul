@@ -853,8 +853,7 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent::{periodic_consumer, periodic_producer, poisson_distributed_producer};
-    use rand_distr::Poisson;
+    use agent::{periodic_consumer, periodic_producer};
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -879,34 +878,6 @@ mod tests {
         let consumed_stats = simulation.calc_consumed_len_statistics();
         assert_eq!(consumed_stats.get("producer"), Some(&0));
         assert_eq!(consumed_stats.get("consumer"), Some(&4));
-    }
-
-    #[test]
-    fn poisson_producer_emits_without_an_input_message() -> Result<(), Box<dyn std::error::Error>> {
-        let mut simulation = Simulation::new(SimulationParameters {
-            agent_initializers: vec![
-                poisson_distributed_producer(
-                    "producer".to_string(),
-                    Poisson::new(1.0)?,
-                    "consumer".to_string(),
-                ),
-                periodic_consumer("consumer".to_string(), 1),
-            ],
-            halt_check: |simulation| simulation.time == 1,
-            ..Default::default()
-        });
-
-        simulation.run();
-
-        assert_eq!(
-            simulation.calc_produced_len_statistics().get("producer"),
-            Some(&1)
-        );
-        assert_eq!(
-            simulation.calc_queue_len_statistics().get("consumer"),
-            Some(&1)
-        );
-        Ok(())
     }
 
     #[test]

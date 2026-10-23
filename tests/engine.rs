@@ -346,6 +346,70 @@ fn agent_streams_depend_only_on_seed_agent_and_tick() {
 }
 
 #[test]
+fn geometric_producer_arrival_gaps_have_the_configured_mean_and_spread() {
+    let mean = 4.0;
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            simul::agent::geometric_producer("producer", mean, "consumer"),
+            periodic_consumer("consumer", 1),
+        ],
+        halt_check: |s: &Simulation| s.time() == 40_000,
+        seed: simul::experiment::MasterSeed::from_u64(3),
+        ..Default::default()
+    });
+    simulation.run();
+    let Some(produced) = simulation.produced_for_agent("producer") else {
+        panic!("producer must exist");
+    };
+    let gaps: Vec<f64> = produced
+        .windows(2)
+        .map(|pair| (pair[1].queued_time - pair[0].queued_time) as f64)
+        .collect();
+    let count = gaps.len() as f64;
+    let observed_mean = gaps.iter().sum::<f64>() / count;
+    let variance = gaps
+        .iter()
+        .map(|gap| (gap - observed_mean).powi(2))
+        .sum::<f64>()
+        / count;
+    // A geometric gap on {1, 2, ...} with mean m has variance m(m - 1).
+    assert!(gaps.len() > 9_000, "{} gaps", gaps.len());
+    assert!(gaps.iter().all(|gap| *gap >= 1.0));
+    assert!((observed_mean - mean).abs() < 0.1, "mean {observed_mean}");
+    assert!(
+        mean.mul_add(-(mean - 1.0), variance).abs() < 0.8,
+        "variance {variance}"
+    );
+}
+
+#[test]
+fn geometric_agents_with_a_one_tick_mean_act_every_tick() {
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            simul::agent::geometric_producer("producer", 1.0, "consumer"),
+            simul::agent::geometric_consumer("consumer", 1.0),
+        ],
+        halt_check: |s: &Simulation| s.time() == 10,
+        ..Default::default()
+    });
+    simulation.run();
+    assert_eq!(
+        Some(10),
+        simulation.produced_for_agent("producer").map(<[_]>::len)
+    );
+    assert_eq!(
+        Some(9),
+        simulation.consumed_for_agent("consumer").map(<[_]>::len)
+    );
+}
+
+#[test]
+#[should_panic(expected = "mean period must be finite and at least one tick")]
+fn geometric_agents_reject_means_below_one_tick() {
+    let _ = simul::agent::geometric_producer("producer", 0.5, "consumer");
+}
+
+#[test]
 fn proactive_agents_handle_one_message_then_tick() {
     #[derive(Clone, Debug, Default)]
     struct Logger(std::sync::Arc<std::sync::Mutex<Vec<(u64, &'static str)>>>);

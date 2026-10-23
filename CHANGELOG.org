@@ -1,5 +1,14 @@
 #+title: Changelog
 
+* DONE Replace Poisson agents with seeded geometric agents (breaking)
+=poisson_distributed_producer= and =poisson_distributed_consumer= took a
+=rand_distr::Poisson<f64>=, drew from the unseeded thread RNG, and treated a
+zero-tick sample as one tick, so their mean period was λ + e^{-λ} and their
+gaps were not memoryless. =geometric_producer(name, mean, target)= and
+=geometric_consumer(name, mean)= draw memoryless geometric gaps of at least one
+tick from =AgentContext::rng()=, with exactly the requested mean (at least 1),
+and the public API no longer exposes =rand_distr= types.
+
 * DONE Seed simulations and give agents per-tick random streams (breaking)
 =SimulationParameters::seed= roots =AgentContext::rng()=, a =TrialRng= derived
 from the seed, the agent's =AgentId=, and the tick under the new

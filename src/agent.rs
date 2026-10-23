@@ -1,8 +1,6 @@
 use crate::experiment::{SeedDeriver, TrialRng};
 use crate::{message::Message, DiscreteTime};
 use dyn_clone::DynClone;
-use rand_distr::Distribution;
-use rand_distr::Poisson;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::fmt;
@@ -449,60 +447,107 @@ pub trait Agent: std::fmt::Debug + DynClone {
 
 dyn_clone::clone_trait_object!(Agent);
 
-/// An agent that processes on a Poisson-distributed periodicity.
-pub fn poisson_distributed_consumer<T>(name: T, dist: Poisson<f64>) -> AgentInitializer
+/// A geometric number of ticks, at least one, with a fixed mean.
+///
+/// Geometric gaps are memoryless, the discrete-time counterpart of exponential
+/// gaps, so a producer with them emits a Bernoulli arrival process.
+#[derive(Clone, Copy, Debug)]
+struct GeometricTicks {
+    /// `ln(1 - 1/mean)`, negative or `-inf` when the mean is one tick.
+    log_continue: f64,
+}
+
+impl GeometricTicks {
+    /// # Panics
+    ///
+    /// Panics unless `mean` is finite and at least one tick.
+    fn new(mean: f64) -> Self {
+        assert!(
+            mean.is_finite() && mean >= 1.0,
+            "mean period must be finite and at least one tick, got {mean}"
+        );
+        Self {
+            log_continue: (-mean.recip()).ln_1p(),
+        }
+    }
+
+    /// Samples by inversion: `1 + floor(ln(U) / ln(1 - p))` for `U` in `(0, 1]`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the quotient is zero or positive, and `as` saturates huge gaps"
+    )]
+    fn sample(self, rng: &mut TrialRng) -> DiscreteTime {
+        let unit = 1.0 - rng.uniform_f64();
+        let extra = (unit.ln() / self.log_continue).floor() as DiscreteTime;
+        extra.saturating_add(1)
+    }
+}
+
+/// A `Reactive` consumer whose service time per message is a geometric number
+/// of ticks with mean `mean_service_ticks`, drawn from [`AgentContext::rng`].
+///
+/// # Panics
+///
+/// Panics unless `mean_service_ticks` is finite and at least one tick.
+pub fn geometric_consumer<T>(name: T, mean_service_ticks: f64) -> AgentInitializer
 where
     T: Into<String>,
 {
     #[derive(Debug, Clone)]
-    struct PoissonAgent {
-        /// The distribution of time between consuming messages.
-        period: Poisson<f64>,
+    struct GeometricConsumer {
+        /// Ticks spent on each message.
+        service: GeometricTicks,
     }
 
-    impl Agent for PoissonAgent {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    impl Agent for GeometricConsumer {
         fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
-            let cooldown_period = self.period.sample(&mut rand::rng()) as u64;
-            ctx.sleep_for(cooldown_period);
+            let ticks = self.service.sample(ctx.rng());
+            ctx.sleep_for(ticks);
         }
     }
 
     AgentInitializer {
-        agent: Box::new(PoissonAgent { period: dist }),
+        agent: Box::new(GeometricConsumer {
+            service: GeometricTicks::new(mean_service_ticks),
+        }),
         options: AgentOptions::defaults_with_name(name.into()),
     }
 }
 
-/// Given a poisson distribution for the production period,
-/// returns an Agent that produces to Target with that frequency.
-pub fn poisson_distributed_producer<T>(name: T, dist: Poisson<f64>, target: T) -> AgentInitializer
+/// A `Proactive` producer of messages without payloads to `target`.
+///
+/// After each send it waits a geometric number of ticks with mean
+/// `mean_interarrival_ticks`, drawn from [`AgentContext::rng`], so each tick
+/// carries an arrival with probability `1 / mean_interarrival_ticks`.
+///
+/// # Panics
+///
+/// Panics unless `mean_interarrival_ticks` is finite and at least one tick.
+pub fn geometric_producer<T>(name: T, mean_interarrival_ticks: f64, target: T) -> AgentInitializer
 where
     T: Into<String>,
 {
     #[derive(Clone, Debug)]
-    struct PoissonAgent {
-        /// The distribution of time between producing.
-        period: Poisson<f64>,
+    struct GeometricProducer {
+        /// Ticks between arrivals.
+        interarrival: GeometricTicks,
 
         /// The target to which we produce messages.
         target: CachedTarget,
     }
 
-    impl Agent for PoissonAgent {
-        fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    impl Agent for GeometricProducer {
         fn on_tick(&mut self, ctx: &mut AgentContext) {
-            let cooldown_period = self.period.sample(&mut rand::rng()) as u64;
-            ctx.sleep_for(cooldown_period);
+            let ticks = self.interarrival.sample(ctx.rng());
+            ctx.sleep_for(ticks);
             ctx.send_cached(&mut self.target, None);
         }
     }
 
     AgentInitializer {
-        agent: Box::new(PoissonAgent {
-            period: dist,
+        agent: Box::new(GeometricProducer {
+            interarrival: GeometricTicks::new(mean_interarrival_ticks),
             target: CachedTarget::new(target.into()),
         }),
         options: AgentOptions {
