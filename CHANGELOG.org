@@ -115,6 +115,8 @@ diagnostics. Seeded optimizer and simulation replay matches Rust 1.98.1 exactly.
 Consecutive sends with unchanged source and destination can share retained
 contents instead of reallocating message bodies and names. Timestamps and
 copy-on-write edits remain independent; payload and history changes are respected.
+Superseded by "Identify message agents by AgentId": messages no longer hold
+names or shared bodies.
 
 * DONE Reduce per-turn allocation in the nine-ball example
 Build each player's weighted distribution once per match, borrow message payloads
@@ -169,6 +171,9 @@ Aggregation preserves that failure instead of returning non-finite statistics.
 Message histories and delivery share strings and payloads with copy-on-write
 mutation; completion timestamps remain independent. Construct messages with
 =Message::new= or =Message::new_with_payload= instead of struct literals.
+Superseded by "Identify message agents by AgentId" and "Share message payloads
+as Arc<[u8]>": messages hold identities, not strings, and only payloads are
+shared.
 
 * DONE Use one replication result allocation
 Workers fill disjoint output ranges directly; partial results are dropped on

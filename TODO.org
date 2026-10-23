@@ -219,7 +219,7 @@ Failed state" above. Fix: implement it or remove the variant.
 ** TODO [low] PERFORMANCE.md contradicts the release profile
 It says =opt-level = 3= regressed, yet =[profile.release]= sets no
 =opt-level=, so Cargo uses 3. Fix: set the preferred level or drop the note.
-** TODO [low] CHANGELOG string/payload-sharing entries are superseded
+** DONE [low] CHANGELOG string/payload-sharing entries are superseded
 The "share retained contents ... names" and "share strings and payloads with
 copy-on-write" entries describe a =Message= that no longer holds strings.
 Fix: mark them superseded by "Identify message agents by AgentId".
