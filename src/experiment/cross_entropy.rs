@@ -906,7 +906,11 @@ mod tests {
             assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
             // Moving half of -0.5 from 0.0 wraps to 0.75; +0.5 would give 0.25.
             let expected = (old + 0.75) % 1.0;
-            assert_eq!(expected.to_bits(), search.mean()[0].to_bits(), "center {old}");
+            assert_eq!(
+                expected.to_bits(),
+                search.mean()[0].to_bits(),
+                "center {old}"
+            );
         }
     }
 
