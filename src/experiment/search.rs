@@ -420,12 +420,17 @@ pub enum BoundsError {
 
 /// Produces ordered, uniformly sampled bounded vectors using proposal streams.
 ///
-/// This convenience is deterministic and allocation-bounded by `budget × bounds.len()`.
+/// This convenience is deterministic. It allocates `budget` vectors of
+/// `bounds.len()` values each, so even empty bounds reserve `budget` vectors.
 ///
 /// # Errors
 ///
 /// Returns [`BoundsError::NonFinite`] when an endpoint is NaN or infinite, or
 /// [`BoundsError::Reversed`] when a lower endpoint exceeds its upper endpoint.
+///
+/// # Panics
+///
+/// Panics on capacity overflow when `budget` vectors cannot be allocated.
 //
 // Keep interpolation operations separate: contraction would change the frozen
 // deterministic proposal sequence.
