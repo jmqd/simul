@@ -5,7 +5,7 @@ use simul::agent::{
     AgentMode, AgentOptions, MessageProcessingStatus,
 };
 use simul::message::Message;
-use simul::{Simulation, SimulationParameters};
+use simul::{Simulation, SimulationMode, SimulationParameters};
 use std::sync::Arc;
 
 fn proactive_agent(name: &str, agent: impl Agent + 'static) -> AgentInitializer {
@@ -808,7 +808,7 @@ fn all_sleeping_agents_still_check_halt_between_wakeups() {
 }
 
 #[test]
-fn callback_panic_does_not_wake_later_agents_early() {
+fn callback_panic_fails_the_simulation_without_waking_later_agents() {
     #[derive(Clone, Debug)]
     struct PanicTick;
     impl Agent for PanicTick {
@@ -833,10 +833,14 @@ fn callback_panic_does_not_wake_later_agents_early() {
     });
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
     assert!(result.is_err());
+    assert_eq!(SimulationMode::Failed, simulation.mode());
     assert_eq!(
         Some(AgentMode::AsleepUntil(0)),
         simulation
             .find_by_name("agent-65")
             .map(|agent| agent.state.mode)
     );
+    let rerun = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulation.run()));
+    assert!(rerun.is_err(), "a failed simulation must refuse to run");
+    assert_eq!(0, simulation.time());
 }

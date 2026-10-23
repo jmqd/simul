@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Fail simulations whose callbacks panic (breaking)
+A panic from an agent callback or the halt check leaves the simulation
+=SimulationMode::Failed=, and =run= refuses to resume it instead of replaying
+part of the interrupted tick. =Simulation::mode()= reports the mode, and
+=SimulationMode= is now =Copy=.
+
 * DONE Make AgentContext fields read-only (breaking)
 =name=, =time=, =state=, and =message_processing_status= are private. Read
 them with =ctx.name()=, =ctx.time()=, and =ctx.state()=; set the status with

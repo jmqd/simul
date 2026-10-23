@@ -67,7 +67,7 @@ const SMALL_SIMULATION_HISTORY: usize = 16;
 const SPARSE_SCHEDULE_MIN_AGENTS: usize = 64;
 
 /// The current mode of a Simulation.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum SimulationMode {
     /// The Simulation has only been constructed.
     Constructed,
@@ -75,7 +75,8 @@ pub enum SimulationMode {
     Running,
     /// The Simulation successfully reached the halt condition.
     Completed,
-    /// The Simulation catastrophically crashed.
+    /// A callback or the halt check panicked mid-tick. The tick was partly
+    /// applied, so the simulation refuses to run again.
     Failed,
 }
 
@@ -540,13 +541,36 @@ impl Simulation {
         Some(self.find_by_name(name)?.metadata.asleep_cycle_count)
     }
 
-    /// Runs the simulation. This should only be called after adding all the beginning state.
+    /// Runs the simulation until its halt condition holds or an agent sends a
+    /// halt interrupt.
     ///
     /// # Panics
     ///
-    /// Panics before invoking tick callbacks if advancing time would exceed
-    /// `u64::MAX`. Agent callbacks may also panic.
+    /// Panics if the simulation is [`SimulationMode::Failed`], before invoking
+    /// tick callbacks if advancing time would exceed `u64::MAX`, and when an
+    /// agent callback or the halt check panics. Any panic during the run
+    /// leaves the simulation [`SimulationMode::Failed`].
     pub fn run(&mut self) {
+        assert!(
+            self.mode != SimulationMode::Failed,
+            "a simulation that panicked mid-tick cannot run again"
+        );
+        if let Err(payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_ticks()))
+        {
+            self.mode = SimulationMode::Failed;
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    /// Returns whether the simulation is new, running, completed, or failed.
+    #[must_use]
+    pub const fn mode(&self) -> SimulationMode {
+        self.mode
+    }
+
+    /// Executes ticks until the halt condition or an interrupt stops the run.
+    fn run_ticks(&mut self) {
         self.mode = SimulationMode::Running;
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
         // Small scans are cheaper than maintaining the schedule, and metrics need
