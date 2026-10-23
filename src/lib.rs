@@ -126,9 +126,14 @@ pub struct Simulation {
 
 /// When a simulation stops running.
 ///
-/// The condition is checked before every tick, against the state after the
-/// previous tick's messages were delivered. An agent's
+/// The condition is checked before every tick that runs, against the state
+/// after the previous tick's messages were delivered. An agent's
 /// [`AgentContext::send_halt_interrupt`] also stops the run after its tick.
+///
+/// With `AtTime` or `Never`, and the asleep-cycle metric off, the engine skips
+/// ticks in which no agent could act and jumps to the next wake-up; results
+/// match running every tick. A `When` predicate is checked on every tick, so
+/// it disables skipping.
 #[derive(Clone)]
 pub enum Halt {
     /// Stop once the simulation time reaches this tick, without running it.
@@ -167,7 +172,7 @@ pub struct SimulationBuilder {
     halt: Halt,
     /// The tick the simulation starts at.
     starting_time: DiscreteTime,
-    /// Whether every tick records each agent's queue depth.
+    /// Whether queue depth changes are recorded.
     queue_depth_metrics: bool,
     /// Whether visits to sleeping agents count asleep ticks.
     asleep_cycles_metric: bool,
@@ -343,6 +348,17 @@ impl SparseSchedule {
     fn sleep(&mut self, handle: usize, deadline: DiscreteTime) {
         self.set_ready(handle, false);
         self.sleeping.push(Reverse((deadline, handle)));
+    }
+
+    /// Returns the earliest tick at or after `now` at which a scheduled agent
+    /// can act. Stale heap entries make this a lower bound, which is safe.
+    fn next_event(&self, now: DiscreteTime) -> Option<DiscreteTime> {
+        if self.ready_count > 0 {
+            return Some(now);
+        }
+        self.sleeping
+            .peek()
+            .map(|&Reverse((deadline, _))| deadline.max(now))
     }
 
     /// Marks due agents ready; their state changes only at their ordered visit.
@@ -686,6 +702,14 @@ impl Simulation {
         let sparse_eligible = self.agents.len() > SPARSE_SCHEDULE_MIN_AGENTS
             && !self.enable_agent_asleep_cycles_metric;
         let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
+        // Quiet ticks can be skipped only when nothing observes them: a
+        // `Halt::When` predicate sees every tick, and the asleep metric counts
+        // every tick. The bound is the halt time, if any.
+        let skip_bound = match (&self.halt, self.enable_agent_asleep_cycles_metric) {
+            (Halt::AtTime(time), false) => Some(Some(*time)),
+            (Halt::Never, false) => Some(None),
+            (Halt::AtTime(_) | Halt::Never, true) | (Halt::When(_), _) => None,
+        };
 
         while self.mode == SimulationMode::Running && !self.halt_reached() {
             let Some(next_time) = self.time.checked_add(1) else {
@@ -713,6 +737,23 @@ impl Simulation {
                 && self.mode == SimulationMode::Running
             {
                 schedule = Some(SparseSchedule::new(&self.agents));
+            }
+            // A tick without callbacks issued no commands, so state can change
+            // again only when an agent becomes runnable; jump to that tick.
+            if let Some(bound) = skip_bound {
+                if callbacks == 0 && self.mode == SimulationMode::Running {
+                    let next_event = match &schedule {
+                        Some(active) => active.next_event(self.time),
+                        None => self.next_event_dense(self.time),
+                    };
+                    let target = match (next_event, bound) {
+                        (Some(event), Some(halt)) => event.min(halt),
+                        (None, Some(halt)) => halt,
+                        (Some(event), None) => event,
+                        (None, None) => self.time,
+                    };
+                    self.time = self.time.max(target);
+                }
             }
         }
 
@@ -839,6 +880,20 @@ impl Simulation {
         }
 
         data
+    }
+
+    /// Returns the earliest tick at or after `now` at which some agent can act,
+    /// scanning every agent.
+    fn next_event_dense(&self, now: DiscreteTime) -> Option<DiscreteTime> {
+        self.agents
+            .iter()
+            .filter_map(|agent| match agent.state.mode {
+                AgentMode::Proactive => Some(now),
+                AgentMode::Reactive => (!agent.state.queue.is_empty()).then_some(now),
+                AgentMode::AsleepUntil(deadline) => Some(deadline.max(now)),
+                AgentMode::Dead => None,
+            })
+            .min()
     }
 
     /// Returns an agent handle by name, using a linear scan for small simulations.

@@ -228,6 +228,42 @@ fn chaos_agent(
 }
 
 fn build(seed: u64, size: Size, queue_metric: bool, asleep_metric: bool, halts: bool) -> Case {
+    build_case(
+        seed,
+        size,
+        queue_metric,
+        asleep_metric,
+        halts,
+        HaltStyle::Predicate,
+    )
+}
+
+/// How a case expresses its halt time.
+#[derive(Clone, Copy)]
+enum HaltStyle {
+    /// A predicate checked every tick, so no tick is skipped.
+    Predicate,
+    /// `Halt::AtTime`, which lets the engine skip quiet ticks.
+    AtTime,
+}
+
+impl HaltStyle {
+    fn halt(self, halt_at: DiscreteTime) -> Halt {
+        match self {
+            Self::Predicate => Halt::when(halt_at_time),
+            Self::AtTime => Halt::AtTime(halt_at),
+        }
+    }
+}
+
+fn build_case(
+    seed: u64,
+    size: Size,
+    queue_metric: bool,
+    asleep_metric: bool,
+    halts: bool,
+    style: HaltStyle,
+) -> Case {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let count: usize = match (size, rng.random_range(0..4)) {
         (Size::Large, _) | (Size::Any, 0 | 1) => rng.random_range(65..=300),
@@ -314,7 +350,7 @@ fn build(seed: u64, size: Size, queue_metric: bool, asleep_metric: bool, halts: 
         })
         .collect();
 
-    let simulation = Simulation::builder(Halt::when(halt_at_time))
+    let simulation = Simulation::builder(style.halt(halt_at))
         .agents(agent_initializers)
         .starting_time(start)
         .queue_depth_metrics(queue_metric)
@@ -443,6 +479,58 @@ fn sparse_and_dense_runs_are_observably_equivalent() {
             );
         }
     }
+}
+
+#[test]
+fn skipping_quiet_ticks_matches_running_every_tick() {
+    let mut quiet_ticks = 0;
+    for seed in 0..CASES {
+        let queue_metric = seed % 2 == 0;
+        let mut every_tick = build_case(
+            seed,
+            Size::Any,
+            queue_metric,
+            false,
+            true,
+            HaltStyle::Predicate,
+        );
+        let (_, every_tick_callbacks) = run(&mut every_tick);
+        let mut skipping = build_case(
+            seed,
+            Size::Any,
+            queue_metric,
+            false,
+            true,
+            HaltStyle::AtTime,
+        );
+        let (_, skipping_callbacks) = run(&mut skipping);
+        assert_eq!(
+            every_tick_callbacks, skipping_callbacks,
+            "seed {seed}: callback order"
+        );
+        assert_eq!(
+            every_tick.simulation.time(),
+            skipping.simulation.time(),
+            "seed {seed}"
+        );
+        assert!(
+            snapshot(&every_tick.simulation) == snapshot(&skipping.simulation),
+            "seed {seed}: state differs"
+        );
+        assert_eq!(
+            metrics(&every_tick.simulation),
+            metrics(&skipping.simulation),
+            "seed {seed}"
+        );
+        let mut active: Vec<_> = every_tick_callbacks.iter().map(|&(time, _)| time).collect();
+        active.dedup();
+        quiet_ticks += (every_tick.simulation.time() - every_tick.start)
+            .saturating_sub(u64::try_from(active.len()).unwrap_or(u64::MAX));
+    }
+    assert!(
+        quiet_ticks > 1_000,
+        "cases must contain quiet ticks to skip"
+    );
 }
 
 #[test]

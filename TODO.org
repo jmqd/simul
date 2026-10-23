@@ -22,7 +22,8 @@ targets. The planned =start(&AgentDirectory)= hook was not built: agents
 resolve peers lazily with =ctx.agent_id=.
 ** TODO Remove the "stringly-typed" feel of agents currently.
 Change the API so that agent names are statically determined?
-** TODO Implement a sort of "next-event" optimization to skip ticks that don't produce events
+** DONE Implement a sort of "next-event" optimization to skip ticks that don't produce events
+Quiet ticks are skipped under =Halt::AtTime= and =Halt::Never=.
 * Testing
 ** TODO Add doctests throughout
 * Code Cleanup

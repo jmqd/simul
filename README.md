@@ -147,11 +147,13 @@ payload with `Arc::make_mut`, which copies it only while shared. A message
 without a payload allocates nothing, and clones keep independent timestamps and
 identities.
 
-Simulations with more than 64 agents and neither per-tick metric use an ordered
+Simulations with more than 64 agents and no asleep-cycle metric use an ordered
 ready bitmap and wake heap during sparse phases, switching to dense scans as
-activity rises. Smaller simulations and runs with queue-depth or asleep-cycle
-metrics keep dense scans. Callback order, end-of-tick delivery, and halt checks
-on every tick match dense scans; the scheduler never jumps over quiet ticks.
+activity rises. Smaller simulations and runs with the asleep-cycle metric keep
+dense scans. Callback order, end-of-tick delivery, and halt checks match dense
+scans. With `Halt::AtTime` or `Halt::Never` and no asleep-cycle metric, the
+engine also jumps over ticks in which no agent can act, to the next wake-up or
+the halt time; `Halt::when` predicates see every tick, so they keep every tick.
 
 ## Poisson-distributed example w/ Plotting
 
