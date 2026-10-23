@@ -5,6 +5,12 @@
 agent that owns the queue, so consumed initial messages no longer look
 undeliverable. =destination= is =None= only when a send matched no agent.
 
+* DONE Reflect linear cross-entropy coordinates exactly
+Linear coordinates below zero reflect as =|value| % 2= instead of through
+=rem_euclid(2.0)=, which rounded =2 + value=. A draw of -0.3 now reflects to
+exactly 0.3, and tiny negative draws such as -1e-200 no longer collapse to 0.
+Some reflected samples change in their last bits.
+
 * DONE Share message payloads as Arc<[u8]> (breaking)
 =Message::custom_payload= is a public =Option<Arc<[u8]>>=, and =send=, =send_to=,
 and =Message::new_with_payload= take that type. A new payload allocates once,

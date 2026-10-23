@@ -614,7 +614,7 @@ fn circular_delta(from: f64, to: f64) -> f64 {
 /// Projects a value into its normalized domain.
 ///
 /// Both remainders return in-domain values unchanged, so those skip the
-/// `fmod` call that `rem_euclid` makes.
+/// `fmod` call that the remainders make.
 #[inline]
 fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
     if valid_coordinate(value, dimension) {
@@ -622,7 +622,10 @@ fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
     }
     match dimension {
         CrossEntropyDimension::Linear => {
-            let reflected = value.rem_euclid(2.0);
+            // Reflection is symmetric about zero. Unlike `rem_euclid`, which
+            // rounds `2 + value` for negative values, `abs`, `%`, and `2 - r`
+            // on [1, 2] are all exact.
+            let reflected = value.abs() % 2.0;
             if reflected <= 1.0 {
                 reflected
             } else {
@@ -766,6 +769,23 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn linear_reflection_at_zero_mirrors_draws_exactly() {
+        for deviation in [0.3, 1.0e-200] {
+            let search = optimizer(
+                CrossEntropyConfig::new([0.0], [deviation])
+                    .with_minimum_standard_deviation([1.0e-300]),
+            );
+            let up = search.ask_with_standard_normal(|_| 1.0);
+            let down = search.ask_with_standard_normal(|_| -1.0);
+            let (Ok([up]), Ok([down])) = (up, down) else {
+                panic!("finite standard-normal values must sample successfully");
+            };
+            assert_eq!(deviation.to_bits(), up.to_bits());
+            assert_eq!(deviation.to_bits(), down.to_bits());
+        }
     }
 
     #[test]

@@ -121,7 +121,7 @@ transitions stay ordered even if a callback panics") and
 =callback_panic_does_not_wake_later_agents_early= treat resuming as
 supported. Fix: mark the simulation =Failed= and refuse to resume, or keep
 the buffer on the simulation with a per-tick visited guard.
-** TODO [low] Linear reflection at 0 loses precision
+** DONE [low] Linear reflection at 0 loses precision
 =normalize= in =src/experiment/cross_entropy.rs= reflects via
 =rem_euclid(2.0)=, which rounds =2 + value=. Mean 0, std 0.3: a +1 draw gives
 0.3, a -1 draw gives 0.30000000000000004; with std 1e-200 the -1 draw becomes
