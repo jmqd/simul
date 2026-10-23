@@ -3,7 +3,8 @@
 * DONE Address initial-queue messages to their owner
 =Simulation::try_new= sets each initial-queue message's =destination= to the
 agent that owns the queue, so consumed initial messages no longer look
-undeliverable. =destination= is =None= only when a send matched no agent.
+undeliverable. Messages pushed into a queue between runs keep the
+=destination= they were built with.
 
 * DONE Reflect linear cross-entropy coordinates exactly
 Linear coordinates below zero reflect as =|value| % 2= instead of through
