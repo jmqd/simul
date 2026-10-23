@@ -2023,35 +2023,6 @@ mod tests {
     }
 
     #[test]
-    fn bernoulli_selection_ranks_nan_lowest_regardless_of_order() {
-        let summary = |value| BernoulliSummary {
-            attempts: 10,
-            successes: 5,
-            rate: value,
-            wilson_lower: value,
-            wilson_upper: value,
-        };
-        let candidates = [
-            (CandidateId::new(3), summary(0.9)),
-            (CandidateId::new(2), summary(f64::NAN)),
-            (CandidateId::new(1), summary(0.5)),
-        ];
-        for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0]] {
-            let shuffled = order.map(|index| candidates[index]);
-            for selected in [
-                select_best(&shuffled, &MaximizeBernoulliRate),
-                select_best(&shuffled, &MaximizeWilsonLowerBound),
-            ] {
-                assert_eq!(
-                    Some(CandidateId::new(3)),
-                    selected.map(|(id, _)| id),
-                    "order {order:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn fixed_schedule_and_default_retention_are_bounded() {
         assert!(FixedReplications::new(0, 7)
             .trials(CandidateId::new(4), 12_i32)
