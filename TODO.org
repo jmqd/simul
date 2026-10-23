@@ -177,7 +177,7 @@ missed ready mark, reversed commands, no time advance) were all caught.
 Drafts are in the untracked =plans/audit-2026-10-22/= (=laws_engine.rs=,
 =laws_experiment.rs=, and =miri_scratch.rs= for runner panic coverage);
 trim to the laws worth keeping before moving them into =tests/=.
-** TODO [low] =select_best= is order-dependent for NaN Bernoulli summaries
+** DONE [low] =select_best= is order-dependent for NaN Bernoulli summaries
 =BernoulliSummary= fields are =pub=, and =MaximizeBernoulliRate= /
 =MaximizeWilsonLowerBound= compare with =partial_cmp(..).unwrap_or(Equal)=.
 A NaN rate is "equal" to everything, so the fold is intransitive: rates

@@ -1640,9 +1640,7 @@ pub struct MaximizeBernoulliRate;
 
 impl SelectionPolicy<BernoulliSummary> for MaximizeBernoulliRate {
     fn compare(&self, left: &BernoulliSummary, right: &BernoulliSummary) -> Ordering {
-        left.rate
-            .partial_cmp(&right.rate)
-            .unwrap_or(Ordering::Equal)
+        compare_nan_lowest(left.rate, right.rate)
     }
 }
 
@@ -1652,10 +1650,17 @@ pub struct MaximizeWilsonLowerBound;
 
 impl SelectionPolicy<BernoulliSummary> for MaximizeWilsonLowerBound {
     fn compare(&self, left: &BernoulliSummary, right: &BernoulliSummary) -> Ordering {
-        left.wilson_lower
-            .partial_cmp(&right.wilson_lower)
-            .unwrap_or(Ordering::Equal)
+        compare_nan_lowest(left.wilson_lower, right.wilson_lower)
     }
+}
+
+/// Orders numbers normally and ranks NaN below all of them.
+///
+/// Summary fields are public, so callers can supply NaN; treating it as equal
+/// to everything would make selection depend on input order.
+fn compare_nan_lowest(left: f64, right: f64) -> Ordering {
+    left.partial_cmp(&right)
+        .unwrap_or_else(|| right.is_nan().cmp(&left.is_nan()))
 }
 
 /// A constraint-aware aggregate for feasible-first ranking.
@@ -2011,6 +2016,35 @@ mod tests {
             select_best(&candidates, &MaximizeFinite).expect("candidates should have a winner");
         assert_eq!(CandidateId::new(2), selected.0);
         assert_f64_bits_eq(selected.1.get(), score.get());
+    }
+
+    #[test]
+    fn bernoulli_selection_ranks_nan_lowest_regardless_of_order() {
+        let summary = |value| BernoulliSummary {
+            attempts: 10,
+            successes: 5,
+            rate: value,
+            wilson_lower: value,
+            wilson_upper: value,
+        };
+        let candidates = [
+            (CandidateId::new(3), summary(0.9)),
+            (CandidateId::new(2), summary(f64::NAN)),
+            (CandidateId::new(1), summary(0.5)),
+        ];
+        for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0]] {
+            let shuffled = order.map(|index| candidates[index]);
+            for selected in [
+                select_best(&shuffled, &MaximizeBernoulliRate),
+                select_best(&shuffled, &MaximizeWilsonLowerBound),
+            ] {
+                assert_eq!(
+                    Some(CandidateId::new(3)),
+                    selected.map(|(id, _)| id),
+                    "order {order:?}"
+                );
+            }
+        }
     }
 
     #[test]
