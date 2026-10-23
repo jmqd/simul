@@ -1607,6 +1607,10 @@ pub trait SelectionPolicy<A> {
 }
 
 /// Selects the best aggregate, breaking exact policy ties by lower candidate ID.
+///
+/// Candidate IDs are expected to be unique. If equally preferred aggregates
+/// share an ID, the earliest in `candidates` wins. Returns `None` only when
+/// `candidates` is empty.
 #[must_use]
 pub fn select_best<'a, A>(
     candidates: &'a [(CandidateId, A)],

@@ -184,7 +184,7 @@ A NaN rate is "equal" to everything, so the fold is intransitive: rates
 (0.9, NaN, 0.5) pick candidate 1 in one order and 2 in another, never the
 0.9 candidate. Fix: =total_cmp= with NaN ranked lowest, or private fields
 so only =finish()= builds summaries.
-** TODO [low] =select_best= keeps whichever duplicate candidate ID came first
+** DONE [low] =select_best= keeps whichever duplicate candidate ID came first
 Two aggregates with the same =CandidateId= tie on the ID tie-break, so the
 result follows input order (attempts 2 vs 4 for swapped inputs). Nothing
 rejects duplicates, unlike =SeededRandomSearch=. Fix: document unique IDs,
