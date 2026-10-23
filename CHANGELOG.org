@@ -17,9 +17,10 @@ A panic payload whose destructor panics becomes the documented
 =WorkloadPanic= / =WorkerWorkloadPanic= error instead of unwinding out of
 =run_serial= or =run_parallel=. Discarding partial parallel output keeps
 dropping records after one record's destructor panics. =SeededRandomSearch=
-issues =ask= tokens only after the generator returns every candidate, and
-=tell= runs every policy comparison before changing state, so a caught
-generator or policy panic leaves the search unchanged and retryable.
+issues =ask= tokens only after every generator and candidate clone returns,
+and =tell= runs every policy comparison and summary clone before changing
+state, so a caught generator, policy, or =Clone= panic leaves the search
+unchanged and retryable.
 
 * DONE Rank NaN lowest in Bernoulli selection policies
 =MaximizeBernoulliRate= and =MaximizeWilsonLowerBound= rank a NaN rate or bound
