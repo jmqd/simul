@@ -95,7 +95,7 @@ Fix: make both fields private with getters, or recognize the sender by slot.
 They sample =rand::rng()=, so identical simulations differ between runs
 (3,247 vs 3,281 produced). This conflicts with deterministic experiments.
 Fix: accept a seed or seeded RNG, or document the nondeterminism.
-** TODO [low] A panicking =SelectionPolicy= in =tell= loses a proposal
+** DONE [low] A panicking =SelectionPolicy= in =tell= loses a proposal
 =RandomSearch= =incorporate= removes the pending proposal before calling the
 policy and updates counters after. A panic caught by the caller leaves
 =asked: 3, told: 2, outstanding: 0, finished: true=, and the lost token

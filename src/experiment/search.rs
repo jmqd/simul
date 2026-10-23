@@ -291,38 +291,64 @@ where
         Ok(())
     }
 
-    /// Incorporates one validated tell.
-    fn incorporate(&mut self, told: &Told<S>) -> Result<(), TellError> {
-        let candidate = self
-            .pending
-            .remove(told.token)
-            .ok_or(TellError::UnknownToken(told.token))?;
-        self.consider(candidate, told);
-        self.completed_candidates.insert(told.candidate);
-        self.told_count += 1;
+    /// Incorporates a validated batch in canonical order.
+    ///
+    /// Every policy comparison runs before any state changes, so a panicking
+    /// policy leaves the search exactly as it was.
+    fn incorporate<'a>(
+        &mut self,
+        canonical: impl Iterator<Item = &'a Told<S>> + Clone,
+    ) -> Result<(), TellError>
+    where
+        S: 'a,
+    {
+        let winner = self.batch_winner(canonical.clone());
+        for (index, told) in canonical.enumerate() {
+            let candidate = self
+                .pending
+                .remove(told.token)
+                .ok_or(TellError::UnknownToken(told.token))?;
+            self.completed_candidates.insert(told.candidate);
+            self.told_count += 1;
+            if winner == Some(index) {
+                self.best = Some(SearchResult {
+                    candidate_id: told.candidate,
+                    candidate,
+                    summary: told.summary.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
-    /// Replaces the current winner when `told` is preferred.
-    fn consider(&mut self, candidate: C, told: &Told<S>) {
-        let replace = match &self.best {
-            None => true,
-            Some(best) => match self
-                .policy
-                .compare(&told.summary.statistics, &best.summary.statistics)
-            {
-                Ordering::Greater => true,
-                Ordering::Equal => told.candidate < best.candidate_id,
-                Ordering::Less => false,
-            },
-        };
-        if replace {
-            self.best = Some(SearchResult {
-                candidate_id: told.candidate,
-                candidate,
-                summary: told.summary.clone(),
-            });
+    /// Returns the batch position that ends up as the winner, if any replaces
+    /// the current best when considered in canonical order.
+    fn batch_winner<'a>(&self, canonical: impl Iterator<Item = &'a Told<S>>) -> Option<usize>
+    where
+        S: 'a,
+    {
+        let mut best = self
+            .best
+            .as_ref()
+            .map(|best| (&best.summary.statistics, best.candidate_id));
+        let mut winner = None;
+        for (index, told) in canonical.enumerate() {
+            let replace = match best {
+                None => true,
+                Some((statistics, candidate_id)) => {
+                    match self.policy.compare(&told.summary.statistics, statistics) {
+                        Ordering::Greater => true,
+                        Ordering::Equal => told.candidate < candidate_id,
+                        Ordering::Less => false,
+                    }
+                }
+            };
+            if replace {
+                best = Some((&told.summary.statistics, told.candidate));
+                winner = Some(index);
+            }
         }
+        winner
     }
 }
 
@@ -352,15 +378,11 @@ where
     fn tell(&mut self, evaluated: &[Told<S>]) -> Result<(), TellError> {
         self.validate_tells(evaluated)?;
         if evaluated.is_sorted_by_key(|told| told.candidate) {
-            for told in evaluated {
-                self.incorporate(told)?;
-            }
+            self.incorporate(evaluated.iter())?;
         } else {
             let mut canonical: Vec<_> = evaluated.iter().collect();
             canonical.sort_by_key(|told| told.candidate);
-            for told in canonical {
-                self.incorporate(told)?;
-            }
+            self.incorporate(canonical.iter().copied())?;
         }
         Ok(())
     }
@@ -514,6 +536,40 @@ mod tests {
             Err(TellError::DuplicateToken(asked[0].token))
         );
         assert!(search.status().finished);
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn panicking_policy_leaves_the_search_unchanged_and_retryable() {
+        struct PanicsOnce(std::cell::Cell<bool>);
+        impl SelectionPolicy<i32> for PanicsOnce {
+            fn compare(&self, left: &i32, right: &i32) -> Ordering {
+                assert!(!self.0.replace(false), "policy failed");
+                left.cmp(right)
+            }
+        }
+        let policy = PanicsOnce(std::cell::Cell::new(true));
+        let mut search = SeededRandomSearch::new(MasterSeed::from_u64(1), 3, |_| 7_u64, policy);
+        let asked = search.ask(3);
+        let batch: Vec<_> = (0..3)
+            .map(|index| Told {
+                token: asked[index].token,
+                candidate: CandidateId::new(index as u64),
+                summary: summary(index as u64, 1),
+            })
+            .collect();
+        let before = search.status();
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| search.tell(&batch)));
+        assert!(outcome.is_err());
+        assert_eq!(before, search.status());
+        assert!(search.best().is_none());
+
+        search
+            .tell(&batch)
+            .expect("the untouched batch can be retold");
+        assert!(search.status().finished);
+        assert_eq!(3, search.status().told);
     }
 
     #[test]
