@@ -335,7 +335,11 @@ fn proactive_agents_handle_one_message_then_tick() {
     });
     simulation.run();
 
-    let events = log.0.lock().unwrap_or_else(|error| panic!("{error}")).clone();
+    let events = log
+        .0
+        .lock()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .clone();
     assert_eq!(
         vec![
             (0, "tick"),
@@ -346,7 +350,10 @@ fn proactive_agents_handle_one_message_then_tick() {
         ],
         events
     );
-    assert_eq!(Some(2), simulation.consumed_for_agent("door").map(<[_]>::len));
+    assert_eq!(
+        Some(2),
+        simulation.consumed_for_agent("door").map(<[_]>::len)
+    );
 }
 
 #[test]

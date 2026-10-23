@@ -49,7 +49,7 @@ It draws each gap from Poisson(λ), so gap variance is about λ (observed 60.1
 at mean 60.0) rather than the mean² that the M/M/c claims in =src/lib.rs:4-5=
 and =README.md= need (about 3,600). Fix: sample exponential or geometric
 gaps, or drop the M/M/c and arrival-rate wording.
-** TODO [low] Messages sent to a Proactive agent never reach =on_message=
+** DONE [low] Messages sent to a Proactive agent never reach =on_message=
 The engine pops the queue only for Reactive agents, so a Proactive target
 accumulates messages (1,000 queued, 0 =on_message= calls in the repro) while
 they are recorded as delivered. No doc says so, and =examples/CANDIDATES.md=
