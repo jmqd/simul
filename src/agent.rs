@@ -409,11 +409,20 @@ pub struct AgentInitializer {
 /// * Driver in traffic.
 /// * A single-celled organism.
 /// * A player in a game.
+///
+/// Each tick, an awake agent that has a queued message receives the oldest one
+/// through [`Agent::on_message`]. A `Proactive` agent then also gets
+/// [`Agent::on_tick`], whether or not it had a message. Sleeping and `Dead`
+/// agents get neither.
 pub trait Agent: std::fmt::Debug + DynClone {
-    /// The main action an agent performs, processing messages that come in to it.
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message);
+    /// Handles the oldest queued message, at most once per tick. The message
+    /// is recorded as consumed afterwards unless the agent sets
+    /// [`MessageProcessingStatus::InProgress`]. The default does nothing.
+    #[allow(unused_variables)]
+    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {}
 
-    /// Some Agents do things all the time, they are `Proactive`.
+    /// Runs once per tick while the agent is `Proactive`, after any
+    /// `on_message` in the same tick. The default does nothing.
     #[allow(unused_variables)]
     fn on_tick(&mut self, ctx: &mut AgentContext) {}
 }
@@ -500,9 +509,6 @@ where
     }
 
     impl Agent for PeriodicProducer {
-        #[allow(unused_variables)]
-        fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {}
-
         fn on_tick(&mut self, ctx: &mut AgentContext) {
             ctx.sleep_for(self.period);
             ctx.send_cached(&mut self.target, None);

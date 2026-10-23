@@ -628,9 +628,11 @@ fn time_advances_per_tick_and_halts_at_first_true_check_or_interrupt() {
         let metric = seed % 2 == 1;
         let mut case = build(seed, Size::Any, metric, metric, true);
         let (calls, callbacks) = run(&mut case);
-        // Callbacks run in (time, handle) order, at most once per agent per tick.
+        // Callbacks run in (time, handle) order; an agent gets at most a message
+        // and a tick per tick.
         assert!(
-            callbacks.windows(2).all(|pair| pair[0] < pair[1]),
+            callbacks.windows(2).all(|pair| pair[0] <= pair[1])
+                && callbacks.windows(3).all(|triple| triple[0] != triple[2]),
             "seed {seed}: callback order"
         );
         let simulation = &case.simulation;
@@ -645,11 +647,9 @@ fn time_advances_per_tick_and_halts_at_first_true_check_or_interrupt() {
                 .into_iter()
                 .chain(times_after(&debug, "Halt(", ')'))
                 .min();
-            callback_times.push(
-                times_after(&debug, "Tick(", ')')
-                    .chain(times_after(&debug, "Message { time: ", ','))
-                    .collect(),
-            );
+            // Each kind of callback runs at most once per agent per tick.
+            callback_times.push(times_after(&debug, "Tick(", ')').collect());
+            callback_times.push(times_after(&debug, "Message { time: ", ',').collect());
         }
 
         let (end, expected_calls): (DiscreteTime, Vec<DiscreteTime>) = match first_interrupt {
@@ -662,7 +662,11 @@ fn time_advances_per_tick_and_halts_at_first_true_check_or_interrupt() {
             let len = times.len();
             times.sort_unstable();
             times.dedup();
-            assert_eq!(len, times.len(), "seed {seed}: two callbacks in one tick");
+            assert_eq!(
+                len,
+                times.len(),
+                "seed {seed}: repeated callback in one tick"
+            );
             assert!(
                 times.iter().all(|t| (case.start..end).contains(t)),
                 "seed {seed}"

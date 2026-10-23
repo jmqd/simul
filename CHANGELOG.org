@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Deliver messages to Proactive agents (breaking)
+Each tick, an awake agent with a queued message handles the oldest one in
+=on_message=; a Proactive agent then also gets =on_tick=. Messages sent to
+Proactive agents used to pile up unread. =Agent::on_message= now has a default
+empty body, so agents that never receive messages need not implement it.
+
 * DONE Fail simulations whose callbacks panic (breaking)
 A panic from an agent callback or the halt check leaves the simulation
 =SimulationMode::Failed=, and =run= refuses to resume it instead of replaying

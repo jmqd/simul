@@ -322,29 +322,32 @@ fn visit_agent(
         }
         agent.state.mode = agent.state.wake_mode;
     }
-    let queued_msg = if agent.state.mode == AgentMode::Reactive {
-        agent.state.queue.pop_front()
-    } else {
-        None
-    };
-    if tick.queue_depth_metric {
-        agent.record_queue_depth();
-    }
-
-    let message = match agent.state.mode {
-        AgentMode::Proactive => None,
-        AgentMode::Reactive => match queued_msg {
-            Some(message) => Some(message),
-            None => return (false, None),
-        },
+    let proactive = match agent.state.mode {
+        AgentMode::Proactive => true,
+        AgentMode::Reactive => false,
         AgentMode::AsleepUntil(_) => {
+            if tick.queue_depth_metric {
+                agent.record_queue_depth();
+            }
             if tick.asleep_cycles_metric {
                 agent.metadata.asleep_cycle_count += 1;
             }
             return (false, None);
         }
-        AgentMode::Dead => return (false, None),
+        AgentMode::Dead => {
+            if tick.queue_depth_metric {
+                agent.record_queue_depth();
+            }
+            return (false, None);
+        }
     };
+    let message = agent.state.queue.pop_front();
+    if tick.queue_depth_metric {
+        agent.record_queue_depth();
+    }
+    if !proactive && message.is_none() {
+        return (false, None);
+    }
 
     let mut requested_sleep_until = None;
     let mut ctx = AgentContext {
@@ -360,9 +363,20 @@ fn visit_agent(
         state: &agent.state,
         message_processing_status: MessageProcessingStatus::NoError,
     };
+    // Every awake agent handles at most one queued message per tick; proactive
+    // agents then also tick.
+    if let Some(msg) = &message {
+        agent.agent.on_message(&mut ctx, msg);
+    }
+    let status = std::mem::replace(
+        &mut ctx.message_processing_status,
+        MessageProcessingStatus::NoError,
+    );
+    if proactive {
+        agent.agent.on_tick(&mut ctx);
+    }
     if let Some(msg) = message {
-        agent.agent.on_message(&mut ctx, &msg);
-        match ctx.message_processing_status {
+        match status {
             MessageProcessingStatus::InProgress => agent.state.queue.push_front(msg),
             MessageProcessingStatus::NoError => {
                 let mut msg = msg;
@@ -370,8 +384,6 @@ fn visit_agent(
                 agent.state.consumed.push(msg);
             }
         }
-    } else {
-        agent.agent.on_tick(&mut ctx);
     }
     if let Some(sleep_until) = requested_sleep_until {
         agent.state.mode = AgentMode::AsleepUntil(sleep_until);

@@ -307,6 +307,49 @@ fn in_progress_message_stays_queued_until_completed() {
 }
 
 #[test]
+fn proactive_agents_handle_one_message_then_tick() {
+    #[derive(Clone, Debug, Default)]
+    struct Logger(std::sync::Arc<std::sync::Mutex<Vec<(u64, &'static str)>>>);
+    impl Agent for Logger {
+        fn on_message(&mut self, ctx: &mut AgentContext, _: &Message) {
+            self.0
+                .lock()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .push((ctx.time(), "message"));
+        }
+        fn on_tick(&mut self, ctx: &mut AgentContext) {
+            self.0
+                .lock()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .push((ctx.time(), "tick"));
+        }
+    }
+    let log = Logger::default();
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![
+            periodic_producer("producer", 1, "door"),
+            proactive_agent("door", log.clone()),
+        ],
+        halt_check: |s: &Simulation| s.time() == 3,
+        ..Default::default()
+    });
+    simulation.run();
+
+    let events = log.0.lock().unwrap_or_else(|error| panic!("{error}")).clone();
+    assert_eq!(
+        vec![
+            (0, "tick"),
+            (1, "message"),
+            (1, "tick"),
+            (2, "message"),
+            (2, "tick"),
+        ],
+        events
+    );
+    assert_eq!(Some(2), simulation.consumed_for_agent("door").map(<[_]>::len));
+}
+
+#[test]
 fn initial_queue_messages_are_addressed_to_their_owner() {
     let mut owner = periodic_consumer("owner", 1);
     owner.options.initial_queue.push_back(Message::new(0));
@@ -600,9 +643,10 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
     let dense_trace = dense_trace.lock().unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(*dense_trace, *sparse_trace);
     drop(dense_trace);
-    assert!(sparse_trace.windows(2).all(|pair| pair[0] < pair[1]));
+    // A proactive agent with a message gets on_message, then on_tick.
+    assert!(sparse_trace.windows(2).all(|pair| pair[0] <= pair[1]));
     assert_eq!(
-        &[(0, 0), (1, 0), (1, 65), (2, 0), (3, 65)],
+        &[(0, 0), (1, 0), (1, 65), (2, 0), (2, 0)],
         &sparse_trace[..5]
     );
     drop(sparse_trace);
