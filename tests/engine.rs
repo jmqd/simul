@@ -307,6 +307,24 @@ fn in_progress_message_stays_queued_until_completed() {
 }
 
 #[test]
+fn initial_queue_messages_are_addressed_to_their_owner() {
+    let mut owner = periodic_consumer("owner", 1);
+    owner.options.initial_queue.push_back(Message::new(0));
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: vec![periodic_consumer("other", 1), owner],
+        halt_check: |s: &Simulation| s.time() == 1,
+        ..Default::default()
+    });
+    simulation.run();
+
+    let consumed = simulation.consumed_for_agent("owner");
+    assert_eq!(
+        Some(simulation.agent_id("owner")),
+        consumed.map(|messages| messages[0].destination)
+    );
+}
+
+#[test]
 fn queue_depth_metrics_record_each_tick_depth() {
     let mut simulation = Simulation::new(SimulationParameters {
         agent_initializers: vec![

@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Address initial-queue messages to their owner
+=Simulation::try_new= sets each initial-queue message's =destination= to the
+agent that owns the queue, so consumed initial messages no longer look
+undeliverable. =destination= is =None= only when a send matched no agent.
+
 * DONE Share message payloads as Arc<[u8]> (breaking)
 =Message::custom_payload= is a public =Option<Arc<[u8]>>=, and =send=, =send_to=,
 and =Message::new_with_payload= take that type. A new payload allocates once,

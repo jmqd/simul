@@ -106,7 +106,7 @@ any state.
 panic on the third candidate leaves =asked: 2, outstanding: 2= for tokens the
 caller never received; the search can never finish. Fix: generate the whole
 batch locally, then commit it to the pending window once.
-** TODO [low] Initial-queue messages are consumed with =destination: None=
+** DONE [low] Initial-queue messages are consumed with =destination: None=
 =Message::new= leaves =destination= empty and =Simulation::try_new= keeps
 initial-queue entries as given, so a consumed initial message looks
 undeliverable. This contradicts =src/message.rs:21= and README's description

@@ -439,8 +439,12 @@ impl Simulation {
         let agents: Vec<SimulationAgent> = parameters
             .agent_initializers
             .into_iter()
-            .map(|agent_initializer| {
+            .enumerate()
+            .map(|(handle, agent_initializer)| {
                 let mut queue = agent_initializer.options.initial_queue;
+                for message in &mut queue {
+                    message.destination = Some(AgentId::from_handle(handle));
+                }
                 queue.reserve(history_capacity);
                 SimulationAgent {
                     agent: agent_initializer.agent,
