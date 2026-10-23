@@ -306,6 +306,45 @@ fn in_progress_message_stays_queued_until_completed() {
     assert_eq!(simulation.time(), 4);
 }
 
+#[derive(Clone, Debug, Default)]
+struct Drawer(Arc<std::sync::Mutex<Vec<u64>>>);
+
+impl Agent for Drawer {
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        let draws = [ctx.rng().next_u64(), ctx.rng().next_u64()];
+        self.0
+            .lock()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .extend(draws);
+    }
+}
+
+fn draws(seed: u64, extra_agents: usize) -> Vec<u64> {
+    let drawer = Drawer::default();
+    let mut agents = vec![proactive_agent("drawer", drawer.clone())];
+    agents.extend((0..extra_agents).map(|i| periodic_consumer(format!("idle-{i}"), 1)));
+    let mut simulation = Simulation::new(SimulationParameters {
+        agent_initializers: agents,
+        halt_check: |s: &Simulation| s.time() == 4,
+        seed: simul::experiment::MasterSeed::from_u64(seed),
+        ..Default::default()
+    });
+    simulation.run();
+    let draws = drawer.0.lock().unwrap_or_else(|error| panic!("{error}"));
+    draws.clone()
+}
+
+#[test]
+fn agent_streams_depend_only_on_seed_agent_and_tick() {
+    let base = draws(7, 0);
+    assert_eq!(8, base.len());
+    assert_eq!(base, draws(7, 0), "equal seeds give equal draws");
+    assert_eq!(base, draws(7, 100), "later agents do not shift the stream");
+    assert_ne!(base, draws(8, 0), "different seeds give different draws");
+    assert_ne!(base[0], base[1], "draws within a tick continue one stream");
+    assert_ne!(base[..2], base[2..4], "each tick starts a fresh stream");
+}
+
 #[test]
 fn proactive_agents_handle_one_message_then_tick() {
     #[derive(Clone, Debug, Default)]

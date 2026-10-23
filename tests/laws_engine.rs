@@ -10,6 +10,7 @@ use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
     AgentMode, AgentOptions, MessageProcessingStatus, SimulationAgent,
 };
+use simul::experiment::MasterSeed;
 use simul::message::Message;
 use simul::{DiscreteTime, Simulation, SimulationParameters};
 use std::cell::{Cell, RefCell};
@@ -92,6 +93,9 @@ impl Chaos {
     }
 
     fn act(&mut self, ctx: &mut AgentContext, received: Option<&Message>) {
+        // Mixing in the simulation stream makes every scheduling law also check
+        // that ctx.rng() draws do not depend on how the run was executed.
+        self.rng ^= ctx.rng().next_u64();
         let sends = if self.next() % 100 < self.send_percent {
             1 + self.next() % 3
         } else {
@@ -316,6 +320,7 @@ fn build(seed: u64, size: Size, queue_metric: bool, asleep_metric: bool, halts: 
         starting_time: start,
         enable_queue_depth_metrics: queue_metric,
         enable_agent_asleep_cycles_metric: asleep_metric,
+        seed: MasterSeed::from_u64(seed),
     });
     Case {
         simulation,

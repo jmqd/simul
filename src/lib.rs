@@ -29,6 +29,7 @@ use agent::{
     Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
     AgentMode, AgentState, MessageProcessingStatus, SimulationAgent,
 };
+use experiment::{MasterSeed, SeedDeriver};
 use message::Message;
 
 use log::{debug, info, log_enabled, Level};
@@ -115,6 +116,9 @@ pub struct Simulation {
     /// Identifies this agent layout for cached target identities. Clones share
     /// the layout and its token; every constructed simulation gets a new one.
     layout: u64,
+
+    /// Source of every agent's per-tick random stream.
+    seeds: SeedDeriver,
 }
 
 /// The parameters to create a Simulation.
@@ -136,6 +140,10 @@ pub struct SimulationParameters {
 
     /// Records a metric on the number of cycles an agent was asleep for.
     pub enable_agent_asleep_cycles_metric: bool,
+
+    /// Root of every agent's [`AgentContext::rng`] stream. Equal seeds give
+    /// equal runs; the default is `MasterSeed::from_u64(0)`.
+    pub seed: MasterSeed,
 }
 
 /// Errors returned when simulation parameters are invalid.
@@ -173,6 +181,7 @@ impl Default for SimulationParameters {
             starting_time: 0,
             enable_queue_depth_metrics: false,
             enable_agent_asleep_cycles_metric: false,
+            seed: MasterSeed::from_u64(0),
         }
     }
 }
@@ -195,6 +204,8 @@ struct Tick<'a> {
     agent_name_handle_map: &'a FxHashMap<String, AgentId>,
     /// Commands issued during the tick, applied at its end.
     commands: &'a mut Vec<AgentCommand>,
+    /// Source of each visited agent's random stream for this tick.
+    seeds: SeedDeriver,
 }
 
 /// Tracks runnable handles in callback order and sleeping agents by wake time.
@@ -362,6 +373,8 @@ fn visit_agent(
         layout: tick.layout,
         state: &agent.state,
         message_processing_status: MessageProcessingStatus::NoError,
+        seeds: tick.seeds,
+        rng: None,
     };
     // Every awake agent handles at most one queued message per tick; proactive
     // agents then also tick.
@@ -486,6 +499,7 @@ impl Simulation {
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
             agent_name_handle_map,
             layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
+            seeds: SeedDeriver::new(parameters.seed),
         })
     }
 
@@ -642,6 +656,7 @@ impl Simulation {
             scan_names: agent_count <= LINEAR_NAME_SCAN_LIMIT,
             queue_depth_metric: self.enable_queue_depth_metric,
             asleep_cycles_metric: self.enable_agent_asleep_cycles_metric,
+            seeds: self.seeds,
             agent_name_handle_map: &self.agent_name_handle_map,
             commands,
         };

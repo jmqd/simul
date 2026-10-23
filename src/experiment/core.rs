@@ -24,6 +24,8 @@ const LAYOUT_NOISE_NAMESPACE: &[u8] = b"simul/v1/layout-noise";
 const EXECUTION_NOISE_NAMESPACE: &[u8] = b"simul/v1/execution-noise";
 /// Domain separator for validation-holdout streams.
 const HOLDOUT_NAMESPACE: &[u8] = b"simul/v1/validation-holdout";
+/// Domain separator for per-agent, per-tick simulation streams.
+const AGENT_NAMESPACE: &[u8] = b"simul/v1/agent";
 /// Scale converting the high 53 bits of a `u64` to the unit interval.
 const U64_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 53) as f64);
 /// Longest derivation input hashed from a stack buffer; longer inputs use the
@@ -246,6 +248,19 @@ impl SeedDeriver {
         self.derive(
             ACCEPTANCE_NAMESPACE,
             &[&generation.to_le_bytes(), &step.to_le_bytes()],
+        )
+    }
+
+    /// Derives the stream an agent draws from during one simulation tick.
+    ///
+    /// The stream depends only on the master seed, the agent's index, and the
+    /// tick, so it is unaffected by other agents, scheduling, clones, or how a
+    /// run is split into segments.
+    #[must_use]
+    pub fn agent_seed(self, agent: u64, tick: u64) -> DerivedSeed {
+        self.derive(
+            AGENT_NAMESPACE,
+            &[&agent.to_le_bytes(), &tick.to_le_bytes()],
         )
     }
 

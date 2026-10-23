@@ -1,3 +1,4 @@
+use crate::experiment::{SeedDeriver, TrialRng};
 use crate::{message::Message, DiscreteTime};
 use dyn_clone::DynClone;
 use rand_distr::Distribution;
@@ -204,6 +205,12 @@ pub struct AgentContext<'a> {
 
     /// Whether the current message finished or stays queued.
     pub(crate) message_processing_status: MessageProcessingStatus,
+
+    /// Derives this agent's stream for the current tick.
+    pub(crate) seeds: SeedDeriver,
+
+    /// The stream for this visit, created on first use.
+    pub(crate) rng: Option<TrialRng>,
 }
 
 impl<'a> AgentContext<'a> {
@@ -211,6 +218,19 @@ impl<'a> AgentContext<'a> {
     #[must_use]
     pub const fn id(&self) -> AgentId {
         self.id
+    }
+
+    /// Returns this agent's random stream for the current tick.
+    ///
+    /// The stream is derived from the simulation seed, the agent's
+    /// [`AgentId`], and the tick, so equal seeds give equal draws regardless
+    /// of other agents, scheduling, clones, or how a run is split. Draws
+    /// within one tick, including across `on_message` and `on_tick`, continue
+    /// one stream.
+    pub fn rng(&mut self) -> &mut TrialRng {
+        let (seeds, agent, tick) = (self.seeds, self.id.index() as u64, self.time);
+        self.rng
+            .get_or_insert_with(|| seeds.agent_seed(agent, tick).rng())
     }
 
     /// Returns the agent's name.

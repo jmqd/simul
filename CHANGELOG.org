@@ -1,5 +1,12 @@
 #+title: Changelog
 
+* DONE Seed simulations and give agents per-tick random streams (breaking)
+=SimulationParameters::seed= roots =AgentContext::rng()=, a =TrialRng= derived
+from the seed, the agent's =AgentId=, and the tick under the new
+=simul/v1/agent= namespace (=SeedDeriver::agent_seed=). Draws do not depend on
+other agents, sparse or dense scheduling, clones, or how a run is split into
+segments. Frozen V1 experiment streams are unchanged.
+
 * DONE Deliver messages to Proactive agents (breaking)
 Each tick, an awake agent with a queued message handles the oldest one in
 =on_message=; a Proactive agent then also gets =on_tick=. Messages sent to
