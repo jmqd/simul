@@ -11,7 +11,7 @@ use simul::experiment::{
     aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
     NonFinitePolicy, ScalarSummary, SelectionPolicy,
 };
-use simul::{Simulation, SimulationParameters};
+use simul::{Halt, Simulation, SimulationParameters};
 use std::cmp::Ordering;
 use std::convert::Infallible;
 
@@ -52,7 +52,7 @@ fn build_simulation_parameters(consumer_period: u64) -> SimulationParameters {
             ),
             periodic_consumer("consumer".to_string(), consumer_period),
         ],
-        halt_check: halt_condition,
+        halt: Halt::when(halt_condition),
         enable_agent_asleep_cycles_metric: true,
         ..Default::default()
     }

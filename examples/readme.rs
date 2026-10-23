@@ -1,7 +1,7 @@
 //! An example of a simple simulation, featured in the README.md.
 use simul::agent::{periodic_consumer, periodic_producer};
-use simul::Simulation;
 use simul::SimulationParameters;
+use simul::{Halt, Simulation};
 
 /// Example of a minimal, simple Simulation that can be executed.
 fn main() {
@@ -20,7 +20,7 @@ fn main() {
 
         // We pass in a halt condition so the simulation knows when it is finished.
         // In this case, it is "when the simulation is 10 ticks old, we're done."
-        halt_check: |s: &Simulation| s.time() == 10,
+        halt: Halt::AtTime(10),
 
         ..Default::default()
     });

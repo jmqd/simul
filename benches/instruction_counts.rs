@@ -32,7 +32,7 @@ use simul::experiment::{
     TrialStream,
 };
 use simul::message::Message;
-use simul::{Simulation, SimulationParameters};
+use simul::{Halt, Simulation, SimulationParameters};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -372,7 +372,7 @@ fn periodic_pair(enable_queue_depth_metrics: bool) -> Fingerprint {
             periodic_producer("producer".to_string(), 1, "consumer".to_string()),
             periodic_consumer("consumer".to_string(), 1),
         ],
-        halt_check: |simulation| simulation.time() >= 10_000,
+        halt: Halt::AtTime(10_000),
         enable_queue_depth_metrics,
         ..Default::default()
     });
@@ -406,11 +406,11 @@ fn sim_fan_in() -> Fingerprint {
     agent_initializers.push(periodic_consumer("sink".to_string(), 1));
     let simulation = simulate(SimulationParameters {
         agent_initializers,
-        halt_check: |simulation| {
+        halt: Halt::when(|simulation: &Simulation| {
             simulation
                 .find_by_name("sink")
                 .is_some_and(|sink| sink.state.consumed.len() >= 1_500)
-        },
+        }),
         ..Default::default()
     });
     histories(&simulation)
@@ -431,7 +431,7 @@ fn sparse_simulation(enable_agent_asleep_cycles_metric: bool) -> Simulation {
         .extend((0..8).map(|index| periodic_consumer(format!("consumer-{index}"), 1)));
     simulate(SimulationParameters {
         agent_initializers,
-        halt_check: |simulation| simulation.time() >= 3_000,
+        halt: Halt::AtTime(3_000),
         enable_agent_asleep_cycles_metric,
         ..Default::default()
     })
@@ -498,7 +498,7 @@ fn sim_relay_ring() -> Fingerprint {
         .collect();
     let simulation = simulate(SimulationParameters {
         agent_initializers,
-        halt_check: |simulation| simulation.time() >= 4_000,
+        halt: Halt::AtTime(4_000),
         ..Default::default()
     });
     simulation
@@ -536,11 +536,11 @@ fn exp_search_sim() -> Fingerprint {
                         periodic_producer("producer".to_string(), 2, "consumer".to_string()),
                         periodic_consumer("consumer".to_string(), consumer_period),
                     ],
-                    halt_check: |simulation| {
+                    halt: Halt::when(|simulation: &Simulation| {
                         simulation
                             .find_by_name("consumer")
                             .is_some_and(|consumer| consumer.state.consumed.len() > 10)
-                    },
+                    }),
                     enable_agent_asleep_cycles_metric: true,
                     ..Default::default()
                 });

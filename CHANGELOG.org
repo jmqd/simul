@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Declare halt conditions with Halt (breaking)
+=SimulationParameters::halt_check: fn(&Simulation) -> bool= is replaced by
+=halt: Halt=: =Halt::AtTime(t)= stops once time reaches =t=, =Halt::Never= runs
+until a halt interrupt, and =Halt::when(predicate)= accepts closures that
+capture state, which function pointers could not.
+
 * DONE Replace Poisson agents with seeded geometric agents (breaking)
 =poisson_distributed_producer= and =poisson_distributed_consumer= took a
 =rand_distr::Poisson<f64>=, drew from the unseeded thread RNG, and treated a

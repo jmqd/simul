@@ -79,7 +79,7 @@ simul = "0.5.1"
 
 ``` rust
 use simul::agent::*;
-use simul::Simulation;
+use simul::{Halt, Simulation};
 use simul::SimulationParameters;
 
 /// Example of a minimal, simple Simulation that can be executed.
@@ -99,7 +99,7 @@ fn main() {
 
         // We pass in a halt condition so the simulation knows when it is finished.
         // In this case, it is "when the simulation is 10 ticks old, we're done."
-        halt_check: |s: &Simulation| s.time() == 10,
+        halt: Halt::AtTime(10),
 
         ..Default::default()
     });
@@ -132,9 +132,9 @@ fn main() {
 
 The simulation runs all the logic of calling `on_tick` and `on_message`,
 distributing messages, tracking metrics, incrementing time, and when to halt.
-A `Simulation` is finished when the provided `halt_check` function returns
-`true`, or after the tick in which an `Agent` calls
-`ctx.send_halt_interrupt(reason)`.
+A `Simulation` is finished when its `Halt` condition holds (`Halt::AtTime(t)`,
+`Halt::Never`, or `Halt::when(predicate)`), or after the tick in which an
+`Agent` calls `ctx.send_halt_interrupt(reason)`.
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the

@@ -13,7 +13,7 @@ Nothing here is implemented. Treat each entry as a brief for a possible
 
 - **Dynamic.** The non-obvious behaviour the example is meant to make visible.
 - **Agents.** A sketch of the topology on `Agent`, `Message`, `sleep_for`, and
-  `halt_check`.
+  `Halt`.
 - **Experiment.** What to vary and which `experiment` features apply.
 - **Surprise.** The result a reader should not have guessed from averages.
 

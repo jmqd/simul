@@ -37,6 +37,7 @@ use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
 use std::collections::{hash_map::Entry, BinaryHeap};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Source of agent layout tokens; each constructed simulation takes the next.
 static NEXT_LAYOUT: AtomicU64 = AtomicU64::new(0);
@@ -97,8 +98,8 @@ pub struct Simulation {
     /// The current discrete time of the Simulation.
     time: DiscreteTime,
 
-    /// A halt check function: given the state of the Simulation determine halt or not.
-    halt_check: fn(&Self) -> bool,
+    /// When the run stops.
+    halt: Halt,
 
     /// Whether to record metrics on queue depths. Takes space.
     enable_queue_depth_metric: bool,
@@ -121,6 +122,38 @@ pub struct Simulation {
     seeds: SeedDeriver,
 }
 
+/// When a simulation stops running.
+///
+/// The condition is checked before every tick, against the state after the
+/// previous tick's messages were delivered. An agent's
+/// [`AgentContext::send_halt_interrupt`] also stops the run after its tick.
+#[derive(Clone)]
+pub enum Halt {
+    /// Stop once the simulation time reaches this tick, without running it.
+    AtTime(DiscreteTime),
+    /// Run until an agent sends a halt interrupt.
+    Never,
+    /// Stop when the predicate returns `true`.
+    When(Arc<dyn Fn(&Simulation) -> bool + Send + Sync>),
+}
+
+impl Halt {
+    /// Stops when `predicate` returns `true`.
+    pub fn when(predicate: impl Fn(&Simulation) -> bool + Send + Sync + 'static) -> Self {
+        Self::When(Arc::new(predicate))
+    }
+}
+
+impl std::fmt::Debug for Halt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AtTime(time) => f.debug_tuple("AtTime").field(time).finish(),
+            Self::Never => f.write_str("Never"),
+            Self::When(_) => f.write_str("When(..)"),
+        }
+    }
+}
+
 /// The parameters to create a Simulation.
 #[derive(Clone, Debug)]
 pub struct SimulationParameters {
@@ -128,8 +161,8 @@ pub struct SimulationParameters {
     /// See here: <https://authors.library.caltech.edu/60491/1/MGM%20113.pdf>
     pub agent_initializers: Vec<AgentInitializer>,
 
-    /// Given the state of the Simulation a function that determines if the Simulation is complete.
-    pub halt_check: fn(&Simulation) -> bool,
+    /// When the run stops.
+    pub halt: Halt,
 
     /// The discrete time at which the simulation should begin.
     /// For the vast majority of simulations, 0 is the correct default.
@@ -177,7 +210,7 @@ impl Default for SimulationParameters {
     fn default() -> Self {
         Self {
             agent_initializers: vec![],
-            halt_check: |_| true,
+            halt: Halt::AtTime(0),
             starting_time: 0,
             enable_queue_depth_metrics: false,
             enable_agent_asleep_cycles_metric: false,
@@ -493,7 +526,7 @@ impl Simulation {
         Ok(Self {
             mode: SimulationMode::Constructed,
             agents,
-            halt_check: parameters.halt_check,
+            halt: parameters.halt,
             time: parameters.starting_time,
             enable_queue_depth_metric: parameters.enable_queue_depth_metrics,
             enable_agent_asleep_cycles_metric: parameters.enable_agent_asleep_cycles_metric,
@@ -595,6 +628,15 @@ impl Simulation {
         self.mode
     }
 
+    /// Evaluates the halt condition against the current state.
+    fn halt_reached(&self) -> bool {
+        match &self.halt {
+            Halt::AtTime(time) => self.time >= *time,
+            Halt::Never => false,
+            Halt::When(predicate) => predicate(self),
+        }
+    }
+
     /// Executes ticks until the halt condition or an interrupt stops the run.
     fn run_ticks(&mut self) {
         self.mode = SimulationMode::Running;
@@ -606,7 +648,7 @@ impl Simulation {
             && !self.enable_agent_asleep_cycles_metric;
         let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
 
-        while self.mode == SimulationMode::Running && !(self.halt_check)(self) {
+        while self.mode == SimulationMode::Running && !self.halt_reached() {
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
             };
@@ -867,7 +909,7 @@ mod tests {
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 periodic_consumer("consumer".to_string(), 1),
             ],
-            halt_check: |s: &Simulation| s.time == 5,
+            halt: Halt::AtTime(5),
             ..Default::default()
         });
         simulation.run();
@@ -890,7 +932,7 @@ mod tests {
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 consumer,
             ],
-            halt_check: |simulation: &Simulation| simulation.time == 5,
+            halt: Halt::AtTime(5),
             ..Default::default()
         });
 

@@ -8,7 +8,8 @@
 * Crate cleanup
 ** TODO Move Agent creaton helpers into impl proper
 * Architecture / Interface
-** IDEA Consider replacing halt_check with a fn that returns SimulationState enum
+** DONE Consider replacing halt_check with a fn that returns SimulationState enum
+Replaced by the declarative =Halt= enum.
 ** DONE Consider adding Experiment structure for better interface
 The =simul::experiment= module.
 ** IDEA Re-evaluate targeting system architecture for messages

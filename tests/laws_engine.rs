@@ -12,7 +12,7 @@ use simul::agent::{
 };
 use simul::experiment::MasterSeed;
 use simul::message::Message;
-use simul::{DiscreteTime, Simulation, SimulationParameters};
+use simul::{DiscreteTime, Halt, Simulation, SimulationParameters};
 use std::cell::{Cell, RefCell};
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
@@ -316,7 +316,7 @@ fn build(seed: u64, size: Size, queue_metric: bool, asleep_metric: bool, halts: 
 
     let simulation = Simulation::new(SimulationParameters {
         agent_initializers,
-        halt_check: halt_at_time,
+        halt: Halt::when(halt_at_time),
         starting_time: start,
         enable_queue_depth_metrics: queue_metric,
         enable_agent_asleep_cycles_metric: asleep_metric,

@@ -10,7 +10,7 @@
 
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
-use simul::{DiscreteTime, Simulation, SimulationParameters};
+use simul::{DiscreteTime, Halt, Simulation, SimulationParameters};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -1068,7 +1068,7 @@ fn build_simulation(params: SoftwareTeamParameters) -> Simulation {
                 },
             ),
         ],
-        halt_check: |_| false,
+        halt: Halt::Never,
         enable_queue_depth_metrics: true,
         enable_agent_asleep_cycles_metric: false,
         ..Default::default()

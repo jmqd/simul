@@ -1,6 +1,6 @@
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
-use simul::{Simulation, SimulationParameters};
+use simul::{Halt, Simulation, SimulationParameters};
 use std::sync::Arc;
 
 /// Calculates productivity from each contiguous block of uninterrupted maker time.
@@ -96,7 +96,7 @@ fn main() {
                 },
             },
         ],
-        halt_check: |simulation: &Simulation| simulation.time() >= 128,
+        halt: Halt::AtTime(128),
         ..Default::default()
     });
 

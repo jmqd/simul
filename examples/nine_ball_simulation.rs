@@ -4,7 +4,7 @@ use rand_distr::weighted::WeightedIndex;
 use rustc_hash::FxHashMap;
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentOptions};
 use simul::message::Message;
-use simul::{Simulation, SimulationParameters};
+use simul::{Halt, Simulation, SimulationParameters};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -152,7 +152,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
 
     let mut sim = Simulation::new(SimulationParameters {
         agent_initializers,
-        halt_check: halt_condition,
+        halt: Halt::when(halt_condition),
         ..Default::default()
     });
     sim.run();
@@ -211,7 +211,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
 
     let mut sim = Simulation::new(SimulationParameters {
         agent_initializers,
-        halt_check: halt_condition,
+        halt: Halt::when(halt_condition),
         ..Default::default()
     });
     sim.run();
@@ -315,7 +315,7 @@ mod tests {
                         ..Default::default()
                     },
                 }],
-                halt_check: |simulation| simulation.time() == 2,
+                halt: Halt::AtTime(2),
                 ..Default::default()
             });
             simulation.run();
