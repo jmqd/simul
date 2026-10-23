@@ -138,16 +138,19 @@ impl Default for AgentState {
     }
 }
 
-pub struct AgentCommand {
-    pub ty: AgentCommandType,
-    pub agent_handle: usize,
+/// A buffered callback action, applied at the end of the tick.
+pub(crate) struct AgentCommand {
+    /// What the agent asked for.
+    pub(crate) ty: AgentCommandType,
+    /// Handle of the agent that issued the command.
+    pub(crate) agent_handle: usize,
 }
 
-/// Actions the Agent can perform.
-pub enum AgentCommandType {
-    /// Send a message to another agent
+/// Actions an agent can request from a callback.
+pub(crate) enum AgentCommandType {
+    /// Record the message as produced and deliver it to its destination.
     SendMessage(Message),
-    /// Stop the simulation
+    /// Stop the simulation after this tick; the payload is the reason.
     HaltSimulation(String),
 }
 

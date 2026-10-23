@@ -10,7 +10,8 @@ use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
     AgentMode, AgentOptions, MessageProcessingStatus, SimulationAgent,
 };
-use simul::{DiscreteTime, Message, Simulation, SimulationParameters};
+use simul::message::Message;
+use simul::{DiscreteTime, Simulation, SimulationParameters};
 use std::cell::{Cell, RefCell};
 use std::fmt::{self, Write as _};
 use std::sync::Arc;

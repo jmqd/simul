@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Expose engine types only through their modules (breaking)
+The crate root no longer glob re-exports =agent::*= and =message::*=; import
+them from =simul::agent= and =simul::message=. =AgentCommand= and
+=AgentCommandType= were public but unusable outside the engine and are now
+crate-private.
+
 * DONE Address initial-queue messages to their owner
 =Simulation::try_new= sets each initial-queue message's =destination= to the
 agent that owns the queue, so consumed initial messages no longer look

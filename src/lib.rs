@@ -25,8 +25,11 @@ pub mod agent;
 pub mod experiment;
 pub mod message;
 
-pub use agent::*;
-pub use message::*;
+use agent::{
+    Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer,
+    AgentMetadata, AgentMode, AgentState, MessageProcessingStatus, SimulationAgent,
+};
+use message::Message;
 
 use log::{debug, info, log_enabled, Level};
 use rustc_hash::FxHashMap;
@@ -799,6 +802,7 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent::{periodic_consumer, periodic_producer, poisson_distributed_producer};
     use rand_distr::Poisson;
 
     fn init() {
