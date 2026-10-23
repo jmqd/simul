@@ -238,7 +238,10 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     ///
     /// # Errors
     ///
-    /// Returns a [`CrossEntropyError`] identifying the first invalid field.
+    /// Returns the first [`CrossEntropyError`] found, checking in this order:
+    /// an empty search space, the elite fraction, the learning rate, then each
+    /// dimension in index order (mean, standard deviation, floor, and floor
+    /// against the initial standard deviation).
     pub fn new(config: CrossEntropyConfig<N>) -> Result<Self, CrossEntropyError> {
         validate_config(&config)?;
         Ok(Self {

@@ -189,7 +189,7 @@ Two aggregates with the same =CandidateId= tie on the ID tie-break, so the
 result follows input order (attempts 2 vs 4 for swapped inputs). Nothing
 rejects duplicates, unlike =SeededRandomSearch=. Fix: document unique IDs,
 or reject duplicates.
-** TODO [low] =CrossEntropyOptimizer::new= does not report "the first invalid field"
+** DONE [low] =CrossEntropyOptimizer::new= does not report "the first invalid field"
 =validate_config= checks =elite_fraction= and =learning_rate= before the
 per-dimension fields, then goes dimension by dimension: a NaN mean plus
 elite fraction 0 reports =InvalidEliteFraction=. Fix: document the real
