@@ -171,7 +171,8 @@ The doc bounds allocation by =budget x bounds.len()=, but
 =Vec::with_capacity(budget)= reserves outer vectors even when =bounds= is
 empty; =budget = usize::MAX / 8= panics with capacity overflow. Fix: state
 =budget x (bounds.len() + 1)= with a =# Panics= note, or use =try_reserve=.
-** TODO [medium] README documents an API that published 0.5.1 lacks
+** DONE [medium] README documents an API that published 0.5.1 lacks
+The crate is now 0.6.0 and the README matches its API.
 README pins =simul = "0.5.1"= but describes =send_to=, =agent_id=, and
 =Option<Arc<[u8]>>= payloads, which docs.rs 0.5.1 does not have; CHANGELOG
 calls the payload change breaking while =Cargo.toml= is still 0.5.1. Fix:
@@ -180,7 +181,8 @@ bump the version (e.g. 0.6.0-dev) or mark those sections unpublished.
 =README.md:4-5= and =src/lib.rs:4-6= promise M/M/c queues; each agent is one
 FIFO server with caller-defined service times, and the built-in "Poisson"
 agents are not exponential (see above). Fix: say "per-agent FIFO queues".
-** TODO [low] README's plotting example does not exist
+** DONE [low] README's plotting example does not exist
+Removed; =readme-assets/cafe-example-queued-durations.png= is now unreferenced.
 "Poisson-distributed example w/ Plotting" (=README.md:159=) describes a cafe
 simulation with plotting; no such example or plotting feature exists.
 Fix: remove the section or label the image as historical.

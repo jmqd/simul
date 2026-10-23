@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Version 0.6.0
+Bump the crate to 0.6.0 for the breaking changes below. The README describes
+the builder, message delivery, seeded streams, halt reasons, failure mode, and
+change-based queue metrics, and drops the Poisson cafe plotting section, whose
+example and agents no longer exist.
+
 * DONE Seed simulations from experiment trials
 =SimulationBuilder::trial(&TrialContext)= seeds a simulation from the trial's
 common-random =TrialNoise= stream tagged =simul::Simulation=. Candidates

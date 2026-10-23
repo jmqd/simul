@@ -26,13 +26,11 @@ Use-cases:
 - For some examples, see the `examples` subdirectory.
 - For ideas not yet implemented, see [`examples/CANDIDATES.md`](./examples/CANDIDATES.md).
 - For use cases where your agents need their own custom state, define a struct,
-  implement `Agent`, and pass your agents into `Simulation` via constructing
-  `AgentInitializers`.
+  implement `Agent`, and add it with `Simulation::builder(halt).agent(..)`.
 
-## Typed experiments (source checkout)
+## Typed experiments
 
-`experiment` is independent of the agent engine. The consolidated API below is
-available in this checkout; it has not been published as a new crates.io release.
+`experiment` is independent of the agent engine.
 
 - Schedule explicit `TrialSpec` values with `CandidateId` and `ReplicationId`.
   `run_serial_bounded` rejects duplicate identities and oversized batches before
@@ -79,7 +77,7 @@ See `examples/simple_experiment.rs` for a complete typed experiment.
 
 ``` toml
 [dependencies]
-simul = "0.5.1"
+simul = "0.6.0"
 ```
 
 ``` rust
@@ -122,12 +120,14 @@ fn main() -> Result<(), SimulationError> {
 
 - A simulation is a collection of `Agents` that interact with each other via
 `Messages`.
-- The simulation keeps a discrete time (u64) which is incremented on each tick
-  of the Simulation.
-- What an `Agent` does at each tick of the simulation is provided by you in its
-  `on_tick()` and `on_message()` methods.
-- `Agents` must have a unique name. Each also has a dense `AgentId`: its
-  position in `agent_initializers`.
+- The simulation keeps a discrete time (u64) which advances one tick at a
+  time, jumping over ticks in which no agent can act when the halt condition
+  allows it.
+- What an `Agent` does is provided by you in `on_message()` and `on_tick()`.
+  Each tick, an awake agent with queued messages handles the oldest one in
+  `on_message`; a `Proactive` agent then also gets `on_tick`.
+- `Agents` must have a unique name. Each also has a dense `AgentId`: the
+  order in which it was added to the builder.
 - If an `Agent` wants to interact with another `Agent`, it can send a `Message`
   via the `&mut ctx: AgentContext` passed into `on_tick` and `on_message`.
   `ctx.send(name, payload)` resolves a name; `ctx.send_to(id, payload)` skips
@@ -137,17 +137,21 @@ fn main() -> Result<(), SimulationError> {
   for timeouts: an agent waiting on a timer stays idle instead of polling every
   tick, so quiet ticks are still skipped. Messages that have not arrived when a
   run halts stay in `Simulation::in_flight` for the next run.
+- Randomness comes from `ctx.rng()`, a stream derived from the simulation's
+  seed, the agent, and the tick, so equal seeds give equal runs.
 
 The simulation runs all the logic of calling `on_tick` and `on_message`,
 distributing messages, tracking metrics, incrementing time, and when to halt.
 A `Simulation` is finished when its `Halt` condition holds (`Halt::AtTime(t)`,
 `Halt::Never`, or `Halt::when(predicate)`), or after the tick in which an
-`Agent` calls `ctx.send_halt_interrupt(reason)`.
+`Agent` calls `ctx.send_halt_interrupt(reason)`; `Simulation::halt_reason()`
+returns that reason. If a callback panics, the simulation becomes
+`SimulationMode::Failed` and refuses to run again.
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the
 target matched no agent, in which case the message is counted but not
-delivered). `Simulation::agent(id)` and `Simulation::agent_id(name)` translate
+delivered; initial queue entries are addressed to their owner). `Simulation::agent(id)` and `Simulation::agent_id(name)` translate
 between identities and agents. Create initial messages with
 `Message::new(time, payload)`, not struct literals.
 
@@ -174,6 +178,9 @@ they work with any `M` (producers send `M::default()`). A payload moves into
 the receiver's queue without copying, and shared data travels as `M = Arc<T>`.
 Recording message history needs `M: Clone`; running does not.
 
+With `queue_depth_metrics(true)`, each agent records `QueueDepthChange`s:
+the tick from which its queue depth changed, and the new depth.
+
 Simulations with more than 64 agents and no asleep-cycle metric use an ordered
 ready bitmap and wake heap during sparse phases, switching to dense scans as
 activity rises. Smaller simulations and runs with the asleep-cycle metric keep
@@ -182,27 +189,6 @@ scans. With `Halt::AtTime` or `Halt::Never` and no asleep-cycle metric, the
 engine also jumps over ticks in which no agent can act, to the next wake-up,
 delayed arrival, or the halt time; `Halt::when` predicates see every tick, so
 they keep every tick.
-
-## Poisson-distributed example w/ Plotting
-
-Here's an example of an outputted graph from a simulation run. In this
-simulation, we show the average waiting time of customers in a line at a
-cafe. The customers arrive at a Poisson-distributed arrival rate
-(`lambda<-60.0`) and a Poisson-distributed coffee-serving rate with the
-same distribution.
-
-This simulation maps to the real world by assuming one tick of
-discrete-simulation time is equal to one second.
-
-Basically, the barista serves coffees at around 60 seconds per drink and
-the customers arrive at about the same rate, both modeled by a
-stochastic Poisson generator.
-
-This simulation has a `halt_check` condition of the simulation's time
-being equal to `60*60*12`, representing a full 12-hour day of the cafe
-being open.
-
-![](./readme-assets/cafe-example-queued-durations.png)
 
 # Contributing
 
