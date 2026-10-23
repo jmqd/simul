@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Read elite fractions as decimals
+=elite_count= snaps a product within a few ulps of an integer to that integer
+before rounding up, so 0.07 of 100 samples selects 7 elites instead of 8.
+Populations whose products used to round up by one ulp now select one fewer
+elite, which changes their CEM updates.
+
 * DONE Drop the log dependency; report halt reasons (breaking)
 The engine no longer emits =log= records, so =log= is gone from the dependency
 tree and the per-tick =debug!= calls are gone from the hot loop. The reason

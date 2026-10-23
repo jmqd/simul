@@ -73,8 +73,10 @@ impl<const N: usize> CrossEntropyConfig<N> {
 
     /// Sets the fraction of non-NaN samples treated as elites.
     ///
-    /// The elite count is `ceil(valid_samples * elite_fraction)` and is always
-    /// at least one when a population contains a valid sample.
+    /// The elite count is `ceil(valid_samples * elite_fraction)`, read as a
+    /// decimal fraction: a product within a few ulps of an integer counts as
+    /// that integer, so 0.07 of 100 samples selects 7, not 8. The count is
+    /// always at least one when a population contains a valid sample.
     #[must_use]
     pub const fn with_elite_fraction(mut self, elite_fraction: f64) -> Self {
         self.elite_fraction = elite_fraction;
@@ -576,9 +578,20 @@ fn compare_valid_samples<const N: usize>(
 }
 
 /// Computes the ceiling of the elite fraction in constant time.
+///
+/// Decimal fractions such as 0.07 are not exact in binary, so their product
+/// with a population can land a few ulps above the intended integer; such
+/// products snap to that integer before rounding up.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn elite_count(valid_samples: usize, elite_fraction: f64) -> usize {
-    ((valid_samples as f64 * elite_fraction).ceil() as usize).clamp(1, valid_samples)
+    let product = valid_samples as f64 * elite_fraction;
+    let nearest = product.round();
+    let count = if (product - nearest).abs() <= nearest * 4.0 * f64::EPSILON {
+        nearest
+    } else {
+        product.ceil()
+    };
+    (count as usize).clamp(1, valid_samples)
 }
 
 /// Computes a circular mean, retaining `fallback` for an undefined resultant.
@@ -686,6 +699,22 @@ mod tests {
                 optimizer(CrossEntropyConfig::new([0.5], [0.2]).with_elite_fraction(fraction));
             let mut samples: [CrossEntropySample<1>; 10] = std::array::from_fn(|index| {
                 let value = index as f64 / 10.0;
+                CrossEntropySample::new([value], value)
+            });
+            let Ok(Some(update)) = search.tell(&mut samples) else {
+                panic!("population contains valid scores");
+            };
+            assert_eq!(expected, update.elite_samples, "fraction {fraction}");
+        }
+    }
+
+    #[test]
+    fn elite_count_reads_decimal_fractions_exactly() {
+        for (fraction, expected) in [(0.07, 7), (0.14, 14), (0.28, 28), (0.56, 56), (0.071, 8)] {
+            let mut search =
+                optimizer(CrossEntropyConfig::new([0.5], [0.2]).with_elite_fraction(fraction));
+            let mut samples: [CrossEntropySample<1>; 100] = std::array::from_fn(|index| {
+                let value = index as f64 / 100.0;
                 CrossEntropySample::new([value], value)
             });
             let Ok(Some(update)) = search.tell(&mut samples) else {
