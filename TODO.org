@@ -25,7 +25,7 @@ Change the API so that agent names are statically determined?
 * Testing
 ** TODO Add doctests throughout
 * Code Cleanup
-** TODO Gracefully degrade Simulations into Failed state in cases of errors
+** DONE Gracefully degrade Simulations into Failed state in cases of errors
 ** TODO If possible, move =log= dependency to feature or remove
 What's the best practice in Rust? Do people have debug! stmts in libs?
 * Interface Ergonomics - Low Hanging
@@ -81,7 +81,7 @@ initial-queue entries as given, so a consumed initial message looks
 undeliverable. This contradicts =src/message.rs:21= and README's description
 of =destination=. Fix: set the owner as destination in =try_new=, or
 document the exception.
-** TODO [low] A callback panic half-applies the tick, and =run()= replays it
+** DONE [low] A callback panic half-applies the tick, and =run()= replays it
 The command buffer is local to =run= and dropped on unwind, but queue pops,
 consumed history, and sleeps are committed per visit. After a caught panic
 and resume: a message counts as consumed while its reply is lost, and agents
@@ -181,7 +181,7 @@ agents are not exponential (see above). Fix: say "per-agent FIFO queues".
 "Poisson-distributed example w/ Plotting" (=README.md:159=) describes a cafe
 simulation with plotting; no such example or plotting feature exists.
 Fix: remove the section or label the image as historical.
-** TODO [low] =SimulationMode::Failed= is never set
+** DONE [low] =SimulationMode::Failed= is never set
 Documented as "The Simulation catastrophically crashed", but nothing assigns
 it, and =mode= has no accessor. Ties to "Gracefully degrade Simulations into
 Failed state" above. Fix: implement it or remove the variant.
