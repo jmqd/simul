@@ -315,8 +315,10 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     /// This maximizes `score`, ignores NaN scores, and accepts infinite scores.
     /// Every coordinate belonging to a non-NaN score must be normalized for its
     /// dimension. Samples are reordered in place so the elite subset precedes
-    /// the rest of the population without an internal allocation; the order
-    /// within each part is unspecified. If no score is usable, this returns
+    /// the rest of the population without an internal allocation. Elites are
+    /// ordered best first, with equal scores ordered by point, so the update
+    /// does not depend on input order or on where NaN samples sit; the order
+    /// of the rest is unspecified. If no score is usable, this returns
     /// `Ok(None)` unchanged.
     ///
     /// # Errors
@@ -343,18 +345,18 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
             } else {
                 samples.sort_unstable_by(compare_samples);
             }
-        } else if valid_samples == samples.len() {
-            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_valid_samples);
         } else {
-            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
+            if valid_samples == samples.len() {
+                let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_valid_samples);
+            } else {
+                let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
+            }
+            // Selection leaves elites in input-dependent order, and fitting
+            // sums them in order.
+            samples[..elite_samples].sort_unstable_by(compare_valid_samples);
         }
         let elites = &samples[..elite_samples];
-        let mut generation_best = elites[0];
-        for sample in &elites[1..] {
-            if sample.score >= generation_best.score {
-                generation_best = *sample;
-            }
-        }
+        let generation_best = elites[0];
         let best = match self.best {
             Some(best) if best.score > generation_best.score => best,
             _ => generation_best,
@@ -555,7 +557,7 @@ fn valid_coordinate(value: f64, dimension: CrossEntropyDimension) -> bool {
     }
 }
 
-/// Orders valid scores from greatest to least and places NaNs last.
+/// Orders valid scores from greatest to least, ties by point, and NaNs last.
 fn compare_samples<const N: usize>(
     left: &CrossEntropySample<N>,
     right: &CrossEntropySample<N>,
@@ -564,17 +566,25 @@ fn compare_samples<const N: usize>(
         (true, true) => Ordering::Equal,
         (true, false) => Ordering::Greater,
         (false, true) => Ordering::Less,
-        (false, false) => right.score.total_cmp(&left.score),
+        (false, false) => compare_valid_samples(left, right),
     }
 }
 
-/// Orders two known-valid scores from greatest to least.
+/// Orders two known-valid scores from greatest to least, then points
+/// lexicographically, so equal-scored samples have one fixed order.
 #[inline]
 fn compare_valid_samples<const N: usize>(
     left: &CrossEntropySample<N>,
     right: &CrossEntropySample<N>,
 ) -> Ordering {
-    right.score.total_cmp(&left.score)
+    right.score.total_cmp(&left.score).then_with(|| {
+        left.point
+            .iter()
+            .zip(&right.point)
+            .map(|(left, right)| left.total_cmp(right))
+            .find(|ordering| ordering.is_ne())
+            .unwrap_or(Ordering::Equal)
+    })
 }
 
 /// Computes the ceiling of the elite fraction in constant time.
@@ -1184,5 +1194,52 @@ mod tests {
         assert_close(best.point[0], 0.2, 0.01);
         assert_close(best.point[1], 0.8, 0.01);
         assert!(best.score > -1.0e-4);
+    }
+
+    /// Runs one update and returns its bit-exact observable result.
+    fn update_bits(samples: &mut [CrossEntropySample<2>]) -> ([u64; 2], [u64; 2], [u64; 2]) {
+        let mut search = optimizer(
+            CrossEntropyConfig::new([0.5, 0.5], [0.3, 0.3])
+                .with_dimensions([
+                    CrossEntropyDimension::Linear,
+                    CrossEntropyDimension::Circular,
+                ])
+                .with_elite_fraction(0.25),
+        );
+        assert!(matches!(search.tell(samples), Ok(Some(_))));
+        let best = search
+            .best()
+            .map_or([0; 2], |best| best.point.map(f64::to_bits));
+        (
+            search.mean().map(f64::to_bits),
+            search.standard_deviation().map(f64::to_bits),
+            best,
+        )
+    }
+
+    #[test]
+    fn updates_do_not_depend_on_sample_order_or_nan_placement() {
+        use rand::seq::SliceRandom as _;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        for size in [5, 12, 13, 40] {
+            for _ in 0..50 {
+                // Few distinct scores force ties across the elite boundary.
+                let mut samples: Vec<_> = (0..size)
+                    .map(|_| {
+                        let point = [rng.random_range(0.0..1.0), rng.random_range(0.0..1.0)];
+                        CrossEntropySample::new(point, f64::from(rng.random_range(0..3_u8)))
+                    })
+                    .collect();
+                let expected = update_bits(&mut samples.clone());
+                for _ in 0..4 {
+                    samples.shuffle(&mut rng);
+                    let mut with_nan = samples.clone();
+                    let position = rng.random_range(0..=with_nan.len());
+                    with_nan.insert(position, CrossEntropySample::new([0.5, 0.5], f64::NAN));
+                    assert_eq!(expected, update_bits(&mut samples.clone()), "size {size}");
+                    assert_eq!(expected, update_bits(&mut with_nan), "size {size} with NaN");
+                }
+            }
+        }
     }
 }

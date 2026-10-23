@@ -1,5 +1,13 @@
 #+title: Changelog
 
+* DONE Make CEM updates independent of sample order
+Elites are ordered best first with ties broken by point, and the selection
+path sorts them before fitting, so =tell= gives bit-identical updates for any
+input order or NaN placement. Before, one NaN in front of tied samples could
+change the elite set, and above 12 samples the fitted mean could differ in the
+last bit. =best()= on a tie now keeps the lowest point instead of the last one
+scanned.
+
 * DONE Read elite fractions as decimals
 =elite_count= snaps a product within a few ulps of an integer to that integer
 before rounding up, so 0.07 of 100 samples selects 7 elites instead of 8.

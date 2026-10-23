@@ -97,12 +97,12 @@ the buffer on the simulation with a per-tick visited guard.
 0.3, a -1 draw gives 0.30000000000000004; with std 1e-200 the -1 draw becomes
 0.0. Fix: reflect =value.abs()= (=r = |v| % 2; if r <= 1 { r } else { 2 - r }=),
 which is exact.
-** TODO [low] Elite count overshoots when the f64 product rounds up
+** DONE [low] Elite count overshoots when the f64 product rounds up
 =elite_count= takes =ceil(n * fraction)= of the rounded product: 100 x 0.07
 gives 7.000000000000001, so 8 elites instead of 7 (also 0.14, 0.28, 0.56).
 The existing test expects decimal meaning (10 x 0.2 -> 2). Fix: snap products
 within a few ulps of an integer before =ceil=, or document the f64 semantics.
-** TODO [low] NaN samples and input order change the CEM update
+** DONE [low] NaN samples and input order change the CEM update
 Above 12 samples, =select_nth_unstable_by= leaves elites in input-dependent
 order and ties are unbroken. One NaN in front of 16 tied samples moved the
 mean from 0.09375 to 0.15625 and changed =best()=; without ties the fitted
