@@ -32,7 +32,6 @@ use agent::{
 use experiment::{MasterSeed, SeedDeriver};
 use message::Message;
 
-use log::{debug, info, log_enabled, Level};
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
 use std::collections::{hash_map::Entry, BinaryHeap};
@@ -120,6 +119,9 @@ pub struct Simulation {
 
     /// Source of every agent's per-tick random stream.
     seeds: SeedDeriver,
+
+    /// The reason given by the interrupt that ended the latest run, if any.
+    halt_reason: Option<String>,
 }
 
 /// When a simulation stops running.
@@ -559,6 +561,7 @@ impl Simulation {
             agent_name_handle_map,
             layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
             seeds: SeedDeriver::new(parameters.seed),
+            halt_reason: None,
         })
     }
 
@@ -654,6 +657,14 @@ impl Simulation {
         self.mode
     }
 
+    /// Returns the reason passed to [`AgentContext::send_halt_interrupt`] by
+    /// the first interrupt that ended the latest run, or `None` when the run
+    /// ended by its [`Halt`] condition.
+    #[must_use]
+    pub fn halt_reason(&self) -> Option<&str> {
+        self.halt_reason.as_deref()
+    }
+
     /// Evaluates the halt condition against the current state.
     fn halt_reached(&self) -> bool {
         match &self.halt {
@@ -666,6 +677,7 @@ impl Simulation {
     /// Executes ticks until the halt condition or an interrupt stops the run.
     fn run_ticks(&mut self) {
         self.mode = SimulationMode::Running;
+        self.halt_reason = None;
         let mut command_buffer: Vec<AgentCommand> = Vec::new();
         // Small scans are cheaper than maintaining the schedule, and metrics need
         // every agent visited every tick, so either keeps dense scans.
@@ -678,7 +690,6 @@ impl Simulation {
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
             };
-            debug!("Running next tick of simulation at time {}", self.time);
             if let Some(active) = &mut schedule {
                 active.wake(self.time, &self.agents);
                 if active.ready_count >= self.agents.len().div_ceil(4) {
@@ -692,7 +703,6 @@ impl Simulation {
 
             self.process_command_buffer(&mut command_buffer, schedule.as_mut());
 
-            debug!("Finished this tick; incrementing time.");
             self.time = next_time;
             // Separate low and high watermarks amortize rebuilding across busy and
             // quiet phases instead of switching around one threshold.
@@ -706,9 +716,6 @@ impl Simulation {
         }
 
         self.mode = SimulationMode::Completed;
-        if log_enabled!(Level::Debug) {
-            self.emit_completed_simulation_debug_logging();
-        }
     }
 
     /// Borrows the agents mutably beside the inputs every visit shares.
@@ -833,19 +840,6 @@ impl Simulation {
         data
     }
 
-    /// Emits debug logging w/ analytical stats.
-    fn emit_completed_simulation_debug_logging(&self) {
-        let queue_len_stats = self.calc_queue_len_statistics();
-        let consumed_len_stats = self.calc_consumed_len_statistics();
-        let avg_wait_stats = self.calc_avg_wait_statistics();
-        let produced_len_stats = self.calc_produced_len_statistics();
-
-        debug!("Queues: {queue_len_stats:?}");
-        debug!("Consumed: {consumed_len_stats:?}");
-        debug!("Produced: {produced_len_stats:?}");
-        debug!("Average processing time: {avg_wait_stats:?}");
-    }
-
     /// Returns an agent handle by name, using a linear scan for small simulations.
     #[inline]
     fn find_handle_by_name(&self, name: &str) -> Option<usize> {
@@ -882,7 +876,10 @@ impl Simulation {
                 }
 
                 AgentCommandType::HaltSimulation(reason) => {
-                    info!("Received a halt interrupt: {reason:?}");
+                    // The first interrupt in issue order ends the run.
+                    if self.mode == SimulationMode::Running {
+                        self.halt_reason = Some(reason);
+                    }
                     self.mode = SimulationMode::Completed;
                 }
             }
@@ -923,13 +920,8 @@ mod tests {
     use super::*;
     use agent::{periodic_consumer, periodic_producer};
 
-    fn init() {
-        let _ = env_logger::builder().is_test(true).try_init();
-    }
-
     #[test]
     fn basic_periodic_test() {
-        init();
         let mut simulation = Simulation::builder(Halt::AtTime(5))
             .agents(vec![
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),

@@ -579,6 +579,26 @@ fn time_overflow_fails_before_callbacks() {
 }
 
 #[test]
+fn halt_reason_reports_the_interrupt_that_ended_the_latest_run() {
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut simulation = Simulation::builder(Halt::Never)
+        .agents(vec![proactive_agent("worker", BoundaryCallback(called))])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(None, simulation.halt_reason());
+    simulation.run();
+    assert_eq!(1, simulation.time());
+    assert_eq!(Some("done"), simulation.halt_reason());
+
+    let mut timed = Simulation::builder(Halt::AtTime(2))
+        .agents(vec![periodic_consumer("idle", 1)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    timed.run();
+    assert_eq!(None, timed.halt_reason());
+}
+
+#[test]
 fn sleep_overflow_does_not_wrap_or_change_mode() {
     let mut simulation = Simulation::builder(Halt::AtTime(2))
         .agents(vec![periodic_producer("sender", u64::MAX, "missing")])

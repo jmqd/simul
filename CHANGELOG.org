@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Drop the log dependency; report halt reasons (breaking)
+The engine no longer emits =log= records, so =log= is gone from the dependency
+tree and the per-tick =debug!= calls are gone from the hot loop. The reason
+passed to =send_halt_interrupt= used to be logged at =info= and is now
+returned by =Simulation::halt_reason()=.
+
 * DONE Seal Bernoulli and scalar summaries (breaking)
 =BernoulliSummary= and =ScalarSummary= fields are private; read them with
 same-named getters such as =rate()= and =mean()=. Only =BernoulliReducer= and
