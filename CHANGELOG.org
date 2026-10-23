@@ -1,5 +1,11 @@
 #+title: Changelog
 
+* DONE Make AgentContext fields read-only (breaking)
+=name=, =time=, =state=, and =message_processing_status= are private. Read
+them with =ctx.name()=, =ctx.time()=, and =ctx.state()=; set the status with
+=set_processing_status=. Callbacks could previously overwrite =ctx.name=,
+which rerouted sends in simulations of eight or fewer agents.
+
 * DONE Expose engine types only through their modules (breaking)
 The crate root no longer glob re-exports =agent::*= and =message::*=; import
 them from =simul::agent= and =simul::message=. =AgentCommand= and

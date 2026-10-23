@@ -18,7 +18,7 @@ impl Agent for Developer {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        let time_of_day = usize::try_from(ctx.time % 18).unwrap_or_default();
+        let time_of_day = usize::try_from(ctx.time() % 18).unwrap_or_default();
         let time_block = self
             .schedule
             .iter()
@@ -63,7 +63,8 @@ impl Agent for ProductivityRecorder {
         self.total_productivity += productivity;
         println!(
             "tick {}: recorded {productivity} productivity (total {})",
-            ctx.time, self.total_productivity
+            ctx.time(),
+            self.total_productivity
         );
     }
 }

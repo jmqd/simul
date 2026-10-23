@@ -109,12 +109,12 @@ impl Chaos {
                 let name = self.names[target].clone();
                 let id = ctx.agent_id(&name);
                 self.events.push(Event::Resolve(name.clone(), id));
-                self.events.push(Event::Sent(ctx.time, id, bytes));
+                self.events.push(Event::Sent(ctx.time(), id, bytes));
                 ctx.send(&name, payload);
             } else {
                 let known = target < self.names.len() - 2;
                 let id = known.then(|| agent_id(target));
-                self.events.push(Event::Sent(ctx.time, id, bytes));
+                self.events.push(Event::Sent(ctx.time(), id, bytes));
                 ctx.send_to(agent_id(target), payload);
             }
         }
@@ -123,7 +123,7 @@ impl Chaos {
             ctx.sleep_for(ticks);
         }
         if self.next() % 1_000_000 < self.halt_per_million {
-            self.events.push(Event::Halt(ctx.time));
+            self.events.push(Event::Halt(ctx.time()));
             ctx.send_halt_interrupt("chaos");
         }
     }
@@ -132,9 +132,9 @@ impl Chaos {
 impl Agent for Chaos {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
         let in_progress = self.next() % 100 < self.in_progress_percent;
-        CALLBACKS.with(|calls| calls.borrow_mut().push((ctx.time, ctx.id().index())));
+        CALLBACKS.with(|calls| calls.borrow_mut().push((ctx.time(), ctx.id().index())));
         self.events.push(Event::Message {
-            time: ctx.time,
+            time: ctx.time(),
             queued_time: msg.queued_time,
             source: msg.source,
             in_progress,
@@ -146,8 +146,8 @@ impl Agent for Chaos {
     }
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        self.events.push(Event::Tick(ctx.time));
-        CALLBACKS.with(|calls| calls.borrow_mut().push((ctx.time, ctx.id().index())));
+        self.events.push(Event::Tick(ctx.time()));
+        CALLBACKS.with(|calls| calls.borrow_mut().push((ctx.time(), ctx.id().index())));
         self.act(ctx, None);
     }
 }

@@ -46,7 +46,7 @@ impl Agent for NeighborSender {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        let own = ctx.name.to_string();
+        let own = ctx.name().to_string();
         for target in [&self.previous, &own, &self.next] {
             ctx.send(target, None);
         }
@@ -270,7 +270,7 @@ struct SlowConsumer;
 
 impl Agent for SlowConsumer {
     fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
-        if ctx.time < 3 {
+        if ctx.time() < 3 {
             ctx.set_processing_status(MessageProcessingStatus::InProgress);
         }
     }
@@ -534,12 +534,12 @@ impl Agent for ScheduledAgent {
         self.0
             .lock()
             .unwrap_or_else(|error| panic!("{error}"))
-            .push((ctx.time, ctx.id().index()));
+            .push((ctx.time(), ctx.id().index()));
         if ctx.id().index() == 0 {
             ctx.send("agent-65", Some(Arc::from([1])));
-            ctx.sleep_for(ctx.time % 3);
+            ctx.sleep_for(ctx.time() % 3);
         } else {
-            ctx.sleep_for(if ctx.time < 6 { 1 } else { 100 });
+            ctx.sleep_for(if ctx.time() < 6 { 1 } else { 100 });
         }
     }
 
@@ -547,8 +547,8 @@ impl Agent for ScheduledAgent {
         self.0
             .lock()
             .unwrap_or_else(|error| panic!("{error}"))
-            .push((ctx.time, ctx.id().index()));
-        if ctx.time % 4 == 1 {
+            .push((ctx.time(), ctx.id().index()));
+        if ctx.time() % 4 == 1 {
             ctx.set_processing_status(MessageProcessingStatus::InProgress);
         }
         ctx.send("agent-0", None);
@@ -649,7 +649,7 @@ impl Agent for ChangingPayloadSender {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        ctx.send("receiver", (ctx.time == 2).then(|| Arc::from([7])));
+        ctx.send("receiver", (ctx.time() == 2).then(|| Arc::from([7])));
     }
 }
 

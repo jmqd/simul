@@ -55,7 +55,7 @@ accumulates messages (1,000 queued, 0 =on_message= calls in the repro) while
 they are recorded as delivered. No doc says so, and =examples/CANDIDATES.md=
 (Calendar -> Proactive Door) assumes otherwise. Fix: document it and fix
 CANDIDATES.md, or deliver queued messages to Proactive agents.
-** TODO [low] Writable =AgentContext::name= changes routing in small simulations
+** DONE [low] Writable =AgentContext::name= changes routing in small simulations
 =pub name= (and =pub time=) contradict "Routing identities are read-only to
 callbacks". With 8 or fewer agents, =agent_id= recognizes the sender by
 =ctx.name=, so overwriting it reroutes sends; with 9+ agents it does not.

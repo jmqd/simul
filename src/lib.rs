@@ -26,8 +26,8 @@ pub mod experiment;
 pub mod message;
 
 use agent::{
-    Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer,
-    AgentMetadata, AgentMode, AgentState, MessageProcessingStatus, SimulationAgent,
+    Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
+    AgentMode, AgentState, MessageProcessingStatus, SimulationAgent,
 };
 use message::Message;
 

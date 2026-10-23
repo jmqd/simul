@@ -49,7 +49,7 @@ impl Agent for NineBallPlayer {
 
         // If the player gets lucky, they get another turn.
         let next_turn = if rng.random_range(0.0..1.0) > (1.0 - self.luck_chance) {
-            ctx.name
+            ctx.name()
         } else {
             &self.opponent_name
         };
@@ -98,7 +98,7 @@ impl Agent for ApaNineBallPlayer {
 
         // If the player gets lucky, they get another turn.
         let next_turn = if rng.random_range(0.0..1.0) > (1.0 - self.luck_chance) {
-            ctx.name
+            ctx.name()
         } else {
             &self.opponent_name
         };

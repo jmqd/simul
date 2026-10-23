@@ -161,23 +161,24 @@ pub enum MessageProcessingStatus {
 
 /// The capability for agents to act on the world.
 ///
-/// Routing identities are read-only to callbacks.
+/// Identity, name, time, and state are read-only to callbacks.
 ///
 /// ```compile_fail
-/// use simul::agent::{AgentContext, AgentId};
-/// fn change_identity(ctx: &mut AgentContext<'_>) {
-///     ctx.id = AgentId::new(0);
+/// use simul::agent::AgentContext;
+/// fn rename(ctx: &mut AgentContext<'_>) {
+///     ctx.name = "someone else";
 /// }
 /// ```
 pub struct AgentContext<'a> {
     /// The identity of the Agent.
     pub(crate) id: AgentId,
 
-    /// The name of the Agent.
-    pub name: &'a str,
+    /// The name of the Agent, which small simulations also use to recognize
+    /// sends to itself.
+    pub(crate) name: &'a str,
 
     /// The current simulation time.
-    pub time: DiscreteTime,
+    pub(crate) time: DiscreteTime,
 
     /// Internal buffer for messages and halt requests.
     pub(crate) commands: &'a mut Vec<AgentCommand>,
@@ -198,16 +199,37 @@ pub struct AgentContext<'a> {
     /// Identifies the agent layout, which validates cached target identities.
     pub(crate) layout: u64,
 
-    pub state: &'a AgentState,
+    /// The agent's mode, queue, and histories as of this callback.
+    pub(crate) state: &'a AgentState,
 
-    pub message_processing_status: MessageProcessingStatus,
+    /// Whether the current message finished or stays queued.
+    pub(crate) message_processing_status: MessageProcessingStatus,
 }
 
-impl AgentContext<'_> {
+impl<'a> AgentContext<'a> {
     /// Returns the agent's immutable identity.
     #[must_use]
     pub const fn id(&self) -> AgentId {
         self.id
+    }
+
+    /// Returns the agent's name.
+    #[must_use]
+    pub const fn name(&self) -> &'a str {
+        self.name
+    }
+
+    /// Returns the tick being executed.
+    #[must_use]
+    pub const fn time(&self) -> DiscreteTime {
+        self.time
+    }
+
+    /// Returns the agent's state as of this callback. During `on_message`, the
+    /// current message has already been popped from the queue.
+    #[must_use]
+    pub const fn state(&self) -> &'a AgentState {
+        self.state
     }
 
     /// Queues a message to the agent named `target` for end-of-tick delivery.

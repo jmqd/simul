@@ -303,7 +303,7 @@ fn send_metric(ctx: &mut AgentContext, kind: MetricKind) {
 }
 
 fn has_tick_queued(ctx: &AgentContext) -> bool {
-    ctx.state
+    ctx.state()
         .queue
         .iter()
         .any(|message| matches!(Payload::decode(message), Some(Payload::Tick)))
@@ -311,7 +311,7 @@ fn has_tick_queued(ctx: &AgentContext) -> bool {
 
 fn ensure_self_tick(ctx: &mut AgentContext) {
     if !has_tick_queued(ctx) {
-        let name = ctx.name.to_string();
+        let name = ctx.name().to_string();
         send_payload(ctx, &name, Payload::Tick);
     }
 }
@@ -423,13 +423,13 @@ impl Developer {
 
         self.blocked_until = self
             .blocked_until
-            .max(ctx.time.saturating_add(DiscreteTime::from(ticks)));
+            .max(ctx.time().saturating_add(DiscreteTime::from(ticks)));
         self.blocked_kind = Some(block_kind);
         self.last_work_kind = None;
     }
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        if ctx.time < self.blocked_until {
+        if ctx.time() < self.blocked_until {
             match self.blocked_kind {
                 Some(BlockKind::Meeting) => send_metric(ctx, MetricKind::MeetingTick),
                 Some(BlockKind::Slack) => send_metric(ctx, MetricKind::SlackTick),
@@ -672,11 +672,11 @@ impl Agent for ProductManager {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        if ctx.time >= self.params.total_ticks() || self.params.release_interval == 0 {
+        if ctx.time() >= self.params.total_ticks() || self.params.release_interval == 0 {
             return;
         }
 
-        if !discrete_multiple(ctx.time, self.params.release_interval) {
+        if !discrete_multiple(ctx.time(), self.params.release_interval) {
             return;
         }
 
@@ -710,8 +710,8 @@ impl Agent for MeetingScheduler {
     fn on_tick(&mut self, ctx: &mut AgentContext) {
         let meeting_ticks = self.params.meeting_ticks_per_day();
         if meeting_ticks == 0
-            || ctx.time >= self.params.total_ticks()
-            || !discrete_multiple(ctx.time, self.params.ticks_per_day)
+            || ctx.time() >= self.params.total_ticks()
+            || !discrete_multiple(ctx.time(), self.params.ticks_per_day)
         {
             return;
         }
@@ -733,11 +733,11 @@ impl Agent for CommunicationScheduler {
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
         let communication_ticks = self.params.communication_ticks_per_day();
-        if communication_ticks == 0 || ctx.time >= self.params.total_ticks() {
+        if communication_ticks == 0 || ctx.time() >= self.params.total_ticks() {
             return;
         }
 
-        let tick_in_day = ctx.time % self.params.ticks_per_day;
+        let tick_in_day = ctx.time() % self.params.ticks_per_day;
         if tick_in_day
             != self
                 .params
@@ -778,7 +778,7 @@ impl DecisionMaker {
     fn on_tick(&mut self, ctx: &mut AgentContext) {
         let mut remaining = Vec::with_capacity(self.pending.len());
         for decision in self.pending.drain(..) {
-            if ctx.time >= decision.due_at {
+            if ctx.time() >= decision.due_at {
                 send_payload(
                     ctx,
                     developer_name(decision.requester),
@@ -805,7 +805,7 @@ impl Agent for DecisionMaker {
             }) => self.pending.push(PendingDecision {
                 ticket_id,
                 requester,
-                due_at: ctx.time.saturating_add(self.params.decision_latency),
+                due_at: ctx.time().saturating_add(self.params.decision_latency),
             }),
             _ => {}
         }
@@ -843,7 +843,7 @@ impl ContinuousIntegration {
             self.active = self.queue.pop_front().map(|(ticket_id, author)| CiJob {
                 ticket_id,
                 author,
-                started_at: ctx.time,
+                started_at: ctx.time(),
             });
         }
 
@@ -852,7 +852,7 @@ impl ContinuousIntegration {
             return;
         };
 
-        if ctx.time < job.started_at.saturating_add(self.params.ci_wait_time) {
+        if ctx.time() < job.started_at.saturating_add(self.params.ci_wait_time) {
             ensure_self_tick(ctx);
             return;
         }
@@ -924,7 +924,7 @@ impl Agent for Stopper {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        if ctx.time >= self.stop_at {
+        if ctx.time() >= self.stop_at {
             ctx.send_halt_interrupt("software team year elapsed");
         }
     }
