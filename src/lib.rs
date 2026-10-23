@@ -2,9 +2,9 @@
 //! simulations of real-world problems and for running simulated experiments.
 //!
 //! `simul` is a *discrete-event simulator* using *incremental time
-//! progression*, with [M/M/c queues](https://en.wikipedia.org/wiki/M/M/c_queue)
-//! for interactions between agents. It also supports deterministic typed
-//! experiments and seeded searches over caller-defined candidate spaces.
+//! progression*, with a FIFO message queue per agent for interactions between
+//! agents. It also supports deterministic typed experiments and seeded searches
+//! over caller-defined candidate spaces.
 //!
 //! Use-cases:
 //! - [Discrete-event simulation](https://en.wikipedia.org/wiki/Discrete-event_simulation)

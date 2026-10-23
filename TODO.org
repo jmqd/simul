@@ -204,7 +204,7 @@ README pins =simul = "0.5.1"= but describes =send_to=, =agent_id=, and
 =Option<Arc<[u8]>>= payloads, which docs.rs 0.5.1 does not have; CHANGELOG
 calls the payload change breaking while =Cargo.toml= is still 0.5.1. Fix:
 bump the version (e.g. 0.6.0-dev) or mark those sections unpublished.
-** TODO [low] "M/M/c queues" overstates the engine
+** DONE [low] "M/M/c queues" overstates the engine
 =README.md:4-5= and =src/lib.rs:4-6= promise M/M/c queues; each agent is one
 FIFO server with caller-defined service times, and the built-in "Poisson"
 agents are not exponential (see above). Fix: say "per-agent FIFO queues".
