@@ -6,6 +6,21 @@ minimum (was 1.71), and the crate builds on rand 0.10 (was 0.9): =TrialRng=
 implements its traits, so code that samples from it with rand or rand_distr
 needs rand 0.10 and rand_distr 0.6. Newest entries first.
 
+** DONE Pause runs at a tick and patch agents in place (breaking)
+=Simulation::run_until(t)= pauses once the time reaches =t=, without running
+it, unless the halt condition or an interrupt ends the run first; =run= or
+another =run_until= continues exactly as one uninterrupted run, still
+skipping quiet ticks. Pausing previously needed a =Halt::when= predicate over
+outside state, which turns skipping off. A paused simulation reports the new
+=SimulationMode::Paused=. =downcast_ref= and =downcast_mut= on =dyn Agent<M>=
+let =find_by_name_mut= change an agent as its own type. Together they branch
+a run at a decision tick: run to it once, clone per alternative, patch each
+clone, and run on. Since draws depend only on seed, name, and tick, each
+branch equals a run that took its alternative from the start. With 10
+alternatives sharing 50% or 90% of a 4-million-tick run, the branches run
+1.82x or 5.27x faster than separate runs (ideal 1.82x, 5.26x), with identical
+results.
+
 ** DONE Balance parallel batches across workers (breaking)
 =run_parallel= and =ParallelExecutor::run= no longer give each worker one
 fixed contiguous shard. Each worker keeps its one caller-built workspace and

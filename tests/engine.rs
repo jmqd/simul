@@ -1073,6 +1073,119 @@ fn finished_agents_read_back_as_their_own_type() {
     );
 }
 
+#[test]
+fn run_until_pauses_at_its_tick_unless_the_run_ends_first() {
+    let mut simulation = Simulation::builder(Halt::AtTime(10))
+        .agents(vec![AgentInitializer::proactive(
+            "counter",
+            TickCounter::default(),
+        )])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let ticks = |simulation: &Simulation| {
+        simulation
+            .find_by_name("counter")
+            .and_then(|agent| agent.downcast_ref::<TickCounter>())
+            .map(|counter| counter.ticks)
+    };
+    simulation.run_until(4);
+    assert_eq!((4, Some(4)), (simulation.time(), ticks(&simulation)));
+    assert_eq!(SimulationMode::Paused, simulation.mode());
+    simulation.run_until(4);
+    assert_eq!(
+        Some(4),
+        ticks(&simulation),
+        "a past or current tick runs nothing"
+    );
+    simulation.run_until(20);
+    assert_eq!((10, Some(10)), (simulation.time(), ticks(&simulation)));
+    assert_eq!(SimulationMode::Completed, simulation.mode());
+
+    let mut interrupted = Simulation::builder(Halt::Never)
+        .agents(vec![AgentInitializer::proactive("halter", HaltImmediately)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    interrupted.run_until(5);
+    assert_eq!(1, interrupted.time());
+    assert_eq!(SimulationMode::Completed, interrupted.mode());
+    assert_eq!(Some("done"), interrupted.halt_reason());
+
+    // Skipping quiet ticks toward a far wake-up stops at the pause instead.
+    let mut sleeping = Simulation::<()>::builder(Halt::Never)
+        .agents(vec![periodic_consumer("sleeper", 1).asleep_until(1_000_000)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    sleeping.run_until(999_000);
+    assert_eq!(999_000, sleeping.time());
+    assert_eq!(SimulationMode::Paused, sleeping.mode());
+}
+
+/// Serves for a geometric number of ticks whose mean changes at `switch_at`.
+#[derive(Clone, Debug)]
+struct SwitchingServer {
+    switch_at: u64,
+    before: f64,
+    after: f64,
+}
+
+impl Agent for SwitchingServer {
+    fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
+        let mean = if ctx.time() < self.switch_at {
+            self.before
+        } else {
+            self.after
+        };
+        let unit = 1.0 - ctx.rng().uniform_f64();
+        let extra = (unit.ln() / (-mean.recip()).ln_1p()).floor();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        ctx.sleep_for(extra as u64 + 1);
+    }
+}
+
+#[test]
+fn forked_branches_match_runs_that_took_their_branch_from_the_start() {
+    const DECIDE: u64 = 3_000;
+    let model = |after: f64| {
+        Simulation::builder(Halt::AtTime(6_000))
+            .agents(vec![
+                simul::agent::geometric_producer("source", 4.0, "server"),
+                AgentInitializer::reactive(
+                    "server",
+                    SwitchingServer {
+                        switch_at: DECIDE,
+                        before: 3.6,
+                        after,
+                    },
+                ),
+            ])
+            .seed(simul::experiment::MasterSeed::from_u64(11))
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"))
+    };
+    let mut trunk = model(3.6);
+    trunk.run_until(DECIDE);
+    for after in [2.0, 3.0, 3.9] {
+        let mut branch = trunk.clone();
+        let (behavior, _) = branch
+            .find_by_name_mut("server")
+            .unwrap_or_else(|| panic!("the server exists"));
+        assert!(behavior.downcast_mut::<TickCounter>().is_none());
+        behavior
+            .downcast_mut::<SwitchingServer>()
+            .unwrap_or_else(|| panic!("the server is a SwitchingServer"))
+            .after = after;
+        branch.run();
+
+        let mut direct = model(after);
+        direct.run();
+        assert_eq!(
+            format!("{:?} {}", direct.agents(), direct.time()),
+            format!("{:?} {}", branch.agents(), branch.time()),
+            "branch after = {after}"
+        );
+    }
+}
+
 /// Sends `(tick, delay, payload)` steps to agent 1; delay 0 means `send_to`.
 #[derive(Clone, Debug)]
 struct ScriptedSender(Vec<(u64, u64, u8)>);

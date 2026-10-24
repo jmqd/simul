@@ -242,7 +242,19 @@ A `Simulation` is finished when its `Halt` condition holds (`Halt::AtTime(t)`,
 `Agent` calls `ctx.send_halt_interrupt(reason)`; `Simulation::halt_reason()`
 returns that reason. If a callback panics, the simulation becomes
 `SimulationMode::Failed` and refuses to run again; `Simulation::mode()` reports
-whether it is constructed, running, completed, or failed.
+whether it is constructed, running, paused, completed, or failed.
+
+`simulation.run_until(t)` pauses once the time reaches tick `t`, without
+running it, unless the run ends first; `run()` or another `run_until` then
+continues exactly as one uninterrupted run would, still skipping quiet ticks.
+A paused `Simulation` is a complete snapshot: clone it to branch. To compare
+alternatives that differ only from a decision tick, run once to that tick,
+clone per alternative, change each clone through
+`find_by_name_mut(name)` and `downcast_mut::<YourAgent>()`, and run the clones
+on. Agent draws depend only on the seed, the agent's name, and the tick, so
+each branch matches a run that took its alternative from the start, while the
+shared prefix runs once. Branches share nothing unless agents hold shared
+handles such as `Rc` or `Arc` to outside state.
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the

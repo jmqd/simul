@@ -12,7 +12,7 @@ use simul::agent::{
 };
 use simul::experiment::MasterSeed;
 use simul::message::Message;
-use simul::{DiscreteTime, Halt, Simulation};
+use simul::{DiscreteTime, Halt, Simulation, SimulationMode};
 use std::cell::{Cell, RefCell};
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
@@ -688,6 +688,69 @@ fn segmented_runs_match_one_run_without_interrupts() {
             pieces.halt_at = at;
             run(&mut pieces);
         }
+        assert!(
+            snapshot(&whole.simulation) == snapshot(&pieces.simulation),
+            "seed {seed}"
+        );
+        assert_eq!(
+            metrics(&whole.simulation),
+            metrics(&pieces.simulation),
+            "seed {seed}"
+        );
+    }
+}
+
+// Law: pausing with `run_until` at any ticks and then running on matches one
+// uninterrupted run, callback for callback, whether quiet ticks are skipped
+// (`Halt::AtTime`) or every tick is checked (a predicate).
+#[test]
+fn pausing_with_run_until_matches_one_run() {
+    for seed in 0..CASES {
+        let metric = seed % 3 == 0;
+        let style = if seed % 2 == 0 {
+            HaltStyle::AtTime
+        } else {
+            HaltStyle::Predicate
+        };
+        let case = || {
+            build_case(
+                seed,
+                Size::Any,
+                metric,
+                metric,
+                false,
+                style,
+                History::Recorded,
+            )
+        };
+        let mut whole = case();
+        let mut pieces = case();
+        let full = whole.halt_at;
+        let (_, whole_calls) = run(&mut whole);
+
+        HALT_AT.with(|halt| halt.set(full));
+        CALLBACKS.with(|calls| calls.borrow_mut().clear());
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5EED);
+        let mut at = pieces.start;
+        while at + 1 < full {
+            at = rng.random_range(at + 1..full);
+            pieces.simulation.run_until(at);
+            assert_eq!(at, pieces.simulation.time(), "seed {seed}");
+            assert_eq!(
+                SimulationMode::Paused,
+                pieces.simulation.mode(),
+                "seed {seed}"
+            );
+        }
+        pieces.simulation.run();
+        let pieces_calls = CALLBACKS.with(|calls| std::mem::take(&mut *calls.borrow_mut()));
+
+        assert_eq!(
+            SimulationMode::Completed,
+            pieces.simulation.mode(),
+            "seed {seed}"
+        );
+        assert_eq!(whole_calls, pieces_calls, "seed {seed}: callbacks");
         assert!(
             snapshot(&whole.simulation) == snapshot(&pieces.simulation),
             "seed {seed}"

@@ -145,8 +145,7 @@ impl<M> SimulationAgent<M> {
     /// state with them through `Rc`, locks, or atomics.
     #[must_use]
     pub fn downcast_ref<A: Agent<M> + 'static>(&self) -> Option<&A> {
-        // Through the trait object: the box itself is `Any` too.
-        sealed::AsAny::as_any(&*self.agent).downcast_ref()
+        self.agent.downcast_ref()
     }
 }
 
@@ -696,6 +695,24 @@ pub trait Agent<M = ()>: std::fmt::Debug + DynClone + sealed::AsAny {
 
 dyn_clone::clone_trait_object!(<M> Agent<M>);
 
+impl<M> dyn Agent<M> {
+    /// Returns this behavior as an `A`, or `None` if it is another type.
+    #[must_use]
+    pub fn downcast_ref<A: Agent<M> + 'static>(&self) -> Option<&A> {
+        sealed::AsAny::as_any(self).downcast_ref()
+    }
+
+    /// Returns this behavior mutably as an `A`, or `None` if it is another
+    /// type. Use it through [`Simulation::find_by_name_mut`] to change an
+    /// agent between runs, such as one branch's policy after a clone.
+    ///
+    /// [`Simulation::find_by_name_mut`]: crate::Simulation::find_by_name_mut
+    #[must_use]
+    pub fn downcast_mut<A: Agent<M> + 'static>(&mut self) -> Option<&mut A> {
+        sealed::AsAny::as_any_mut(self).downcast_mut()
+    }
+}
+
 /// The `Any` view behind [`SimulationAgent::downcast_ref`]. Every `'static`
 /// type has it, so agents never implement it themselves; it is a supertrait
 /// because only supertrait methods are reachable through `dyn Agent<M>`.
@@ -712,10 +729,16 @@ mod sealed {
     pub trait AsAny {
         /// Returns the agent as `Any`.
         fn as_any(&self) -> &dyn Any;
+        /// Returns the agent as mutable `Any`.
+        fn as_any_mut(&mut self) -> &mut dyn Any;
     }
 
     impl<T: Any> AsAny for T {
         fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
             self
         }
     }

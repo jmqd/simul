@@ -156,6 +156,9 @@ pub enum SimulationMode {
     Constructed,
     /// The Simulation is actively simulating.
     Running,
+    /// [`Simulation::run_until`] reached its time before the run ended; `run`
+    /// or `run_until` continues it.
+    Paused,
     /// The Simulation successfully reached the halt condition.
     Completed,
     /// A callback or the halt check panicked mid-tick. The tick was partly
@@ -809,19 +812,47 @@ impl<M> Simulation<M> {
     /// agent callback or the halt check panics. Any panic during the run
     /// leaves the simulation [`SimulationMode::Failed`].
     pub fn run(&mut self) {
+        self.run_guarded(None);
+    }
+
+    /// Runs like [`Self::run`], but pauses once the simulation time reaches
+    /// `time`, without running that tick, as [`Halt::AtTime`] would.
+    ///
+    /// A paused simulation is [`SimulationMode::Paused`]; [`Self::run`] or
+    /// another `run_until` continues it exactly as one uninterrupted run
+    /// would, and quiet ticks are still skipped. If the halt condition or an
+    /// interrupt ends the run first, the simulation is
+    /// [`SimulationMode::Completed`] instead. A `time` at or before the current
+    /// time runs no tick.
+    ///
+    /// Pausing at a decision tick and cloning gives one branch per
+    /// alternative that shares the run so far; with equal seeds, each branch
+    /// matches a run that took that alternative from the start.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::run`].
+    pub fn run_until(&mut self, time: DiscreteTime) {
+        self.run_guarded(Some(time));
+    }
+
+    /// Runs ticks until halted, interrupted, or paused at `until`, marking the
+    /// simulation failed if anything panics.
+    fn run_guarded(&mut self, until: Option<DiscreteTime>) {
         assert!(
             self.mode != SimulationMode::Failed,
             "a simulation that panicked mid-tick cannot run again"
         );
         if let Err(payload) =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_ticks()))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_ticks(until)))
         {
             self.mode = SimulationMode::Failed;
             std::panic::resume_unwind(payload);
         }
     }
 
-    /// Returns whether the simulation is new, running, completed, or failed.
+    /// Returns whether the simulation is new, running, paused, completed, or
+    /// failed.
     #[must_use]
     pub const fn mode(&self) -> SimulationMode {
         self.mode
@@ -844,8 +875,9 @@ impl<M> Simulation<M> {
         }
     }
 
-    /// Executes ticks until the halt condition or an interrupt stops the run.
-    fn run_ticks(&mut self) {
+    /// Executes ticks until the halt condition or an interrupt stops the run,
+    /// or until the time reaches `until`.
+    fn run_ticks(&mut self, until: Option<DiscreteTime>) {
         self.mode = SimulationMode::Running;
         self.halt_reason = None;
         let mut command_buffer: Vec<AgentCommand<M>> = Vec::new();
@@ -863,14 +895,24 @@ impl<M> Simulation<M> {
         let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
         // Quiet ticks can be skipped only when nothing observes them: a
         // `Halt::When` predicate sees every tick, and the asleep metric counts
-        // every tick. The bound is the halt time, if any.
+        // every tick. The bound is the halt or pause time, if any.
         let skip_bound = match (&self.halt, self.enable_agent_asleep_cycles_metric) {
-            (Halt::AtTime(time), false) => Some(Some(*time)),
-            (Halt::Never, false) => Some(None),
+            (Halt::AtTime(time), false) => {
+                Some(Some(until.map_or(*time, |until| until.min(*time))))
+            }
+            (Halt::Never, false) => Some(until),
             (Halt::AtTime(_) | Halt::Never, true) | (Halt::When(_), _) => None,
         };
 
-        while self.mode == SimulationMode::Running && !self.halt_reached() {
+        // The halt check comes first, so a run that both halts and reaches
+        // `until` at one tick completes.
+        let paused = loop {
+            if self.mode != SimulationMode::Running || self.halt_reached() {
+                break false;
+            }
+            if until.is_some_and(|until| self.time >= until) {
+                break true;
+            }
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
             };
@@ -918,9 +960,13 @@ impl<M> Simulation<M> {
                     self.deliver_due(self.time, schedule.as_mut());
                 }
             }
-        }
+        };
 
-        self.mode = SimulationMode::Completed;
+        self.mode = if paused {
+            SimulationMode::Paused
+        } else {
+            SimulationMode::Completed
+        };
     }
 
     /// Borrows the agents mutably beside the inputs every visit shares.
