@@ -1,5 +1,13 @@
 #+title: Changelog
 
+* DONE Sample rand distributions from seeded streams
+=TrialRng= implements =rand::TryRng= with =Infallible= errors, and therefore
+=rand::Rng=, so =rand= and =rand_distr= samplers can draw from
+=AgentContext::rng()=, trial streams, and proposal streams. The inherent
+methods are unchanged. The nine-ball example drew from the unseeded thread
+RNG for lack of this; it now seeds each match, so its output is
+reproducible, and every luck chance replays the same match seeds.
+
 * DONE Skip quiet ticks
 With =Halt::AtTime= or =Halt::Never= and the asleep-cycle metric off, a tick
 in which no callback ran jumps time to the next tick where an agent can act,

@@ -3,6 +3,7 @@ use rand::prelude::*;
 use rand_distr::weighted::WeightedIndex;
 use rustc_hash::FxHashMap;
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentOptions};
+use simul::experiment::MasterSeed;
 use simul::message::Message;
 use simul::{Halt, Simulation};
 use std::cell::Cell;
@@ -24,7 +25,7 @@ struct NineBallPlayer {
 #[allow(clippy::unwrap_used)]
 impl Agent for NineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        let mut rng = rand::rng();
+        let mut rng = ctx.rng();
         let mut balls_to_run = self.run_out_choices[self.run_out_distribution.sample(&mut rng)];
 
         let mut ball =
@@ -73,7 +74,7 @@ struct ApaNineBallPlayer {
 #[allow(clippy::unwrap_used)]
 impl Agent for ApaNineBallPlayer {
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        let mut rng = rand::rng();
+        let mut rng = ctx.rng();
         let mut balls_to_run = self.run_out_choices[self.run_out_distribution.sample(&mut rng)];
         let mut ball =
             u8::from_le_bytes(msg.custom_payload.as_deref().unwrap().try_into().unwrap());
@@ -108,8 +109,12 @@ impl Agent for ApaNineBallPlayer {
 }
 
 #[allow(clippy::unwrap_used)]
-/// Runs a simulation for normal 9 ball rules.
-fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: usize) -> String {
+/// Runs a simulation for normal 9 ball rules; `seed` fixes every roll.
+fn normal_nine_ball_simulation_alice_vs_john(
+    luck_chance: f32,
+    starting_player: usize,
+    seed: u64,
+) -> String {
     let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
     let winner = Rc::new(Cell::new(None));
 
@@ -151,6 +156,7 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
         .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
     let mut sim = Simulation::builder(Halt::when(halt_condition))
+        .seed(MasterSeed::from_u64(seed))
         .agents(agent_initializers)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -163,10 +169,11 @@ fn normal_nine_ball_simulation_alice_vs_john(luck_chance: f32, starting_player: 
 }
 
 #[allow(clippy::unwrap_used)]
-/// Runs a simulation of APA rules pool.
+/// Runs a simulation of APA rules pool; `seed` fixes every roll.
 fn nine_ball_apa_rules_simulation_alice_vs_john(
     luck_chance: f32,
     starting_player: usize,
+    seed: u64,
 ) -> String {
     let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
     let winner = Rc::new(Cell::new(None));
@@ -209,6 +216,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
 
     let mut sim = Simulation::builder(Halt::when(halt_condition))
+        .seed(MasterSeed::from_u64(seed))
         .agents(agent_initializers)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -220,23 +228,25 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .unwrap()
 }
 
-fn main() {
-    let mut starting_player: usize = 0;
+/// Matches per luck chance. Every luck chance replays the same match seeds,
+/// so the comparison between them uses common random numbers.
+const MATCHES: u64 = 32768;
 
+fn main() {
     eprintln!("APA 9-ball");
     println!("luck_chance\tbetter_player_win_percent");
 
     for pct in [0.00, 0.20, 0.40, 0.50] {
         let mut count: FxHashMap<String, u32> = FxHashMap::default();
-        for _ in 0..32768 {
+        for seed in 0..MATCHES {
+            let starting_player = usize::from(seed % 2 == 1);
             *count
                 .entry(nine_ball_apa_rules_simulation_alice_vs_john(
                     pct,
                     starting_player,
+                    seed,
                 ))
                 .or_default() += 1;
-
-            starting_player ^= 1;
         }
 
         println!(
@@ -251,16 +261,15 @@ fn main() {
 
     for pct in [0.00, 0.20, 0.40, 0.50] {
         let mut count: FxHashMap<String, u32> = FxHashMap::default();
-        let mut starting_player = 0;
-        for _ in 0..32768 {
+        for seed in 0..MATCHES {
+            let starting_player = usize::from(seed % 2 == 1);
             *count
                 .entry(normal_nine_ball_simulation_alice_vs_john(
                     pct,
                     starting_player,
+                    seed,
                 ))
                 .or_default() += 1;
-
-            starting_player ^= 1;
         }
 
         println!(

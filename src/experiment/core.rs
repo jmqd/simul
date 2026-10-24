@@ -187,7 +187,12 @@ impl DerivedSeed {
     }
 }
 
-/// A pinned `ChaCha12` stream with a deliberately small stable interface.
+/// A pinned `ChaCha12` stream.
+///
+/// The inherent methods need no imports. `TrialRng` also implements
+/// [`rand::Rng`], so `rand` and `rand_distr` samplers can draw from it. The
+/// raw stream is pinned; a sampler's output replays only while that sampler's
+/// algorithm is unchanged.
 pub struct TrialRng(ChaCha12Rng);
 
 impl TrialRng {
@@ -204,6 +209,26 @@ impl TrialRng {
     /// Fills bytes from the stream.
     pub fn fill_bytes(&mut self, destination: &mut [u8]) {
         rand::Rng::fill_bytes(&mut self.0, destination);
+    }
+}
+
+impl rand::TryRng for TrialRng {
+    type Error = std::convert::Infallible;
+
+    #[inline]
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(rand::Rng::next_u32(&mut self.0))
+    }
+
+    #[inline]
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(rand::Rng::next_u64(&mut self.0))
+    }
+
+    #[inline]
+    fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
+        rand::Rng::fill_bytes(&mut self.0, destination);
+        Ok(())
     }
 }
 
