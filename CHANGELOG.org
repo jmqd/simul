@@ -1,7 +1,10 @@
 #+title: Changelog
 
 * 0.6.0 (unreleased)
-A breaking release; =README.md= describes the new API. Newest entries first.
+A breaking release; =README.md= describes the new API. Rust 1.85 is now the
+minimum (was 1.71), and the crate builds on rand 0.10 (was 0.9): =TrialRng=
+implements its traits, so code that samples from it with rand or rand_distr
+needs rand 0.10 and rand_distr 0.6. Newest entries first.
 
 ** DONE Describe the 0.6.0 API in the README
 The README covers the builder and its options, declarative halting, typed
@@ -32,9 +35,10 @@ enum now derives =Clone=, =Copy=, =Debug=, =Eq=, =Hash=, and =PartialEq=.
 the =AgentInitializer { agent: Box::new(..), options: AgentOptions { .. } }=
 literal, with =.asleep_until(t)= to start asleep and =.initial_queue(messages)=
 to queue messages before the first tick. =AgentOptions::defaults_with_name= is
-removed; =AgentOptions= stays public for unusual mode combinations. Every
-example, test, and benchmark now builds agents this way, and the helpers each
-one had defined for it are gone.
+removed. The =AgentInitializer= and =AgentOptions= fields stay public for
+already-boxed agents and unusual mode combinations, such as different initial
+and wake modes; the built-in agents, examples, and benchmarks use the
+constructors.
 
 ** DONE Seed simulations from experiment trials
 =SimulationBuilder::trial(&TrialContext)= seeds a simulation from the trial's

@@ -286,4 +286,5 @@ they keep every tick.
 
 # Contributing
 
-Issues, bugs, features are tracked in TODO.org
+Issues, bugs, features are tracked in
+[TODO.org](https://github.com/jmqd/simul/blob/main/TODO.org).

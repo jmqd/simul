@@ -41,8 +41,9 @@ What's the best practice in Rust? Do people have debug! stmts in libs?
 * Open follow-ups
 Resolved findings from the October 2026 audit are recorded in CHANGELOG.org.
 ** TODO Run Miri on the parallel runner in CI or =just=
-Miri is clean for the unsafe runner code (13 tests in =tests/experiment.rs=
-plus panic/error scratch cases, 8 scheduler seeds). Notes for a recipe:
+Miri was clean for the unsafe runner code when run by hand in October 2026 (13
+tests from =tests/experiment.rs= plus panic/error scratch cases, 8 scheduler
+seeds). Notes for a recipe:
 =--lib= never reaches the unsafe code; multi-shard paths need
 =-Zmiri-num-cpus=4=; Stacked Borrows stops inside crossbeam-epoch, so use
 =-Zmiri-tree-borrows=; CEM tests need =-Zmiri-deterministic-floats=.
