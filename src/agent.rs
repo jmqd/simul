@@ -133,6 +133,17 @@ pub struct SimulationAgent<M = ()> {
     pub(crate) history: Option<MessageHistory<M>>,
 }
 
+impl<M: 'static> SimulationAgent<M> {
+    /// Returns the agent's behavior as an `A`, or `None` if it is another
+    /// type. Read a finished simulation's agents this way rather than sharing
+    /// state with them through `Rc`, locks, or atomics.
+    #[must_use]
+    pub fn downcast_ref<A: Agent<M>>(&self) -> Option<&A> {
+        // Through the trait object: the box itself is `Any` too.
+        sealed::AsAny::as_any(&*self.agent).downcast_ref()
+    }
+}
+
 impl<M> SimulationAgent<M> {
     /// Returns how many messages this agent finished handling.
     #[must_use]
@@ -557,7 +568,7 @@ pub struct AgentInitializer<M = ()> {
 /// through [`Agent::on_message`]. A `Proactive` agent then also gets
 /// [`Agent::on_tick`], whether or not it had a message. Sleeping and `Dead`
 /// agents get neither.
-pub trait Agent<M = ()>: std::fmt::Debug + DynClone {
+pub trait Agent<M = ()>: std::fmt::Debug + DynClone + sealed::AsAny {
     /// Handles the oldest queued message, at most once per tick. The message
     /// counts as consumed afterwards unless the agent sets
     /// [`MessageProcessingStatus::InProgress`]. The default does nothing.
@@ -571,6 +582,29 @@ pub trait Agent<M = ()>: std::fmt::Debug + DynClone {
 }
 
 dyn_clone::clone_trait_object!(<M> Agent<M>);
+
+/// The `Any` view behind [`SimulationAgent::downcast_ref`]. Every `'static`
+/// type has it, so agents never implement it themselves; it is a supertrait
+/// because only supertrait methods are reachable through `dyn Agent<M>`.
+mod sealed {
+    use std::any::Any;
+
+    /// Views an agent as `Any`; implemented for every `'static` type.
+    #[allow(
+        unreachable_pub,
+        reason = "sealed supertrait of the public Agent trait; the module is private"
+    )]
+    pub trait AsAny: Any {
+        /// Returns the agent as `Any`.
+        fn as_any(&self) -> &dyn Any;
+    }
+
+    impl<T: Any> AsAny for T {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+}
 
 /// A geometric number of ticks, at least one, with a fixed mean.
 ///

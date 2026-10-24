@@ -1,5 +1,13 @@
 #+title: Changelog
 
+* DONE Read finished agents back as their own type
+=SimulationAgent::downcast_ref::<A>()= returns an agent's behavior as an =A=,
+or =None= for any other type, so results can stay in agent fields instead of
+in =Rc<Cell<_>>= or lock-guarded state shared with the agent. Agents get a
+sealed =Any= supertrait, implemented for every ='static= type, and
+=Simulation::run= now requires =M: 'static=. The nine-ball example reads each
+match's winner from the players instead of an =Rc<Cell<Option<usize>>>=.
+
 * DONE Type messages by the simulation's message type (breaking)
 =Simulation<M>=, =Agent<M>=, =AgentContext<'_, M>=, and =Message<M>= carry one
 message type chosen by the model, usually an enum, with =()= as the default.

@@ -419,7 +419,7 @@ impl SparseSchedule {
     reason = "per-agent hot path shared by the dense and sparse tick loops"
 )]
 #[inline(always)]
-fn visit_agent<M>(
+fn visit_agent<M: 'static>(
     agents: &mut [SimulationAgent<M>],
     handle: usize,
     tick: &mut Tick<'_, M>,
@@ -699,7 +699,10 @@ impl<M> Simulation<M> {
     /// tick callbacks if advancing time would exceed `u64::MAX`, and when an
     /// agent callback or the halt check panics. Any panic during the run
     /// leaves the simulation [`SimulationMode::Failed`].
-    pub fn run(&mut self) {
+    pub fn run(&mut self)
+    where
+        M: 'static,
+    {
         assert!(
             self.mode != SimulationMode::Failed,
             "a simulation that panicked mid-tick cannot run again"
@@ -736,7 +739,10 @@ impl<M> Simulation<M> {
     }
 
     /// Executes ticks until the halt condition or an interrupt stops the run.
-    fn run_ticks(&mut self) {
+    fn run_ticks(&mut self)
+    where
+        M: 'static,
+    {
         self.mode = SimulationMode::Running;
         self.halt_reason = None;
         let mut command_buffer: Vec<AgentCommand<M>> = Vec::new();
@@ -831,7 +837,10 @@ impl<M> Simulation<M> {
     }
 
     /// Visits every agent in handle order and returns how many callbacks ran.
-    fn run_dense_tick(&mut self, commands: &mut Vec<AgentCommand<M>>) -> usize {
+    fn run_dense_tick(&mut self, commands: &mut Vec<AgentCommand<M>>) -> usize
+    where
+        M: 'static,
+    {
         let (agents, mut tick) = self.split_tick(commands);
         let mut callbacks = 0;
         for handle in 0..agents.len() {
@@ -849,7 +858,10 @@ impl<M> Simulation<M> {
         &mut self,
         commands: &mut Vec<AgentCommand<M>>,
         schedule: &mut SparseSchedule,
-    ) -> usize {
+    ) -> usize
+    where
+        M: 'static,
+    {
         let (agents, mut tick) = self.split_tick(commands);
         let mut callbacks = 0;
         let mut cursor = 0;

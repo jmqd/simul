@@ -1035,3 +1035,40 @@ fn callback_panic_fails_the_simulation_without_waking_later_agents() {
     assert!(rerun.is_err(), "a failed simulation must refuse to run");
     assert_eq!(0, simulation.time());
 }
+
+#[derive(Clone, Debug, Default)]
+struct TickCounter {
+    ticks: u64,
+}
+
+impl Agent for TickCounter {
+    fn on_tick(&mut self, _ctx: &mut AgentContext) {
+        self.ticks += 1;
+    }
+}
+
+#[test]
+fn finished_agents_read_back_as_their_own_type() {
+    let mut simulation = Simulation::builder(Halt::AtTime(5))
+        .agents(vec![
+            periodic_consumer("idle", 1),
+            proactive_agent("counter", TickCounter::default()),
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    simulation.run();
+
+    let counter = simulation.find_by_name("counter");
+    assert_eq!(
+        Some(5),
+        counter
+            .and_then(|agent| agent.downcast_ref::<TickCounter>())
+            .map(|counter| counter.ticks)
+    );
+    assert!(
+        counter
+            .and_then(|agent| agent.downcast_ref::<HaltImmediately>())
+            .is_none(),
+        "another agent type does not match"
+    );
+}

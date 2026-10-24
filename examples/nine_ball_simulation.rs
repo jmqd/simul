@@ -6,8 +6,6 @@ use simul::agent::{Agent, AgentContext, AgentInitializer, AgentOptions};
 use simul::experiment::MasterSeed;
 use simul::message::Message;
 use simul::{Halt, Simulation};
-use std::cell::Cell;
-use std::rc::Rc;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::missing_docs_in_private_items)]
@@ -18,7 +16,13 @@ struct NineBallPlayer {
     winning_threshold: u8,
     score: u8,
     opponent_name: String,
-    winner: Rc<Cell<Option<usize>>>,
+}
+
+impl NineBallPlayer {
+    /// Whether this player's score reached the match threshold.
+    const fn has_won(&self) -> bool {
+        self.score >= self.winning_threshold
+    }
 }
 
 /// Each turn's message carries the ball on the table.
@@ -40,8 +44,7 @@ impl Agent<u8> for NineBallPlayer {
             }
         }
 
-        if self.score >= self.winning_threshold {
-            self.winner.set(Some(ctx.id().index()));
+        if self.has_won() {
             ctx.send_halt_interrupt("won");
             return;
         }
@@ -66,7 +69,13 @@ struct ApaNineBallPlayer {
     winning_threshold: u8,
     score: u8,
     opponent_name: String,
-    winner: Rc<Cell<Option<usize>>>,
+}
+
+impl ApaNineBallPlayer {
+    /// Whether this player's score reached the match threshold.
+    const fn has_won(&self) -> bool {
+        self.score >= self.winning_threshold
+    }
 }
 
 impl Agent<u8> for ApaNineBallPlayer {
@@ -87,8 +96,7 @@ impl Agent<u8> for ApaNineBallPlayer {
             }
         }
 
-        if self.score >= self.winning_threshold {
-            self.winner.set(Some(ctx.id().index()));
+        if self.has_won() {
             ctx.send_halt_interrupt("won");
             return;
         }
@@ -104,6 +112,14 @@ impl Agent<u8> for ApaNineBallPlayer {
     }
 }
 
+/// Returns the name of the player of type `P` that won the match.
+fn winner<P: Agent<u8>>(sim: &Simulation<u8>, has_won: fn(&P) -> bool) -> Option<String> {
+    sim.agents()
+        .iter()
+        .find(|agent| agent.downcast_ref::<P>().is_some_and(has_won))
+        .map(|agent| agent.name.clone())
+}
+
 #[allow(clippy::unwrap_used)]
 /// Runs a simulation for normal 9 ball rules; `seed` fixes every roll.
 fn normal_nine_ball_simulation_alice_vs_john(
@@ -112,7 +128,6 @@ fn normal_nine_ball_simulation_alice_vs_john(
     seed: u64,
 ) -> String {
     let halt_condition = |s: &Simulation<u8>| s.agents().iter().all(|a| a.state.queue.is_empty());
-    let winner = Rc::new(Cell::new(None));
 
     let alice = NineBallPlayer {
         luck_chance: 0.0,
@@ -121,7 +136,6 @@ fn normal_nine_ball_simulation_alice_vs_john(
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_distribution: WeightedIndex::new([5, 10, 20, 20, 18, 12, 5, 4, 3, 2]).unwrap(),
         opponent_name: "john".to_string(),
-        winner: Rc::clone(&winner),
     };
 
     let john = NineBallPlayer {
@@ -131,7 +145,6 @@ fn normal_nine_ball_simulation_alice_vs_john(
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_distribution: WeightedIndex::new([6, 11, 18, 18, 15, 9, 3, 2, 2, 1]).unwrap(),
         opponent_name: "alice".to_string(),
-        winner: Rc::clone(&winner),
     };
 
     let mut agent_initializers: Vec<AgentInitializer<u8>> = vec![
@@ -158,10 +171,7 @@ fn normal_nine_ball_simulation_alice_vs_john(
         .unwrap_or_else(|error| panic!("{error}"));
     sim.run();
 
-    winner
-        .get()
-        .map(|handle| sim.agents()[handle].name.clone())
-        .unwrap()
+    winner(&sim, NineBallPlayer::has_won).unwrap()
 }
 
 #[allow(clippy::unwrap_used)]
@@ -172,7 +182,6 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
     seed: u64,
 ) -> String {
     let halt_condition = |s: &Simulation<u8>| s.agents().iter().all(|a| a.state.queue.is_empty());
-    let winner = Rc::new(Cell::new(None));
 
     let alice = ApaNineBallPlayer {
         luck_chance: 0.0,
@@ -181,7 +190,6 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_distribution: WeightedIndex::new([5, 10, 20, 20, 18, 12, 5, 4, 3, 2]).unwrap(),
         opponent_name: "john".to_string(),
-        winner: Rc::clone(&winner),
     };
 
     let john = ApaNineBallPlayer {
@@ -191,7 +199,6 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         run_out_choices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         run_out_distribution: WeightedIndex::new([6, 11, 18, 18, 15, 9, 3, 2, 2, 1]).unwrap(),
         opponent_name: "alice".to_string(),
-        winner: Rc::clone(&winner),
     };
 
     let mut agent_initializers = vec![
@@ -218,10 +225,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .unwrap_or_else(|error| panic!("{error}"));
     sim.run();
 
-    winner
-        .get()
-        .map(|handle| sim.agents()[handle].name.clone())
-        .unwrap()
+    winner(&sim, ApaNineBallPlayer::has_won).unwrap()
 }
 
 /// Matches per luck chance. Every luck chance replays the same match seeds,
@@ -284,7 +288,6 @@ mod tests {
     #[test]
     fn winning_turn_records_the_winner_without_scheduling_another_turn() {
         for apa_rules in [false, true] {
-            let winner = Rc::new(Cell::new(None));
             let run_out_distribution = WeightedIndex::new([1; 10])
                 .unwrap_or_else(|error| panic!("invalid test distribution: {error}"));
             let agent: Box<dyn Agent<u8>> = if apa_rules {
@@ -295,7 +298,6 @@ mod tests {
                     winning_threshold: 9,
                     score: 0,
                     opponent_name: "opponent".to_string(),
-                    winner: Rc::clone(&winner),
                 })
             } else {
                 Box::new(NineBallPlayer {
@@ -305,7 +307,6 @@ mod tests {
                     winning_threshold: 1,
                     score: 0,
                     opponent_name: "opponent".to_string(),
-                    winner: Rc::clone(&winner),
                 })
             };
             let mut simulation = Simulation::builder(Halt::AtTime(2))
@@ -321,7 +322,17 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{error}"));
             simulation.run();
 
-            assert_eq!(winner.get(), Some(0));
+            let player = simulation.find_by_name("player");
+            let won = if apa_rules {
+                player
+                    .and_then(|agent| agent.downcast_ref::<ApaNineBallPlayer>())
+                    .map(ApaNineBallPlayer::has_won)
+            } else {
+                player
+                    .and_then(|agent| agent.downcast_ref::<NineBallPlayer>())
+                    .map(NineBallPlayer::has_won)
+            };
+            assert_eq!(won, Some(true));
             assert_eq!(simulation.time(), 1);
             assert_eq!(
                 simulation

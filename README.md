@@ -149,6 +149,11 @@ else. To keep the messages themselves, build with `.message_history(true)`;
 is off by default because it holds every message for the whole run, and the
 history accessors panic when it is off rather than look empty.
 
+Keep results in the agents themselves. After a run,
+`simulation.find_by_name("door").and_then(|agent| agent.downcast_ref::<Door>())`
+returns the agent as its own type, or `None` for any other type, so there is no
+need to share `Rc<Cell<_>>` or locks with agents to get answers out.
+
 Messages are typed. A simulation picks one message type `M`, usually an enum
 of everything its agents say to each other, and every agent implements
 `Agent<M>` and sends `M` values with `ctx.send(target, payload)`, so handlers
