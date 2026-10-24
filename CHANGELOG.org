@@ -1,5 +1,17 @@
 #+title: Changelog
 
+* DONE Add an ETL placement simulation example
+=examples/etl_placement= asks where a Supabase ETL replicator should run when
+its source Postgres is in us-west-2 and its destination in us-east-1. Three
+agents exchange units over flow-level TCP with per-connection RTT draws,
+CUBIC, idle restart, receive-window credit, retransmission backoff across
+partitions, and Postgres/TLS handshakes; the replicator follows
+supabase/etl's batching, blocking store checkpoints, keepalive feedback,
+parallel copy, catch-up, and retries. Both placements run under common
+random numbers through a CDC rate × =max_fill_ms= sweep, an initial copy,
+and six faults. Every parameter names its source or is marked ASSUMPTION.
+Run =cargo run --release --example etl_placement -- --help= for options.
+
 * DONE Record message histories only on request (breaking)
 =AgentState::consumed= and =produced= are gone. Agents count consumed and
 produced messages and sum their waits as they go

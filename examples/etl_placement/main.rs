@@ -636,6 +636,10 @@ fn parse_options() -> Options {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "cdc" | "copy" | "faults" | "all" => options.mode = arg,
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
             "--quick" => options.quick = true,
             "--polled-sink" => options.polled_sink = true,
             "--steady" => options.steady = true,
