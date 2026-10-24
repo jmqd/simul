@@ -1,6 +1,6 @@
 #+title: Changelog
 
-* 0.6.0 (unreleased)
+* 0.6.0 (2026-10-24)
 A breaking release; =README.md= describes the new API. Rust 1.85 is now the
 minimum (was 1.71), and the crate builds on rand 0.10 (was 0.9): =TrialRng=
 implements its traits, so code that samples from it with rand or rand_distr
