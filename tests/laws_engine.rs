@@ -4,8 +4,8 @@
 //! reproduces it.
 #![allow(clippy::missing_docs_in_private_items)]
 
+use chacha20::ChaCha8Rng;
 use rand::{RngExt as _, SeedableRng as _};
-use rand_chacha::ChaCha8Rng;
 use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
     AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent,

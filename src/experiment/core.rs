@@ -1,7 +1,7 @@
 //! Engine-independent deterministic experiment execution and reduction.
 
+use chacha20::ChaCha12Rng;
 use rand::SeedableRng;
-use rand_chacha::ChaCha12Rng;
 use std::cmp::Ordering;
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -1910,6 +1910,62 @@ mod tests {
                 "826b2c1861f8c3dcf4ec5b8872b16a5266488494eda35db39c32ee66ef23cfd1",
             ],
             vectors
+        );
+    }
+
+    /// Hashes every entry point of a stream: whole and straddling `u64`s past
+    /// the generator's block buffer, `u32`s, odd-length fills, and a float.
+    fn stream_digest(mut rng: TrialRng) -> String {
+        let mut hasher = blake3::Hasher::new();
+        for _ in 0..41 {
+            hasher.update(&rng.next_u64().to_le_bytes());
+        }
+        for _ in 0..3 {
+            hasher.update(&rand::Rng::next_u32(&mut rng).to_le_bytes());
+        }
+        let mut bytes = [0_u8; 13];
+        rng.fill_bytes(&mut bytes);
+        hasher.update(&bytes);
+        hasher.update(&rng.uniform_f64().to_bits().to_le_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
+
+    // Seeds alone do not pin replay: the `ChaCha12` output behind them must
+    // not change when the generator implementation does.
+    #[test]
+    fn v1_stream_outputs_are_frozen() {
+        let master = MasterSeed::from_u64(0x0123_4567_89ab_cdef);
+        let deriver = SeedDeriver::new(master);
+        let streams = deriver.agent_streams("agent");
+        let first = [
+            deriver.proposal_seed(5).rng().next_u64(),
+            streams.rng(0, 0).next_u64(),
+            streams.rng(17, 3).next_u64(),
+            streams.rng(u64::MAX, u64::from(u32::MAX)).next_u64(),
+        ];
+        let digests = [
+            stream_digest(deriver.proposal_seed(5).rng()),
+            stream_digest(streams.rng(0, 0)),
+            stream_digest(streams.rng(17, 3)),
+            stream_digest(streams.rng(u64::MAX, u64::from(u32::MAX))),
+        ];
+        assert_eq!(
+            [
+                825_089_094_596_574_447,
+                11_441_856_848_407_897_277,
+                7_581_260_819_581_799_403,
+                16_516_139_230_713_878_455,
+            ],
+            first
+        );
+        assert_eq!(
+            [
+                "14dd71aa5fb1fc24832c1d3753d880d42ec3c6bb35f4a71a291543adb9004844",
+                "4f83bd1e818b9ed5fbfea983f399116af16b634629950fe4527e5f811e5da99e",
+                "beec60895f6f18a73d408bd778ccf6546eb980173e33766f6957f3d9e6215e46",
+                "578ad4043a18d76b6723c1dc71bffde470f85ac6e82ca7f69256366f2028643c",
+            ],
+            digests.each_ref().map(String::as_str)
         );
     }
 

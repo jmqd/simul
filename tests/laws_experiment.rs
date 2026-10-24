@@ -4,8 +4,8 @@
 //! reproduces it.
 #![allow(clippy::missing_docs_in_private_items)]
 
+use chacha20::ChaCha8Rng;
 use rand::{RngExt, SeedableRng};
-use rand_chacha::ChaCha8Rng;
 use rustc_hash::FxHashSet;
 use simul::experiment::search::{
     sample_bounded, BoundsError, ProposalToken, SearchStrategy, SeededRandomSearch, TellError, Told,

@@ -6,6 +6,17 @@ minimum (was 1.71), and the crate builds on rand 0.10 (was 0.9): =TrialRng=
 implements its traits, so code that samples from it with rand or rand_distr
 needs rand 0.10 and rand_distr 0.6. Newest entries first.
 
+** DONE Generate ChaCha12 streams with the chacha20 crate
+=TrialRng= and =AgentStreams= draw from RustCrypto's =chacha20= (already a
+dependency of rand 0.10) instead of =rand_chacha=, whose =ppv-lite86= backend
+has SIMD only on x86_64. The V1 streams are unchanged:
+=v1_stream_outputs_are_frozen= pins whole, straddling, =u32=, fill, and float
+draws from proposal and agent streams. On an M2 Max, an =AgentContext::rng()=
+call and its first draw cost 118 ns instead of 265 ns, a callback that draws
+once 137 ns instead of 276 ns, and later draws 3.8 ns instead of 8.5 ns; the
+experiment workloads retire 11-76% fewer instructions with identical outputs.
+=rand_chacha= and =ppv-lite86= leave the dependency tree.
+
 ** DONE Describe the 0.6.0 API in the README
 The README covers the builder and its options, declarative halting, typed
 messages, custom agents built with =AgentInitializer::reactive= and
