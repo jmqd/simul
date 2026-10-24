@@ -1,5 +1,15 @@
 #+title: Changelog
 
+* DONE Key agent streams by name and seek instead of hashing (breaking)
+Each agent's =AgentContext::rng()= streams come from one =ChaCha12= key,
+hashed once at build time from the simulation seed and the agent's name.
+Each tick is a stream of that key, and each call within a tick reads its own
+window of it. Adding, removing, or reordering other agents no longer changes
+an agent's draws, so common random numbers survive candidates that add an
+agent, such as a seventh table. A call costs about 75 ns instead of 260 ns.
+=SeedDeriver::agent_seed= is replaced by =SeedDeriver::agent_streams= and
+=AgentStreams::rng=. Frozen V1 experiment streams are unchanged.
+
 * DONE Sample rand distributions from seeded streams
 =TrialRng= implements =rand::TryRng= with =Infallible= errors, and therefore
 =rand::Rng=, so =rand= and =rand_distr= samplers can draw from
@@ -88,6 +98,8 @@ call's index within the tick, under the new =simul/v1/agent= namespace
 (=SeedDeriver::agent_seed=). Draws do not depend on
 other agents, sparse or dense scheduling, clones, or how a run is split into
 segments. Frozen V1 experiment streams are unchanged.
+Superseded by "Key agent streams by name and seek instead of hashing":
+streams are keyed by agent name, not =AgentId=, and are not hashed per call.
 
 * DONE Deliver messages to Proactive agents (breaking)
 Each tick, an awake agent with a queued message handles the oldest one in

@@ -29,7 +29,7 @@ use agent::{
     Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
     AgentMode, AgentState, MessageProcessingStatus, QueueDepthChange, SimulationAgent,
 };
-use experiment::{MasterSeed, SeedDeriver};
+use experiment::{AgentStreams, MasterSeed, SeedDeriver};
 use message::Message;
 
 use rustc_hash::FxHashMap;
@@ -117,8 +117,9 @@ pub struct Simulation {
     /// the layout and its token; every constructed simulation gets a new one.
     layout: u64,
 
-    /// Source of every agent's per-tick random stream.
-    seeds: SeedDeriver,
+    /// Each agent's stream root, by handle; names never change, so neither do
+    /// these.
+    agent_streams: Vec<AgentStreams>,
 
     /// The reason given by the interrupt that ended the latest run, if any.
     halt_reason: Option<String>,
@@ -275,8 +276,8 @@ struct Tick<'a> {
     agent_name_handle_map: &'a FxHashMap<String, AgentId>,
     /// Commands issued during the tick, applied at its end.
     commands: &'a mut Vec<AgentCommand>,
-    /// Source of each visited agent's random stream for this tick.
-    seeds: SeedDeriver,
+    /// Stream roots by handle.
+    agent_streams: &'a [AgentStreams],
 }
 
 /// Tracks runnable handles in callback order and sleeping agents by wake time.
@@ -444,8 +445,8 @@ fn visit_agent(
         layout: tick.layout,
         state: &agent.state,
         message_processing_status: MessageProcessingStatus::NoError,
-        seeds: tick.seeds,
-        streams: 0,
+        stream_root: &tick.agent_streams[handle],
+        calls: 0,
     };
     // Every awake agent handles at most one queued message per tick; proactive
     // agents then also tick.
@@ -536,11 +537,14 @@ impl Simulation {
         } else {
             0
         };
+        let deriver = SeedDeriver::new(parameters.seed);
+        let mut agent_streams = Vec::with_capacity(initializers.len());
         let agents: Vec<SimulationAgent> = parameters
             .agent_initializers
             .into_iter()
             .enumerate()
             .map(|(handle, agent_initializer)| {
+                agent_streams.push(deriver.agent_streams(&agent_initializer.options.name));
                 let mut queue = agent_initializer.options.initial_queue;
                 for message in &mut queue {
                     message.destination = Some(AgentId::from_handle(handle));
@@ -570,7 +574,7 @@ impl Simulation {
             enable_agent_asleep_cycles_metric: parameters.asleep_cycles_metric,
             agent_name_handle_map,
             layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
-            seeds: SeedDeriver::new(parameters.seed),
+            agent_streams,
             halt_reason: None,
         })
     }
@@ -773,7 +777,7 @@ impl Simulation {
             scan_names: agent_count <= LINEAR_NAME_SCAN_LIMIT,
             queue_depth_metric: self.enable_queue_depth_metric,
             asleep_cycles_metric: self.enable_agent_asleep_cycles_metric,
-            seeds: self.seeds,
+            agent_streams: &self.agent_streams,
             agent_name_handle_map: &self.agent_name_handle_map,
             commands,
         };

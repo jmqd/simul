@@ -24,8 +24,12 @@ const LAYOUT_NOISE_NAMESPACE: &[u8] = b"simul/v1/layout-noise";
 const EXECUTION_NOISE_NAMESPACE: &[u8] = b"simul/v1/execution-noise";
 /// Domain separator for validation-holdout streams.
 const HOLDOUT_NAMESPACE: &[u8] = b"simul/v1/validation-holdout";
-/// Domain separator for per-agent, per-tick simulation streams.
+/// Domain separator for per-agent simulation stream roots.
 const AGENT_NAMESPACE: &[u8] = b"simul/v1/agent";
+/// Each draw request in a tick reads its own window of `2^36` 32-bit words
+/// (256 GiB) of the agent's tick stream; the first `2^32` requests of a tick
+/// get disjoint windows.
+const AGENT_CALL_WINDOW_BITS: u32 = 36;
 /// Scale converting the high 53 bits of a `u64` to the unit interval.
 const U64_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 53) as f64);
 /// Longest derivation input hashed from a stack buffer; longer inputs use the
@@ -232,6 +236,33 @@ impl rand::TryRng for TrialRng {
     }
 }
 
+/// One agent's random streams: a pinned `ChaCha12` key with one stream per
+/// tick, split into a window per draw request.
+///
+/// [`SeedDeriver::agent_streams`] hashes the key once per agent, so drawing a
+/// stream only seeks the cipher.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct AgentStreams([u8; 32]);
+
+impl AgentStreams {
+    /// Returns the stream for the `call`th draw request of `tick`.
+    #[must_use]
+    #[inline]
+    pub fn rng(&self, tick: u64, call: u64) -> TrialRng {
+        let mut rng = ChaCha12Rng::from_seed(self.0);
+        rng.set_stream(tick);
+        rng.set_word_pos(u128::from(call) << AGENT_CALL_WINDOW_BITS);
+        TrialRng(rng)
+    }
+}
+
+// Simulations print their agents' stream roots; the key bytes only add noise.
+impl fmt::Debug for AgentStreams {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AgentStreams(..)")
+    }
+}
+
 /// Stateless V1 seed derivation rooted at one master seed.
 #[derive(Clone, Copy, Debug)]
 pub struct SeedDeriver {
@@ -276,21 +307,15 @@ impl SeedDeriver {
         )
     }
 
-    /// Derives the `stream`th stream an agent draws during one simulation tick.
+    /// Derives the stream root of the agent named `name`.
     ///
-    /// The seed depends only on the master seed, the agent's index, the tick,
-    /// and the stream number, so it is unaffected by other agents, scheduling,
-    /// clones, or how a run is split into segments.
+    /// The root depends only on the master seed and the name, so an agent's
+    /// draws are unaffected by other agents, their order, scheduling, clones,
+    /// or how a run is split into segments.
     #[must_use]
-    pub fn agent_seed(self, agent: u64, tick: u64, stream: u64) -> DerivedSeed {
-        self.derive(
-            AGENT_NAMESPACE,
-            &[
-                &agent.to_le_bytes(),
-                &tick.to_le_bytes(),
-                &stream.to_le_bytes(),
-            ],
-        )
+    pub fn agent_streams(self, name: &str) -> AgentStreams {
+        let length = u64::try_from(name.len()).unwrap_or(u64::MAX).to_le_bytes();
+        AgentStreams(self.derive(AGENT_NAMESPACE, &[&length, name.as_bytes()]).0)
     }
 
     /// Derives a candidate-specific or common-random trial stream.

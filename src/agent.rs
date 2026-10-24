@@ -1,4 +1,4 @@
-use crate::experiment::{SeedDeriver, TrialRng};
+use crate::experiment::{AgentStreams, TrialRng};
 use crate::{message::Message, DiscreteTime};
 use dyn_clone::DynClone;
 use rustc_hash::FxHashMap;
@@ -230,11 +230,11 @@ pub struct AgentContext<'a> {
     /// Whether the current message finished or stays queued.
     pub(crate) message_processing_status: MessageProcessingStatus,
 
-    /// Derives this agent's streams for the current tick.
-    pub(crate) seeds: SeedDeriver,
+    /// This agent's stream root.
+    pub(crate) stream_root: &'a AgentStreams,
 
     /// Number of streams handed out during this visit.
-    pub(crate) streams: u64,
+    pub(crate) calls: u64,
 }
 
 impl<'a> AgentContext<'a> {
@@ -247,18 +247,16 @@ impl<'a> AgentContext<'a> {
     /// Returns a new random stream for this agent and tick.
     ///
     /// The `n`th call during a tick (counting `on_message` and `on_tick`
-    /// together) returns the stream derived from the simulation seed, the
-    /// agent's [`AgentId`], the tick, and `n`. Equal seeds therefore give
-    /// equal draws regardless of other agents, scheduling, clones, or how a
-    /// run is split. Each call hashes a seed, so keep the stream for several
-    /// draws rather than calling this per draw.
+    /// together) returns window `n` of the tick's stream, which is keyed by
+    /// the simulation seed and this agent's name. Equal seeds therefore give
+    /// equal draws regardless of other agents, their order, scheduling,
+    /// clones, or how a run is split. Each call seeks a fresh `ChaCha12`
+    /// stream, so keep it for several draws rather than calling this per draw.
     #[must_use]
     pub fn rng(&mut self) -> TrialRng {
-        let stream = self.streams;
-        self.streams += 1;
-        self.seeds
-            .agent_seed(self.id.index() as u64, self.time, stream)
-            .rng()
+        let call = self.calls;
+        self.calls += 1;
+        self.stream_root.rng(self.time, call)
     }
 
     /// Returns the agent's name.

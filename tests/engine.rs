@@ -311,10 +311,14 @@ impl Agent for Drawer {
     }
 }
 
-fn draws(seed: u64, extra_agents: usize) -> Vec<u64> {
+/// Draws of an agent named `name`, with `before` idle agents ahead of it and
+/// `after` behind it.
+fn draws(seed: u64, name: &str, before: usize, after: usize) -> Vec<u64> {
     let drawer = Drawer::default();
-    let mut agents = vec![proactive_agent("drawer", drawer.clone())];
-    agents.extend((0..extra_agents).map(|i| periodic_consumer(format!("idle-{i}"), 1)));
+    let idle = |i: usize| periodic_consumer(format!("idle-{i}"), 1);
+    let mut agents: Vec<_> = (0..before).map(idle).collect();
+    agents.push(proactive_agent(name, drawer.clone()));
+    agents.extend((before..before + after).map(idle));
     let mut simulation = Simulation::builder(Halt::AtTime(4))
         .agents(agents)
         .seed(simul::experiment::MasterSeed::from_u64(seed))
@@ -326,12 +330,34 @@ fn draws(seed: u64, extra_agents: usize) -> Vec<u64> {
 }
 
 #[test]
-fn agent_streams_depend_only_on_seed_agent_and_tick() {
-    let base = draws(7, 0);
+fn agent_streams_depend_only_on_seed_name_and_tick() {
+    let base = draws(7, "drawer", 0, 0);
     assert_eq!(8, base.len());
-    assert_eq!(base, draws(7, 0), "equal seeds give equal draws");
-    assert_eq!(base, draws(7, 100), "later agents do not shift the stream");
-    assert_ne!(base, draws(8, 0), "different seeds give different draws");
+    assert_eq!(
+        base,
+        draws(7, "drawer", 0, 0),
+        "equal seeds give equal draws"
+    );
+    assert_eq!(
+        base,
+        draws(7, "drawer", 0, 100),
+        "later agents do not shift the stream"
+    );
+    assert_eq!(
+        base,
+        draws(7, "drawer", 100, 0),
+        "earlier agents do not shift the stream"
+    );
+    assert_ne!(
+        base,
+        draws(8, "drawer", 0, 0),
+        "different seeds give different draws"
+    );
+    assert_ne!(
+        base,
+        draws(7, "other", 0, 0),
+        "different names give different draws"
+    );
     assert_ne!(base[0], base[1], "each call in a tick returns a new stream");
     assert_ne!(base[..2], base[2..4], "each tick starts a fresh stream");
 }
