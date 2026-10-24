@@ -92,15 +92,15 @@ pub enum SimulationMode {
 /// concept of `Messages` to communicate between agents. Agents can receive
 /// messages and send messages to other Agents.
 #[derive(Clone, Debug)]
-pub struct Simulation {
+pub struct Simulation<M = ()> {
     /// The agents within the simulation, e.g. adaptive agents.
-    agents: Vec<SimulationAgent>,
+    agents: Vec<SimulationAgent<M>>,
 
     /// The current discrete time of the Simulation.
     time: DiscreteTime,
 
     /// When the run stops.
-    halt: Halt,
+    halt: Halt<M>,
 
     /// Whether to record metrics on queue depths. Takes space.
     enable_queue_depth_metric: bool,
@@ -137,24 +137,37 @@ pub struct Simulation {
 /// ticks in which no agent could act and jumps to the next wake-up; results
 /// match running every tick. A `When` predicate is checked on every tick, so
 /// it disables skipping.
-#[derive(Clone)]
-pub enum Halt {
+pub enum Halt<M = ()> {
     /// Stop once the simulation time reaches this tick, without running it.
     AtTime(DiscreteTime),
     /// Run until an agent sends a halt interrupt.
     Never,
     /// Stop when the predicate returns `true`.
-    When(Arc<dyn Fn(&Simulation) -> bool + Send + Sync>),
+    When(Arc<HaltPredicate<M>>),
 }
 
-impl Halt {
+/// A halt check over the whole simulation state.
+type HaltPredicate<M> = dyn Fn(&Simulation<M>) -> bool + Send + Sync;
+
+impl<M> Halt<M> {
     /// Stops when `predicate` returns `true`.
-    pub fn when(predicate: impl Fn(&Simulation) -> bool + Send + Sync + 'static) -> Self {
+    pub fn when(predicate: impl Fn(&Simulation<M>) -> bool + Send + Sync + 'static) -> Self {
         Self::When(Arc::new(predicate))
     }
 }
 
-impl std::fmt::Debug for Halt {
+// A derive would demand `M: Clone`, though only the predicate is shared.
+impl<M> Clone for Halt<M> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::AtTime(time) => Self::AtTime(*time),
+            Self::Never => Self::Never,
+            Self::When(predicate) => Self::When(Arc::clone(predicate)),
+        }
+    }
+}
+
+impl<M> std::fmt::Debug for Halt<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AtTime(time) => f.debug_tuple("AtTime").field(time).finish(),
@@ -168,32 +181,36 @@ impl std::fmt::Debug for Halt {
 /// [`Simulation::builder`].
 #[derive(Clone, Debug)]
 #[must_use]
-pub struct SimulationBuilder {
+pub struct SimulationBuilder<M = ()> {
     /// Agents in construction order, which fixes their [`AgentId`]s.
-    agent_initializers: Vec<AgentInitializer>,
+    agent_initializers: Vec<AgentInitializer<M>>,
     /// When the run stops.
-    halt: Halt,
+    halt: Halt<M>,
     /// The tick the simulation starts at.
     starting_time: DiscreteTime,
     /// Whether queue depth changes are recorded.
     queue_depth_metrics: bool,
     /// Whether visits to sleeping agents count asleep ticks.
     asleep_cycles_metric: bool,
-    /// Whether every consumed and produced message is kept.
-    message_history: bool,
+    /// How to copy a sent message into its sender's history, if history is on.
+    message_history: Option<CloneMessage<M>>,
     /// Root of every agent's [`AgentContext::rng`] stream.
     seed: MasterSeed,
 }
 
-impl SimulationBuilder {
+/// Copies a message; recording a history is the only reason the engine
+/// needs `M: Clone`.
+type CloneMessage<M> = fn(&Message<M>) -> Message<M>;
+
+impl<M> SimulationBuilder<M> {
     /// Appends one agent.
-    pub fn agent(mut self, agent: AgentInitializer) -> Self {
+    pub fn agent(mut self, agent: AgentInitializer<M>) -> Self {
         self.agent_initializers.push(agent);
         self
     }
 
     /// Appends agents in order.
-    pub fn agents(mut self, agents: impl IntoIterator<Item = AgentInitializer>) -> Self {
+    pub fn agents(mut self, agents: impl IntoIterator<Item = AgentInitializer<M>>) -> Self {
         self.agent_initializers.extend(agents);
         self
     }
@@ -224,23 +241,26 @@ impl SimulationBuilder {
         self
     }
 
-    /// Keeps every message each agent consumes and produces, readable through
-    /// [`SimulationAgent::consumed`] and [`SimulationAgent::produced`]. Off
-    /// by default: a history holds every message until the simulation is
-    /// dropped. Counts and mean waits are kept either way.
-    pub const fn message_history(mut self, enabled: bool) -> Self {
-        self.message_history = enabled;
-        self
-    }
-
     /// Validates the configuration and builds the simulation.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::DuplicateAgentName`] when two agents share a
     /// name, or [`SimulationError::TooManyAgents`] beyond `u32::MAX` agents.
-    pub fn build(self) -> Result<Simulation, SimulationError> {
+    pub fn build(self) -> Result<Simulation<M>, SimulationError> {
         Simulation::try_new(self)
+    }
+}
+
+impl<M: Clone> SimulationBuilder<M> {
+    /// Keeps every message each agent consumes and produces, readable through
+    /// [`SimulationAgent::consumed`] and [`SimulationAgent::produced`]. Off
+    /// by default: a history holds every message until the simulation is
+    /// dropped, and copies each sent one. Counts and mean waits are kept
+    /// either way.
+    pub fn message_history(mut self, enabled: bool) -> Self {
+        self.message_history = enabled.then_some(Message::clone as CloneMessage<M>);
+        self
     }
 }
 
@@ -272,7 +292,7 @@ impl std::fmt::Display for SimulationError {
 impl std::error::Error for SimulationError {}
 
 /// Per-tick inputs shared by every agent visit.
-struct Tick<'a> {
+struct Tick<'a, M> {
     /// The current simulation time.
     time: DiscreteTime,
     /// The simulation's agent layout token.
@@ -288,7 +308,7 @@ struct Tick<'a> {
     /// Name index for simulations too large to scan names.
     agent_name_handle_map: &'a FxHashMap<String, AgentId>,
     /// Commands issued during the tick, applied at its end.
-    commands: &'a mut Vec<AgentCommand>,
+    commands: &'a mut Vec<AgentCommand<M>>,
     /// Stream roots by handle.
     agent_streams: &'a [AgentStreams],
 }
@@ -305,7 +325,7 @@ struct SparseSchedule {
 
 impl SparseSchedule {
     /// Rebuilds transient scheduling state, including changes made between runs.
-    fn new(agents: &[SimulationAgent]) -> Self {
+    fn new<M>(agents: &[SimulationAgent<M>]) -> Self {
         let mut schedule = Self {
             ready: vec![0; agents.len().div_ceil(64)],
             ready_count: 0,
@@ -326,7 +346,7 @@ impl SparseSchedule {
     }
 
     /// Reports whether a nonsleeping agent has a callback to execute.
-    fn runnable(state: &AgentState) -> bool {
+    fn runnable<M>(state: &AgentState<M>) -> bool {
         state.mode == AgentMode::Proactive
             || (state.mode == AgentMode::Reactive && !state.queue.is_empty())
     }
@@ -376,7 +396,7 @@ impl SparseSchedule {
     }
 
     /// Marks due agents ready; their state changes only at their ordered visit.
-    fn wake(&mut self, time: DiscreteTime, agents: &[SimulationAgent]) {
+    fn wake<M>(&mut self, time: DiscreteTime, agents: &[SimulationAgent<M>]) {
         while let Some(&Reverse((deadline, handle))) = self.sleeping.peek() {
             if deadline > time {
                 break;
@@ -399,10 +419,10 @@ impl SparseSchedule {
     reason = "per-agent hot path shared by the dense and sparse tick loops"
 )]
 #[inline(always)]
-fn visit_agent(
-    agents: &mut [SimulationAgent],
+fn visit_agent<M>(
+    agents: &mut [SimulationAgent<M>],
     handle: usize,
-    tick: &mut Tick<'_>,
+    tick: &mut Tick<'_, M>,
 ) -> (bool, Option<DiscreteTime>) {
     // Only small simulations split the slice, since every visit pays for it,
     // including visits to sleeping agents.
@@ -491,22 +511,25 @@ fn visit_agent(
     (true, requested_sleep_until)
 }
 
-impl Simulation {
+impl<M> Simulation<M> {
     /// Starts configuring a simulation that stops according to `halt`.
-    pub const fn builder(halt: Halt) -> SimulationBuilder {
+    ///
+    /// `M` is the type every message carries. When nothing else fixes it, as
+    /// with only built-in agents, name it: `Simulation::<()>::builder(halt)`.
+    pub const fn builder(halt: Halt<M>) -> SimulationBuilder<M> {
         SimulationBuilder {
             agent_initializers: Vec::new(),
             halt,
             starting_time: 0,
             queue_depth_metrics: false,
             asleep_cycles_metric: false,
-            message_history: false,
+            message_history: None,
             seed: MasterSeed::from_u64(0),
         }
     }
 
     /// Builds a validated simulation from a builder.
-    fn try_new(parameters: SimulationBuilder) -> Result<Self, SimulationError> {
+    fn try_new(parameters: SimulationBuilder<M>) -> Result<Self, SimulationError> {
         let initializers = &parameters.agent_initializers;
         if initializers.len() > MAX_AGENTS {
             return Err(SimulationError::TooManyAgents {
@@ -550,7 +573,7 @@ impl Simulation {
         let deriver = SeedDeriver::new(parameters.seed);
         let message_history = parameters.message_history;
         let mut agent_streams = Vec::with_capacity(initializers.len());
-        let agents: Vec<SimulationAgent> = parameters
+        let agents: Vec<SimulationAgent<M>> = parameters
             .agent_initializers
             .into_iter()
             .enumerate()
@@ -570,9 +593,10 @@ impl Simulation {
                         wake_mode: agent_initializer.options.wake_mode,
                         queue,
                     },
-                    history: message_history.then(|| MessageHistory {
+                    history: message_history.map(|copy| MessageHistory {
                         consumed: Vec::with_capacity(history_capacity),
                         produced: Vec::with_capacity(history_capacity),
+                        copy,
                     }),
                 }
             })
@@ -600,14 +624,14 @@ impl Simulation {
     /// Panics unless message history is on; see
     /// [`SimulationBuilder::message_history`].
     #[must_use]
-    pub fn consumed_for_agent(&self, name: &str) -> Option<&[Message]> {
+    pub fn consumed_for_agent(&self, name: &str) -> Option<&[Message<M>]> {
         Some(self.find_by_name(name)?.consumed())
     }
 
     /// Returns a `SimulationAgent` by name.
     #[must_use]
     #[inline]
-    pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent> {
+    pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent<M>> {
         self.find_handle_by_name(name)
             .and_then(|handle| self.agents.get(handle))
     }
@@ -622,7 +646,7 @@ impl Simulation {
     /// Returns the agent with identity `id`.
     #[must_use]
     #[inline]
-    pub fn agent(&self, id: AgentId) -> Option<&SimulationAgent> {
+    pub fn agent(&self, id: AgentId) -> Option<&SimulationAgent<M>> {
         self.agents.get(id.index())
     }
 
@@ -635,10 +659,7 @@ impl Simulation {
     /// }
     /// ```
     #[inline]
-    pub fn find_by_name_mut(
-        &mut self,
-        name: &str,
-    ) -> Option<(&mut Box<dyn Agent>, &mut AgentState)> {
+    pub fn find_by_name_mut(&mut self, name: &str) -> Option<AgentParts<'_, M>> {
         let handle = self.find_handle_by_name(name)?;
         let agent = self.agents.get_mut(handle)?;
         Some((&mut agent.agent, &mut agent.state))
@@ -652,7 +673,7 @@ impl Simulation {
     /// Panics unless message history is on; see
     /// [`SimulationBuilder::message_history`].
     #[must_use]
-    pub fn produced_for_agent(&self, name: &str) -> Option<&[Message]> {
+    pub fn produced_for_agent(&self, name: &str) -> Option<&[Message<M>]> {
         Some(self.find_by_name(name)?.produced())
     }
 
@@ -718,7 +739,7 @@ impl Simulation {
     fn run_ticks(&mut self) {
         self.mode = SimulationMode::Running;
         self.halt_reason = None;
-        let mut command_buffer: Vec<AgentCommand> = Vec::new();
+        let mut command_buffer: Vec<AgentCommand<M>> = Vec::new();
         if self.enable_queue_depth_metric {
             // Queues may have been edited between runs.
             let time = self.time;
@@ -792,8 +813,8 @@ impl Simulation {
     /// Borrows the agents mutably beside the inputs every visit shares.
     fn split_tick<'a>(
         &'a mut self,
-        commands: &'a mut Vec<AgentCommand>,
-    ) -> (&'a mut [SimulationAgent], Tick<'a>) {
+        commands: &'a mut Vec<AgentCommand<M>>,
+    ) -> (&'a mut [SimulationAgent<M>], Tick<'a, M>) {
         let agent_count = self.agents.len();
         let tick = Tick {
             time: self.time,
@@ -810,7 +831,7 @@ impl Simulation {
     }
 
     /// Visits every agent in handle order and returns how many callbacks ran.
-    fn run_dense_tick(&mut self, commands: &mut Vec<AgentCommand>) -> usize {
+    fn run_dense_tick(&mut self, commands: &mut Vec<AgentCommand<M>>) -> usize {
         let (agents, mut tick) = self.split_tick(commands);
         let mut callbacks = 0;
         for handle in 0..agents.len() {
@@ -826,7 +847,7 @@ impl Simulation {
     #[inline(never)]
     fn run_sparse_tick(
         &mut self,
-        commands: &mut Vec<AgentCommand>,
+        commands: &mut Vec<AgentCommand<M>>,
         schedule: &mut SparseSchedule,
     ) -> usize {
         let (agents, mut tick) = self.split_tick(commands);
@@ -929,7 +950,7 @@ impl Simulation {
     #[inline]
     fn process_command_buffer(
         &mut self,
-        command_buffer: &mut Vec<AgentCommand>,
+        command_buffer: &mut Vec<AgentCommand<M>>,
         mut schedule: Option<&mut SparseSchedule>,
         next_time: DiscreteTime,
     ) {
@@ -939,7 +960,7 @@ impl Simulation {
                     let sender = &mut self.agents[command.agent_handle];
                     sender.metadata.produced_count += 1;
                     if let Some(history) = &mut sender.history {
-                        history.produced.push(message.clone());
+                        history.produced.push((history.copy)(&message));
                     }
 
                     if let Some(destination) = message.destination {
@@ -969,9 +990,9 @@ impl Simulation {
     }
 
     /// Searches for an agent in the Simulation matching the given predicate.
-    pub fn find_agent<P>(&self, predicate: P) -> Option<&SimulationAgent>
+    pub fn find_agent<P>(&self, predicate: P) -> Option<&SimulationAgent<M>>
     where
-        P: FnMut(&&SimulationAgent) -> bool,
+        P: FnMut(&&SimulationAgent<M>) -> bool,
     {
         self.agents.iter().find(predicate)
     }
@@ -979,14 +1000,14 @@ impl Simulation {
     /// Checks whether all agents match the given predicate.
     pub fn all_agents<P>(&self, predicate: P) -> bool
     where
-        P: FnMut(&SimulationAgent) -> bool,
+        P: FnMut(&SimulationAgent<M>) -> bool,
     {
         self.agents.iter().all(predicate)
     }
 
     /// Returns a slice of the Agents in the Simulation.
     #[must_use]
-    pub fn agents(&self) -> &[SimulationAgent] {
+    pub fn agents(&self) -> &[SimulationAgent<M>] {
         self.agents.iter().as_slice()
     }
 
@@ -997,6 +1018,9 @@ impl Simulation {
     }
 }
 
+/// An agent's behavior and state, borrowed for edits between runs.
+type AgentParts<'a, M> = (&'a mut Box<dyn Agent<M>>, &'a mut AgentState<M>);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1004,7 +1028,7 @@ mod tests {
 
     #[test]
     fn basic_periodic_test() {
-        let mut simulation = Simulation::builder(Halt::AtTime(5))
+        let mut simulation = Simulation::<()>::builder(Halt::AtTime(5))
             .agents(vec![
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 periodic_consumer("consumer".to_string(), 1),
@@ -1026,7 +1050,7 @@ mod tests {
         let mut consumer = periodic_consumer("consumer".to_string(), 1);
         consumer.options.initial_mode = AgentMode::AsleepUntil(3);
         consumer.options.wake_mode = AgentMode::Reactive;
-        let mut simulation = Simulation::builder(Halt::AtTime(5))
+        let mut simulation = Simulation::<()>::builder(Halt::AtTime(5))
             .agents(vec![
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 consumer,

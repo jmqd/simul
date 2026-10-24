@@ -7,6 +7,9 @@
 
 use std::sync::Arc;
 
+/// The engine message type: encoded frames, or `None` for an empty delivery.
+pub(crate) type Payload = Option<Arc<[u8]>>;
+
 pub(crate) type ConnId = u64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

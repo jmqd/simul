@@ -88,8 +88,9 @@ fn main() -> Result<(), SimulationError> {
     // process that work every second tick).
     //
     // The halt condition tells the simulation when it is finished: here,
-    // "when the simulation is 10 ticks old, we're done."
-    let mut simulation = Simulation::builder(Halt::AtTime(10))
+    // "when the simulation is 10 ticks old, we're done." The messages carry
+    // no payload, so their type is `()`.
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(10))
         // We pass in two agents:
         //   `producer`: produces a message to the consumer every tick
         //   `consumer`: consumes w/ no side effects every second tick
@@ -137,8 +138,8 @@ Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the
 target matched no agent, in which case the message is counted but not
 delivered). `Simulation::agent(id)` and `Simulation::agent_id(name)` translate
-between identities and agents. Create initial messages with `Message::new` or
-`Message::new_with_payload`, not struct literals.
+between identities and agents. Create initial messages with
+`Message::new(time, payload)`, not struct literals.
 
 Every agent counts the messages it consumed and produced
 (`SimulationAgent::consumed_count`, `produced_count`) and their total wait, so
@@ -148,12 +149,15 @@ else. To keep the messages themselves, build with `.message_history(true)`;
 is off by default because it holds every message for the whole run, and the
 history accessors panic when it is off rather than look empty.
 
-Payloads are `Option<Arc<[u8]>>`. Building one allocates once, for example
-`Some(Arc::from([tag, value]))`; clones, histories, and forwarded payloads such
-as `ctx.send(next, message.custom_payload.clone())` share the bytes. Edit a
-payload with `Arc::make_mut`, which copies it only while shared. A message
-without a payload allocates nothing, and clones keep independent timestamps and
-identities.
+Messages are typed. A simulation picks one message type `M`, usually an enum
+of everything its agents say to each other, and every agent implements
+`Agent<M>` and sends `M` values with `ctx.send(target, payload)`, so handlers
+match on `message.payload` instead of decoding bytes. `()` is the default for
+simulations whose messages carry nothing; name it with
+`Simulation::<()>::builder(..)` when only built-in agents are present, since
+they work with any `M` (producers send `M::default()`). A payload moves into
+the receiver's queue without copying, and shared data travels as `M = Arc<T>`.
+Recording message history needs `M: Clone`; running does not.
 
 Simulations with more than 64 agents and no asleep-cycle metric use an ordered
 ready bitmap and wake heap during sparse phases, switching to dense scans as

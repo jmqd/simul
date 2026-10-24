@@ -5,7 +5,6 @@ use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU32;
-use std::sync::Arc;
 
 /// Possible states an Agent can be in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
@@ -103,19 +102,22 @@ pub(crate) struct AgentMetadata {
 }
 
 /// Every message an agent consumed and produced, in order.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct MessageHistory {
+#[derive(Clone, Debug)]
+pub(crate) struct MessageHistory<M> {
     /// Consumed messages, each with its completion time.
-    pub consumed: Vec<Message>,
+    pub consumed: Vec<Message<M>>,
 
     /// Sent messages, including those addressed to no agent.
-    pub produced: Vec<Message>,
+    pub produced: Vec<Message<M>>,
+
+    /// Copies a sent message into `produced`; only history needs `M: Clone`.
+    pub copy: fn(&Message<M>) -> Message<M>,
 }
 
 #[derive(Debug, Clone)]
-pub struct SimulationAgent {
+pub struct SimulationAgent<M = ()> {
     /// The agent that the user constructed; contains user state and behavior.
-    pub agent: Box<dyn Agent>,
+    pub agent: Box<dyn Agent<M>>,
 
     /// The metadata associated with the agent.
     pub(crate) metadata: AgentMetadata,
@@ -125,13 +127,13 @@ pub struct SimulationAgent {
 
     /// Engine-managed mode and queue. Callbacks see it read-only through
     /// [`AgentContext::state`]; callers may edit it between runs.
-    pub state: AgentState,
+    pub state: AgentState<M>,
 
     /// `None` unless the simulation records message history.
-    pub(crate) history: Option<MessageHistory>,
+    pub(crate) history: Option<MessageHistory<M>>,
 }
 
-impl SimulationAgent {
+impl<M> SimulationAgent<M> {
     /// Returns how many messages this agent finished handling.
     #[must_use]
     pub const fn consumed_count(&self) -> u64 {
@@ -153,7 +155,7 @@ impl SimulationAgent {
     /// Panics unless the simulation records message history; see
     /// [`SimulationBuilder::message_history`](crate::SimulationBuilder::message_history).
     #[must_use]
-    pub fn consumed(&self) -> &[Message] {
+    pub fn consumed(&self) -> &[Message<M>] {
         &self.history().consumed
     }
 
@@ -165,13 +167,13 @@ impl SimulationAgent {
     /// Panics unless the simulation records message history; see
     /// [`SimulationBuilder::message_history`](crate::SimulationBuilder::message_history).
     #[must_use]
-    pub fn produced(&self) -> &[Message] {
+    pub fn produced(&self) -> &[Message<M>] {
         &self.history().produced
     }
 
     /// Returns the recorded history; asking for one that was never recorded
     /// is a configuration bug, and an empty answer would hide it.
-    fn history(&self) -> &MessageHistory {
+    fn history(&self) -> &MessageHistory<M> {
         self.history.as_ref().unwrap_or_else(|| {
             panic!(
                 "message history is off; enable it with SimulationBuilder::message_history(true)"
@@ -180,7 +182,7 @@ impl SimulationAgent {
     }
 
     /// Counts a finished message and records it when history is on.
-    pub(crate) fn record_consumed(&mut self, mut message: Message, time: DiscreteTime) {
+    pub(crate) fn record_consumed(&mut self, mut message: Message<M>, time: DiscreteTime) {
         self.metadata.consumed_count += 1;
         // Subtract integers first so short waits stay exact at large times.
         self.metadata.total_wait += if time >= message.queued_time {
@@ -218,7 +220,7 @@ impl SimulationAgent {
 }
 
 #[derive(Debug, Clone)]
-pub struct AgentState {
+pub struct AgentState<M = ()> {
     /// The mode that the agent is in.
     pub mode: AgentMode,
 
@@ -226,10 +228,10 @@ pub struct AgentState {
     pub wake_mode: AgentMode,
 
     /// The queue of incoming Messages for the Agent.
-    pub queue: VecDeque<Message>,
+    pub queue: VecDeque<Message<M>>,
 }
 
-impl Default for AgentState {
+impl<M> Default for AgentState<M> {
     fn default() -> Self {
         Self {
             mode: AgentMode::Dead,
@@ -240,20 +242,24 @@ impl Default for AgentState {
 }
 
 /// A buffered callback action, applied at the end of the tick.
-pub(crate) struct AgentCommand {
+pub(crate) struct AgentCommand<M> {
     /// What the agent asked for.
-    pub(crate) ty: AgentCommandType,
+    pub(crate) ty: AgentCommandType<M>,
     /// Handle of the agent that issued the command.
     pub(crate) agent_handle: usize,
 }
 
 /// Actions an agent can request from a callback.
-pub(crate) enum AgentCommandType {
+pub(crate) enum AgentCommandType<M> {
     /// Record the message as produced and deliver it to its destination.
-    SendMessage(Message),
+    SendMessage(Message<M>),
     /// Stop the simulation after this tick; the payload is the reason.
     HaltSimulation(String),
 }
+
+/// Agents before and after the visited one, which small simulations scan to
+/// route messages by name.
+pub(crate) type Peers<'a, M> = (&'a [SimulationAgent<M>], &'a [SimulationAgent<M>]);
 
 pub enum MessageProcessingStatus {
     NoError,
@@ -270,7 +276,7 @@ pub enum MessageProcessingStatus {
 ///     ctx.name = "someone else";
 /// }
 /// ```
-pub struct AgentContext<'a> {
+pub struct AgentContext<'a, M = ()> {
     /// The identity of the Agent.
     pub(crate) id: AgentId,
 
@@ -282,14 +288,14 @@ pub struct AgentContext<'a> {
     pub(crate) time: DiscreteTime,
 
     /// Internal buffer for messages and halt requests.
-    pub(crate) commands: &'a mut Vec<AgentCommand>,
+    pub(crate) commands: &'a mut Vec<AgentCommand<M>>,
 
     /// Sleep requested by the agent during the current tick.
     pub(crate) requested_sleep_until: &'a mut Option<DiscreteTime>,
 
     /// Agents before and after the caller, which small simulations scan to
     /// route messages instead of hashing every target.
-    pub(crate) peers: Option<(&'a [SimulationAgent], &'a [SimulationAgent])>,
+    pub(crate) peers: Option<Peers<'a, M>>,
 
     /// Maps agent names to identities when `peers` is absent.
     pub(crate) agent_name_handle_map: &'a FxHashMap<String, AgentId>,
@@ -301,7 +307,7 @@ pub struct AgentContext<'a> {
     pub(crate) layout: u64,
 
     /// The agent's mode and queue as of this callback.
-    pub(crate) state: &'a AgentState,
+    pub(crate) state: &'a AgentState<M>,
 
     /// Whether the current message finished or stays queued.
     pub(crate) message_processing_status: MessageProcessingStatus,
@@ -313,7 +319,7 @@ pub struct AgentContext<'a> {
     pub(crate) calls: u64,
 }
 
-impl<'a> AgentContext<'a> {
+impl<'a, M> AgentContext<'a, M> {
     /// Returns the agent's immutable identity.
     #[must_use]
     pub const fn id(&self) -> AgentId {
@@ -350,29 +356,28 @@ impl<'a> AgentContext<'a> {
     /// Returns the agent's state as of this callback. During `on_message`, the
     /// current message has already been popped from the queue.
     #[must_use]
-    pub const fn state(&self) -> &'a AgentState {
+    pub const fn state(&self) -> &'a AgentState<M> {
         self.state
     }
 
-    /// Queues a message to the agent named `target` for end-of-tick delivery.
+    /// Queues `payload` to the agent named `target` for end-of-tick delivery.
     ///
     /// Multiple messages sent by one callback are delivered in call order. A
     /// target that names no agent is counted as produced, kept without a
     /// destination in the sender's history when that is recorded, and not
-    /// delivered. Forward a received payload by passing
-    /// `message.custom_payload.clone()`, which shares its bytes.
+    /// delivered.
     #[inline]
-    pub fn send(&mut self, target: &str, payload: Option<Arc<[u8]>>) {
+    pub fn send(&mut self, target: &str, payload: M) {
         let destination = self.agent_id(target);
         self.queue_message(destination, payload);
     }
 
-    /// Queues a message to `target` without a name lookup.
+    /// Queues `payload` to `target` without a name lookup.
     ///
     /// Delivery order matches [`Self::send`]. An identity outside this
     /// simulation is recorded like an unknown name.
     #[inline]
-    pub fn send_to(&mut self, target: AgentId, payload: Option<Arc<[u8]>>) {
+    pub fn send_to(&mut self, target: AgentId, payload: M) {
         let destination = (target.index() < self.agent_count).then_some(target);
         self.queue_message(destination, payload);
     }
@@ -407,7 +412,7 @@ impl<'a> AgentContext<'a> {
 
     /// Queues a message from this agent for end-of-tick processing.
     #[inline]
-    fn queue_message(&mut self, destination: Option<AgentId>, payload: Option<Arc<[u8]>>) {
+    fn queue_message(&mut self, destination: Option<AgentId>, payload: M) {
         self.commands.push(AgentCommand {
             ty: AgentCommandType::SendMessage(Message::sent(
                 self.time,
@@ -422,7 +427,7 @@ impl<'a> AgentContext<'a> {
     /// Queues a message to a built-in agent's target, resolving it at most once
     /// per simulation layout.
     #[inline]
-    fn send_cached(&mut self, target: &mut CachedTarget, payload: Option<Arc<[u8]>>) {
+    fn send_cached(&mut self, target: &mut CachedTarget, payload: M) {
         let destination = match target.resolved {
             Some((layout, destination)) if layout == self.layout => destination,
             _ => {
@@ -496,15 +501,27 @@ impl CachedTarget {
 }
 
 /// Configuration for how an agent should start the simulation.
-#[derive(Debug, Clone, Default)]
-pub struct AgentOptions {
+#[derive(Debug, Clone)]
+pub struct AgentOptions<M = ()> {
     pub initial_mode: AgentMode,
     pub wake_mode: AgentMode,
-    pub initial_queue: VecDeque<Message>,
+    pub initial_queue: VecDeque<Message<M>>,
     pub name: String,
 }
 
-impl AgentOptions {
+// A derive would demand `M: Default` just to start with an empty queue.
+impl<M> Default for AgentOptions<M> {
+    fn default() -> Self {
+        Self {
+            initial_mode: AgentMode::default(),
+            wake_mode: AgentMode::default(),
+            initial_queue: VecDeque::new(),
+            name: String::new(),
+        }
+    }
+}
+
+impl<M> AgentOptions<M> {
     #[must_use]
     pub fn defaults_with_name(name: String) -> Self {
         Self {
@@ -517,9 +534,9 @@ impl AgentOptions {
 /// An initializer for an agent. The `agent` holds the behavior and `on_`
 /// functions; the options are configuration for constructing the agent.
 #[derive(Debug, Clone)]
-pub struct AgentInitializer {
-    pub agent: Box<dyn Agent>,
-    pub options: AgentOptions,
+pub struct AgentInitializer<M = ()> {
+    pub agent: Box<dyn Agent<M>>,
+    pub options: AgentOptions<M>,
 }
 
 /// The bread and butter of the Simulation -- the Agent.
@@ -533,24 +550,27 @@ pub struct AgentInitializer {
 /// * A single-celled organism.
 /// * A player in a game.
 ///
+/// `M` is the simulation's message type; agents that never look at payloads
+/// can implement `Agent<M>` for every `M` and so serve any simulation.
+///
 /// Each tick, an awake agent that has a queued message receives the oldest one
 /// through [`Agent::on_message`]. A `Proactive` agent then also gets
 /// [`Agent::on_tick`], whether or not it had a message. Sleeping and `Dead`
 /// agents get neither.
-pub trait Agent: std::fmt::Debug + DynClone {
+pub trait Agent<M = ()>: std::fmt::Debug + DynClone {
     /// Handles the oldest queued message, at most once per tick. The message
     /// counts as consumed afterwards unless the agent sets
     /// [`MessageProcessingStatus::InProgress`]. The default does nothing.
     #[allow(unused_variables)]
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {}
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, M>, msg: &Message<M>) {}
 
     /// Runs once per tick while the agent is `Proactive`, after any
     /// `on_message` in the same tick. The default does nothing.
     #[allow(unused_variables)]
-    fn on_tick(&mut self, ctx: &mut AgentContext) {}
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, M>) {}
 }
 
-dyn_clone::clone_trait_object!(Agent);
+dyn_clone::clone_trait_object!(<M> Agent<M>);
 
 /// A geometric number of ticks, at least one, with a fixed mean.
 ///
@@ -595,7 +615,7 @@ impl GeometricTicks {
 /// # Panics
 ///
 /// Panics unless `mean_service_ticks` is finite and at least one tick.
-pub fn geometric_consumer<T>(name: T, mean_service_ticks: f64) -> AgentInitializer
+pub fn geometric_consumer<T, M>(name: T, mean_service_ticks: f64) -> AgentInitializer<M>
 where
     T: Into<String>,
 {
@@ -605,8 +625,8 @@ where
         service: GeometricTicks,
     }
 
-    impl Agent for GeometricConsumer {
-        fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
+    impl<M> Agent<M> for GeometricConsumer {
+        fn on_message(&mut self, ctx: &mut AgentContext<'_, M>, _msg: &Message<M>) {
             let ticks = self.service.sample(&mut ctx.rng());
             ctx.sleep_for(ticks);
         }
@@ -620,7 +640,7 @@ where
     }
 }
 
-/// A `Proactive` producer of messages without payloads to `target`.
+/// A `Proactive` producer that sends `M::default()` to `target`.
 ///
 /// After each send it waits a geometric number of ticks with mean
 /// `mean_interarrival_ticks`, drawn from [`AgentContext::rng`], so each tick
@@ -629,9 +649,14 @@ where
 /// # Panics
 ///
 /// Panics unless `mean_interarrival_ticks` is finite and at least one tick.
-pub fn geometric_producer<T>(name: T, mean_interarrival_ticks: f64, target: T) -> AgentInitializer
+pub fn geometric_producer<T, M>(
+    name: T,
+    mean_interarrival_ticks: f64,
+    target: T,
+) -> AgentInitializer<M>
 where
     T: Into<String>,
+    M: Default,
 {
     #[derive(Clone, Debug)]
     struct GeometricProducer {
@@ -642,11 +667,11 @@ where
         target: CachedTarget,
     }
 
-    impl Agent for GeometricProducer {
-        fn on_tick(&mut self, ctx: &mut AgentContext) {
+    impl<M: Default> Agent<M> for GeometricProducer {
+        fn on_tick(&mut self, ctx: &mut AgentContext<'_, M>) {
             let ticks = self.interarrival.sample(&mut ctx.rng());
             ctx.sleep_for(ticks);
-            ctx.send_cached(&mut self.target, None);
+            ctx.send_cached(&mut self.target, M::default());
         }
     }
 
@@ -664,10 +689,11 @@ where
     }
 }
 
-/// A simple agent that produces messages on a period, directed to target.
-pub fn periodic_producer<T>(name: T, period: DiscreteTime, target: T) -> AgentInitializer
+/// A simple agent that sends `M::default()` to `target` on a period.
+pub fn periodic_producer<T, M>(name: T, period: DiscreteTime, target: T) -> AgentInitializer<M>
 where
     T: Into<String>,
+    M: Default,
 {
     #[derive(Clone, Debug)]
     struct PeriodicProducer {
@@ -678,10 +704,10 @@ where
         target: CachedTarget,
     }
 
-    impl Agent for PeriodicProducer {
-        fn on_tick(&mut self, ctx: &mut AgentContext) {
+    impl<M: Default> Agent<M> for PeriodicProducer {
+        fn on_tick(&mut self, ctx: &mut AgentContext<'_, M>) {
             ctx.sleep_for(self.period);
-            ctx.send_cached(&mut self.target, None);
+            ctx.send_cached(&mut self.target, M::default());
         }
     }
 
@@ -701,7 +727,7 @@ where
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
-pub fn periodic_consumer<T>(name: T, period: DiscreteTime) -> AgentInitializer
+pub fn periodic_consumer<T, M>(name: T, period: DiscreteTime) -> AgentInitializer<M>
 where
     T: Into<String>,
 {
@@ -711,8 +737,8 @@ where
         period: DiscreteTime,
     }
 
-    impl Agent for PeriodicConsumer {
-        fn on_message(&mut self, ctx: &mut AgentContext, _msg: &Message) {
+    impl<M> Agent<M> for PeriodicConsumer {
+        fn on_message(&mut self, ctx: &mut AgentContext<'_, M>, _msg: &Message<M>) {
             ctx.sleep_for(self.period);
         }
     }

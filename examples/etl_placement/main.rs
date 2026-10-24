@@ -47,11 +47,15 @@ use simul::{Halt, Simulation};
 use std::convert::Infallible;
 use std::rc::Rc;
 use time::{secs, ticks, Tick};
+use wire::Payload;
 
 const MASTER_SEED: MasterSeed = MasterSeed::from_u64(0x00E7_1A2C_E3E7);
 const MB: f64 = 1e6;
 
-fn proactive(name: &str, agent: impl simul::agent::Agent + 'static) -> AgentInitializer {
+fn proactive(
+    name: &str,
+    agent: impl simul::agent::Agent<Payload> + 'static,
+) -> AgentInitializer<Payload> {
     AgentInitializer {
         agent: Box::new(agent),
         options: AgentOptions {

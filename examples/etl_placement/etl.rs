@@ -20,7 +20,7 @@ use crate::metrics::{RowGroup, SharedRecorder};
 use crate::net::{send_tracked, Endpoint, NetEvent, Peer};
 use crate::rng::Rng;
 use crate::time::{per_tick, secs, ticks, to_u64, Tick};
-use crate::wire::{ConnId, ConnKind, HttpKind, Op, Unit, WalChunk};
+use crate::wire::{ConnId, ConnKind, HttpKind, Op, Payload, Unit, WalChunk};
 use crate::{sink, source};
 use simul::agent::{Agent, AgentContext};
 use simul::message::Message;
@@ -1605,8 +1605,8 @@ impl EtlAgent {
     }
 }
 
-impl Agent for EtlAgent {
-    fn on_message(&mut self, ctx: &mut AgentContext, message: &Message) {
+impl Agent<Payload> for EtlAgent {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, Payload>, message: &Message<Payload>) {
         let now = ctx.time();
         let events = self
             .net
@@ -1620,7 +1620,7 @@ impl Agent for EtlAgent {
         self.drain_completions(now);
     }
 
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, Payload>) {
         let now = ctx.time();
         let crashes = &self.config.faults.etl_crashes;
         if self.next_crash < crashes.len() && crashes[self.next_crash] <= now {

@@ -9,8 +9,9 @@ fn main() -> Result<(), SimulationError> {
     // process that work every second tick).
     //
     // The halt condition tells the simulation when it is finished: here,
-    // "when the simulation is 10 ticks old, we're done."
-    let mut simulation = Simulation::builder(Halt::AtTime(10))
+    // "when the simulation is 10 ticks old, we're done." The messages carry
+    // no payload, so their type is `()`.
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(10))
         // We pass in two agents:
         //   `producer`: produces a message to the consumer every tick
         //   `consumer`: consumes w/ no side effects every second tick

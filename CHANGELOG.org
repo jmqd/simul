@@ -1,5 +1,19 @@
 #+title: Changelog
 
+* DONE Type messages by the simulation's message type (breaking)
+=Simulation<M>=, =Agent<M>=, =AgentContext<'_, M>=, and =Message<M>= carry one
+message type chosen by the model, usually an enum, with =()= as the default.
+=ctx.send= and =send_to= take an =M=, =Message::new(time, payload)= replaces
+=new= and =new_with_payload=, and =Message::custom_payload= becomes =payload=.
+Handlers match on =message.payload=, so the software-team example drops its
+byte codec (149 lines) and every decode-failure arm; nine-ball passes the ball
+as a =u8=. Agents that ignore payloads implement =Agent<M>= for every =M=: the
+built-in consumers do, and the built-in producers send =M::default()=. Name
+the type where nothing else fixes it: =Simulation::<()>::builder(halt)=. A
+payload moves into the receiver's queue; only =message_history(true)= needs
+=M: Clone=. Byte payloads remain available as =M = Option<Arc<[u8]>>=, which the
+ETL example and the engine laws use. =Message<()>= is 32 bytes.
+
 * DONE Add an ETL placement simulation example
 =examples/etl_placement= asks where a Supabase ETL replicator should run when
 its source Postgres is in us-west-2 and its destination in us-east-1. Three
@@ -188,6 +202,8 @@ halt with =ctx.send_halt_interrupt=. =AgentId= stores =index + 1= so =Message=
 stays 48 bytes, and =AgentId::new(u32::MAX)= panics. The nine-ball and
 software-team examples build payloads from stack arrays. Payload forwarding in a
 16-agent ring retires 57% fewer instructions; the software-team example 17%.
+Superseded by "Type messages by the simulation's message type": payloads are
+the model's own type, and =Option<Arc<[u8]>>= is one choice of it.
 
 * DONE Reuse bounded parallel workers across batches
 =ParallelExecutor= retains a dedicated Rayon pool with construction-time capacity.

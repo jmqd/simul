@@ -1,7 +1,6 @@
 use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
 use simul::message::Message;
 use simul::{Halt, Simulation};
-use std::sync::Arc;
 
 /// Calculates productivity from each contiguous block of uninterrupted maker time.
 #[derive(Debug, Clone)]
@@ -14,10 +13,9 @@ struct Developer {
     schedule: [bool; 18],
 }
 
-impl Agent for Developer {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+/// Messages carry the productivity of one block of maker time.
+impl Agent<usize> for Developer {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, usize>) {
         let time_of_day = usize::try_from(ctx.time() % 18).unwrap_or_default();
         let time_block = self
             .schedule
@@ -37,10 +35,7 @@ impl Agent for Developer {
         };
 
         ctx.sleep_for(u64::try_from(time_block).unwrap_or(18));
-        ctx.send(
-            "productivity_recorder",
-            Some(Arc::from(productivity.to_le_bytes())),
-        );
+        ctx.send("productivity_recorder", productivity);
     }
 }
 
@@ -51,15 +46,9 @@ struct ProductivityRecorder {
     total_productivity: usize,
 }
 
-impl Agent for ProductivityRecorder {
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        let Some(payload) = msg.custom_payload.as_deref() else {
-            return;
-        };
-        let Ok(encoded) = <[u8; std::mem::size_of::<usize>()]>::try_from(payload) else {
-            return;
-        };
-        let productivity = usize::from_le_bytes(encoded);
+impl Agent<usize> for ProductivityRecorder {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, usize>, msg: &Message<usize>) {
+        let productivity = msg.payload;
         self.total_productivity += productivity;
         println!(
             "tick {}: recorded {productivity} productivity (total {})",

@@ -8,7 +8,7 @@ use crate::metrics::SharedRecorder;
 use crate::net::{send_tracked, Endpoint, NetEvent, Peer};
 use crate::rng::Rng;
 use crate::time::{per_tick, ticks, to_u64, Tick, TICKS_PER_SECOND};
-use crate::wire::{ConnId, ConnKind, Op, Unit, WalChunk};
+use crate::wire::{ConnId, ConnKind, Op, Payload, Unit, WalChunk};
 use simul::agent::{Agent, AgentContext};
 use simul::message::Message;
 use std::collections::{BTreeMap, VecDeque};
@@ -557,8 +557,8 @@ impl PostgresAgent {
     }
 }
 
-impl Agent for PostgresAgent {
-    fn on_message(&mut self, ctx: &mut AgentContext, message: &Message) {
+impl Agent<Payload> for PostgresAgent {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, Payload>, message: &Message<Payload>) {
         let now = ctx.time();
         let events = self
             .net
@@ -596,7 +596,7 @@ impl Agent for PostgresAgent {
         }
     }
 
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, Payload>) {
         let now = ctx.time();
         self.generate(now);
         self.inject_faults(now);

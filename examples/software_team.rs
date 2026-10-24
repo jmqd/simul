@@ -12,7 +12,9 @@ use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOption
 use simul::message::Message;
 use simul::{DiscreteTime, Halt, Simulation};
 use std::collections::VecDeque;
-use std::sync::Arc;
+
+/// Every agent here sends and receives `Payload`.
+type Ctx<'a> = AgentContext<'a, Payload>;
 
 const TICKS_PER_DAY: DiscreteTime = 16;
 const WORK_DAYS_PER_YEAR: DiscreteTime = 260;
@@ -100,41 +102,6 @@ enum MetricKind {
     CiFailed,
 }
 
-impl MetricKind {
-    const fn tag(self) -> u8 {
-        match self {
-            Self::CodingTick => 0,
-            Self::ReviewTick => 1,
-            Self::MeetingTick => 2,
-            Self::SlackTick => 3,
-            Self::ContextSwitchTick => 4,
-            Self::DecisionWaitTick => 5,
-            Self::WorkReleased => 6,
-            Self::DecisionRequested => 7,
-            Self::ReviewRequested => 8,
-            Self::CiRequested => 9,
-            Self::CiFailed => 10,
-        }
-    }
-
-    const fn from_tag(tag: u8) -> Option<Self> {
-        match tag {
-            0 => Some(Self::CodingTick),
-            1 => Some(Self::ReviewTick),
-            2 => Some(Self::MeetingTick),
-            3 => Some(Self::SlackTick),
-            4 => Some(Self::ContextSwitchTick),
-            5 => Some(Self::DecisionWaitTick),
-            6 => Some(Self::WorkReleased),
-            7 => Some(Self::DecisionRequested),
-            8 => Some(Self::ReviewRequested),
-            9 => Some(Self::CiRequested),
-            10 => Some(Self::CiFailed),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Payload {
     Tick,
@@ -182,142 +149,26 @@ enum Payload {
         kind: MetricKind,
     },
 }
-
-impl Payload {
-    fn encode(self) -> Arc<[u8]> {
-        match self {
-            Self::Tick => Arc::from([0]),
-            Self::Work {
-                ticket_id,
-                coding_ticks,
-                needs_decision,
-            } => {
-                let [id_low, id_high] = ticket_id.to_le_bytes();
-                let [coding_low, coding_high] = coding_ticks.to_le_bytes();
-                Arc::from([
-                    1,
-                    id_low,
-                    id_high,
-                    coding_low,
-                    coding_high,
-                    u8::from(needs_decision),
-                ])
-            }
-            Self::Meeting { ticks } => encode_u16(2, ticks),
-            Self::Slack { ticks } => encode_u16(3, ticks),
-            Self::DecisionRequest {
-                ticket_id,
-                requester,
-            } => encode_u16_u8(4, ticket_id, requester),
-            Self::DecisionMade { ticket_id } => encode_u16(5, ticket_id),
-            Self::ReviewRequest {
-                ticket_id,
-                author,
-                review_ticks,
-            } => {
-                let [id_low, id_high] = ticket_id.to_le_bytes();
-                let [review_low, review_high] = review_ticks.to_le_bytes();
-                Arc::from([6, id_low, id_high, author, review_low, review_high])
-            }
-            Self::ReviewApproved { ticket_id } => encode_u16(7, ticket_id),
-            Self::CiRequest { ticket_id, author } => encode_u16_u8(8, ticket_id, author),
-            Self::CiPassed { ticket_id } => encode_u16(9, ticket_id),
-            Self::CiFailed { ticket_id } => encode_u16(10, ticket_id),
-            Self::Merge { ticket_id, author } => encode_u16_u8(11, ticket_id, author),
-            Self::Metric { kind } => Arc::from([12, kind.tag()]),
-        }
-    }
-
-    fn decode(message: &Message) -> Option<Self> {
-        let payload = message.custom_payload.as_deref()?;
-        match payload {
-            [0] => Some(Self::Tick),
-            [1, id_low, id_high, coding_low, coding_high, needs_decision] => Some(Self::Work {
-                ticket_id: decode_u16(*id_low, *id_high),
-                coding_ticks: decode_u16(*coding_low, *coding_high),
-                needs_decision: *needs_decision != 0,
-            }),
-            [2, low, high] => Some(Self::Meeting {
-                ticks: decode_u16(*low, *high),
-            }),
-            [3, low, high] => Some(Self::Slack {
-                ticks: decode_u16(*low, *high),
-            }),
-            [4, id_low, id_high, requester] => Some(Self::DecisionRequest {
-                ticket_id: decode_u16(*id_low, *id_high),
-                requester: *requester,
-            }),
-            [5, low, high] => Some(Self::DecisionMade {
-                ticket_id: decode_u16(*low, *high),
-            }),
-            [6, id_low, id_high, author, review_low, review_high] => Some(Self::ReviewRequest {
-                ticket_id: decode_u16(*id_low, *id_high),
-                author: *author,
-                review_ticks: decode_u16(*review_low, *review_high),
-            }),
-            [7, low, high] => Some(Self::ReviewApproved {
-                ticket_id: decode_u16(*low, *high),
-            }),
-            [8, id_low, id_high, author] => Some(Self::CiRequest {
-                ticket_id: decode_u16(*id_low, *id_high),
-                author: *author,
-            }),
-            [9, low, high] => Some(Self::CiPassed {
-                ticket_id: decode_u16(*low, *high),
-            }),
-            [10, low, high] => Some(Self::CiFailed {
-                ticket_id: decode_u16(*low, *high),
-            }),
-            [11, id_low, id_high, author] => Some(Self::Merge {
-                ticket_id: decode_u16(*id_low, *id_high),
-                author: *author,
-            }),
-            [12, kind] => Some(Self::Metric {
-                kind: MetricKind::from_tag(*kind)?,
-            }),
-            _ => None,
-        }
-    }
+fn send_metric(ctx: &mut Ctx<'_>, kind: MetricKind) {
+    ctx.send(METRICS, Payload::Metric { kind });
 }
 
-fn encode_u16(tag: u8, value: u16) -> Arc<[u8]> {
-    let [low, high] = value.to_le_bytes();
-    Arc::from([tag, low, high])
-}
-
-fn encode_u16_u8(tag: u8, value: u16, second: u8) -> Arc<[u8]> {
-    let [low, high] = value.to_le_bytes();
-    Arc::from([tag, low, high, second])
-}
-
-const fn decode_u16(low: u8, high: u8) -> u16 {
-    u16::from_le_bytes([low, high])
-}
-
-fn send_payload(ctx: &mut AgentContext, target: &str, payload: Payload) {
-    ctx.send(target, Some(payload.encode()));
-}
-
-fn send_metric(ctx: &mut AgentContext, kind: MetricKind) {
-    send_payload(ctx, METRICS, Payload::Metric { kind });
-}
-
-fn has_tick_queued(ctx: &AgentContext) -> bool {
+fn has_tick_queued(ctx: &Ctx<'_>) -> bool {
     ctx.state()
         .queue
         .iter()
-        .any(|message| matches!(Payload::decode(message), Some(Payload::Tick)))
+        .any(|message| matches!(message.payload, Payload::Tick))
 }
 
-fn ensure_self_tick(ctx: &mut AgentContext) {
+fn ensure_self_tick(ctx: &mut Ctx<'_>) {
     if !has_tick_queued(ctx) {
         let name = ctx.name().to_string();
-        send_payload(ctx, &name, Payload::Tick);
+        ctx.send(&name, Payload::Tick);
     }
 }
 
-fn initial_tick() -> Message {
-    Message::new_with_payload(0, Some(Payload::Tick.encode()))
+const fn initial_tick() -> Message<Payload> {
+    Message::new(0, Payload::Tick)
 }
 
 const fn discrete_multiple(value: DiscreteTime, divisor: DiscreteTime) -> bool {
@@ -410,7 +261,7 @@ impl Developer {
             || !self.review_queue.is_empty()
     }
 
-    fn block_for(&mut self, ctx: &mut AgentContext, ticks: u16, block_kind: BlockKind) {
+    fn block_for(&mut self, ctx: &Ctx<'_>, ticks: u16, block_kind: BlockKind) {
         if ticks == 0 {
             return;
         }
@@ -428,7 +279,7 @@ impl Developer {
         self.last_work_kind = None;
     }
 
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
         if ctx.time() < self.blocked_until {
             match self.blocked_kind {
                 Some(BlockKind::Meeting) => send_metric(ctx, MetricKind::MeetingTick),
@@ -458,7 +309,7 @@ impl Developer {
         ensure_self_tick(ctx);
     }
 
-    fn process_review(&mut self, ctx: &mut AgentContext) -> bool {
+    fn process_review(&mut self, ctx: &mut Ctx<'_>) -> bool {
         if self.active_review.is_none() {
             self.active_review = self.review_queue.pop_front();
         }
@@ -476,8 +327,7 @@ impl Developer {
         send_metric(ctx, MetricKind::ReviewTick);
 
         if review.remaining_review == 0 {
-            send_payload(
-                ctx,
+            ctx.send(
                 developer_name(review.author),
                 Payload::ReviewApproved {
                     ticket_id: review.ticket_id,
@@ -491,7 +341,7 @@ impl Developer {
         true
     }
 
-    fn process_coding(&mut self, ctx: &mut AgentContext) -> bool {
+    fn process_coding(&mut self, ctx: &mut Ctx<'_>) -> bool {
         if self.active_coding.is_none() {
             self.active_coding = self.next_ready_ticket(ctx);
         }
@@ -509,8 +359,7 @@ impl Developer {
         send_metric(ctx, MetricKind::CodingTick);
 
         if ticket.remaining_coding == 0 {
-            send_payload(
-                ctx,
+            ctx.send(
                 reviewer_for(self.id),
                 Payload::ReviewRequest {
                     ticket_id: ticket.id,
@@ -527,7 +376,7 @@ impl Developer {
         true
     }
 
-    fn next_ready_ticket(&mut self, ctx: &mut AgentContext) -> Option<Ticket> {
+    fn next_ready_ticket(&mut self, ctx: &mut Ctx<'_>) -> Option<Ticket> {
         let backlog_len = self.backlog.len();
         for _ in 0..backlog_len {
             let mut ticket = self.backlog.pop_front()?;
@@ -535,8 +384,7 @@ impl Developer {
             if ticket.needs_decision && !ticket.decision_received {
                 if !ticket.decision_requested {
                     ticket.decision_requested = true;
-                    send_payload(
-                        ctx,
+                    ctx.send(
                         DECISIONS,
                         Payload::DecisionRequest {
                             ticket_id: ticket.id,
@@ -585,36 +433,35 @@ impl Developer {
     }
 }
 
-impl Agent for Developer {
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        match Payload::decode(msg) {
-            Some(Payload::Tick) => self.on_tick(ctx),
-            Some(Payload::Work {
+impl Agent<Payload> for Developer {
+    fn on_message(&mut self, ctx: &mut Ctx<'_>, msg: &Message<Payload>) {
+        match msg.payload {
+            Payload::Tick => self.on_tick(ctx),
+            Payload::Work {
                 ticket_id,
                 coding_ticks,
                 needs_decision,
-            }) => self.backlog.push_back(Ticket {
+            } => self.backlog.push_back(Ticket {
                 id: ticket_id,
                 remaining_coding: DiscreteTime::from(coding_ticks),
                 needs_decision,
                 decision_requested: false,
                 decision_received: !needs_decision,
             }),
-            Some(Payload::Meeting { ticks }) => self.block_for(ctx, ticks, BlockKind::Meeting),
-            Some(Payload::Slack { ticks }) => self.block_for(ctx, ticks, BlockKind::Slack),
-            Some(Payload::DecisionMade { ticket_id }) => self.receive_decision(ticket_id),
-            Some(Payload::ReviewRequest {
+            Payload::Meeting { ticks } => self.block_for(ctx, ticks, BlockKind::Meeting),
+            Payload::Slack { ticks } => self.block_for(ctx, ticks, BlockKind::Slack),
+            Payload::DecisionMade { ticket_id } => self.receive_decision(ticket_id),
+            Payload::ReviewRequest {
                 ticket_id,
                 author,
                 review_ticks,
-            }) => self.review_queue.push_back(ReviewJob {
+            } => self.review_queue.push_back(ReviewJob {
                 ticket_id,
                 author,
                 remaining_review: DiscreteTime::from(review_ticks),
             }),
-            Some(Payload::ReviewApproved { ticket_id }) => {
-                send_payload(
-                    ctx,
+            Payload::ReviewApproved { ticket_id } => {
+                ctx.send(
                     CI,
                     Payload::CiRequest {
                         ticket_id,
@@ -623,15 +470,14 @@ impl Agent for Developer {
                 );
                 send_metric(ctx, MetricKind::CiRequested);
             }
-            Some(Payload::CiPassed { ticket_id }) => send_payload(
-                ctx,
+            Payload::CiPassed { ticket_id } => ctx.send(
                 MERGE,
                 Payload::Merge {
                     ticket_id,
                     author: self.id,
                 },
             ),
-            Some(Payload::CiFailed { ticket_id }) => {
+            Payload::CiFailed { ticket_id } => {
                 self.backlog.push_back(Ticket {
                     id: ticket_id,
                     remaining_coding: DiscreteTime::from(self.params.rework_ticks),
@@ -640,13 +486,10 @@ impl Agent for Developer {
                     decision_received: true,
                 });
             }
-            Some(
-                Payload::DecisionRequest { .. }
-                | Payload::CiRequest { .. }
-                | Payload::Merge { .. }
-                | Payload::Metric { .. },
-            )
-            | None => {}
+            Payload::DecisionRequest { .. }
+            | Payload::CiRequest { .. }
+            | Payload::Merge { .. }
+            | Payload::Metric { .. } => {}
         }
 
         ensure_self_tick(ctx);
@@ -668,10 +511,8 @@ impl ProductManager {
     }
 }
 
-impl Agent for ProductManager {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+impl Agent<Payload> for ProductManager {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
         if ctx.time() >= self.params.total_ticks() || self.params.release_interval == 0 {
             return;
         }
@@ -686,8 +527,7 @@ impl Agent for ProductManager {
         let coding_ticks = self.params.base_coding_ticks.saturating_add(ticket_id % 5);
         let needs_decision = short_multiple(ticket_id, self.params.decision_request_every);
 
-        send_payload(
-            ctx,
+        ctx.send(
             developer_name(assignee),
             Payload::Work {
                 ticket_id,
@@ -704,10 +544,8 @@ struct MeetingScheduler {
     params: SoftwareTeamParameters,
 }
 
-impl Agent for MeetingScheduler {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+impl Agent<Payload> for MeetingScheduler {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
         let meeting_ticks = self.params.meeting_ticks_per_day();
         if meeting_ticks == 0
             || ctx.time() >= self.params.total_ticks()
@@ -718,7 +556,7 @@ impl Agent for MeetingScheduler {
 
         let ticks = u16::try_from(meeting_ticks).unwrap_or(u16::MAX);
         for id in 0..DEVELOPER_COUNT {
-            send_payload(ctx, developer_name(id), Payload::Meeting { ticks });
+            ctx.send(developer_name(id), Payload::Meeting { ticks });
         }
     }
 }
@@ -728,10 +566,8 @@ struct CommunicationScheduler {
     params: SoftwareTeamParameters,
 }
 
-impl Agent for CommunicationScheduler {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+impl Agent<Payload> for CommunicationScheduler {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
         let communication_ticks = self.params.communication_ticks_per_day();
         if communication_ticks == 0 || ctx.time() >= self.params.total_ticks() {
             return;
@@ -749,7 +585,7 @@ impl Agent for CommunicationScheduler {
 
         let ticks = u16::try_from(communication_ticks).unwrap_or(u16::MAX);
         for id in 0..DEVELOPER_COUNT {
-            send_payload(ctx, developer_name(id), Payload::Slack { ticks });
+            ctx.send(developer_name(id), Payload::Slack { ticks });
         }
     }
 }
@@ -775,12 +611,11 @@ impl DecisionMaker {
         }
     }
 
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
         let mut remaining = Vec::with_capacity(self.pending.len());
         for decision in self.pending.drain(..) {
             if ctx.time() >= decision.due_at {
-                send_payload(
-                    ctx,
+                ctx.send(
                     developer_name(decision.requester),
                     Payload::DecisionMade {
                         ticket_id: decision.ticket_id,
@@ -795,19 +630,29 @@ impl DecisionMaker {
     }
 }
 
-impl Agent for DecisionMaker {
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        match Payload::decode(msg) {
-            Some(Payload::Tick) => self.on_tick(ctx),
-            Some(Payload::DecisionRequest {
+impl Agent<Payload> for DecisionMaker {
+    fn on_message(&mut self, ctx: &mut Ctx<'_>, msg: &Message<Payload>) {
+        match msg.payload {
+            Payload::Tick => self.on_tick(ctx),
+            Payload::DecisionRequest {
                 ticket_id,
                 requester,
-            }) => self.pending.push(PendingDecision {
+            } => self.pending.push(PendingDecision {
                 ticket_id,
                 requester,
                 due_at: ctx.time().saturating_add(self.params.decision_latency),
             }),
-            _ => {}
+            Payload::Work { .. }
+            | Payload::Meeting { .. }
+            | Payload::Slack { .. }
+            | Payload::DecisionMade { .. }
+            | Payload::ReviewRequest { .. }
+            | Payload::ReviewApproved { .. }
+            | Payload::CiRequest { .. }
+            | Payload::CiPassed { .. }
+            | Payload::CiFailed { .. }
+            | Payload::Merge { .. }
+            | Payload::Metric { .. } => {}
         }
         ensure_self_tick(ctx);
     }
@@ -838,7 +683,7 @@ impl ContinuousIntegration {
         }
     }
 
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
         if self.active.is_none() {
             self.active = self.queue.pop_front().map(|(ticket_id, author)| CiJob {
                 ticket_id,
@@ -859,8 +704,7 @@ impl ContinuousIntegration {
 
         if self.should_fail(job.ticket_id) {
             self.failed_once.push(job.ticket_id);
-            send_payload(
-                ctx,
+            ctx.send(
                 developer_name(job.author),
                 Payload::CiFailed {
                     ticket_id: job.ticket_id,
@@ -868,8 +712,7 @@ impl ContinuousIntegration {
             );
             send_metric(ctx, MetricKind::CiFailed);
         } else {
-            send_payload(
-                ctx,
+            ctx.send(
                 developer_name(job.author),
                 Payload::CiPassed {
                     ticket_id: job.ticket_id,
@@ -888,14 +731,24 @@ impl ContinuousIntegration {
     }
 }
 
-impl Agent for ContinuousIntegration {
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
-        match Payload::decode(msg) {
-            Some(Payload::Tick) => self.on_tick(ctx),
-            Some(Payload::CiRequest { ticket_id, author }) => {
+impl Agent<Payload> for ContinuousIntegration {
+    fn on_message(&mut self, ctx: &mut Ctx<'_>, msg: &Message<Payload>) {
+        match msg.payload {
+            Payload::Tick => self.on_tick(ctx),
+            Payload::CiRequest { ticket_id, author } => {
                 self.queue.push_back((ticket_id, author));
             }
-            _ => {}
+            Payload::Work { .. }
+            | Payload::Meeting { .. }
+            | Payload::Slack { .. }
+            | Payload::DecisionRequest { .. }
+            | Payload::DecisionMade { .. }
+            | Payload::ReviewRequest { .. }
+            | Payload::ReviewApproved { .. }
+            | Payload::CiPassed { .. }
+            | Payload::CiFailed { .. }
+            | Payload::Merge { .. }
+            | Payload::Metric { .. } => {}
         }
         ensure_self_tick(ctx);
     }
@@ -904,26 +757,20 @@ impl Agent for ContinuousIntegration {
 #[derive(Clone, Debug)]
 struct MergeBot;
 
-impl Agent for MergeBot {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-}
+impl Agent<Payload> for MergeBot {}
 
 #[derive(Clone, Debug)]
 struct MetricsSink;
 
-impl Agent for MetricsSink {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-}
+impl Agent<Payload> for MetricsSink {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Stopper {
     stop_at: DiscreteTime,
 }
 
-impl Agent for Stopper {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+impl Agent<Payload> for Stopper {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
         if ctx.time() >= self.stop_at {
             ctx.send_halt_interrupt("software team year elapsed");
         }
@@ -948,7 +795,7 @@ struct SoftwareTeamReport {
 }
 
 impl SoftwareTeamReport {
-    fn from_simulation(simulation: &Simulation) -> Self {
+    fn from_simulation(simulation: &Simulation<Payload>) -> Self {
         let mut report = Self {
             elapsed_ticks: simulation.time(),
             ..Default::default()
@@ -956,14 +803,20 @@ impl SoftwareTeamReport {
 
         for agent in simulation.agents() {
             for message in agent.produced() {
-                match Payload::decode(message) {
-                    Some(Payload::Work { .. }) => report.released += 1,
-                    Some(Payload::ReviewRequest { .. }) => report.review_requests += 1,
-                    Some(Payload::CiRequest { .. }) => report.ci_requests += 1,
-                    Some(Payload::DecisionRequest { .. }) => report.decision_requests += 1,
-                    Some(Payload::CiFailed { .. }) => report.ci_failures += 1,
-                    Some(Payload::Metric { kind }) => report.add_metric(kind),
-                    _ => {}
+                match message.payload {
+                    Payload::Work { .. } => report.released += 1,
+                    Payload::ReviewRequest { .. } => report.review_requests += 1,
+                    Payload::CiRequest { .. } => report.ci_requests += 1,
+                    Payload::DecisionRequest { .. } => report.decision_requests += 1,
+                    Payload::CiFailed { .. } => report.ci_failures += 1,
+                    Payload::Metric { kind } => report.add_metric(kind),
+                    Payload::Tick
+                    | Payload::Meeting { .. }
+                    | Payload::Slack { .. }
+                    | Payload::DecisionMade { .. }
+                    | Payload::ReviewApproved { .. }
+                    | Payload::CiPassed { .. }
+                    | Payload::Merge { .. } => {}
                 }
             }
         }
@@ -973,9 +826,7 @@ impl SoftwareTeamReport {
             .map(|messages| {
                 messages
                     .iter()
-                    .filter(|message| {
-                        matches!(Payload::decode(message), Some(Payload::Merge { .. }))
-                    })
+                    .filter(|message| matches!(message.payload, Payload::Merge { .. }))
                     .count()
             })
             .unwrap_or_default();
@@ -1000,7 +851,7 @@ impl SoftwareTeamReport {
     }
 }
 
-fn proactive_agent(name: &str, agent: impl Agent + 'static) -> AgentInitializer {
+fn proactive_agent(name: &str, agent: impl Agent<Payload> + 'static) -> AgentInitializer<Payload> {
     AgentInitializer {
         agent: Box::new(agent),
         options: AgentOptions {
@@ -1014,9 +865,9 @@ fn proactive_agent(name: &str, agent: impl Agent + 'static) -> AgentInitializer 
 
 fn reactive_agent(
     name: &str,
-    agent: impl Agent + 'static,
-    initial_queue: VecDeque<Message>,
-) -> AgentInitializer {
+    agent: impl Agent<Payload> + 'static,
+    initial_queue: VecDeque<Message<Payload>>,
+) -> AgentInitializer<Payload> {
     AgentInitializer {
         agent: Box::new(agent),
         options: AgentOptions {
@@ -1028,7 +879,7 @@ fn reactive_agent(
     }
 }
 
-fn build_simulation(params: SoftwareTeamParameters) -> Simulation {
+fn build_simulation(params: SoftwareTeamParameters) -> Simulation<Payload> {
     Simulation::builder(Halt::Never)
         .agents(vec![
             proactive_agent(PRODUCT, ProductManager::new(params)),

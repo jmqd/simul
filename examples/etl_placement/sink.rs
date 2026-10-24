@@ -6,7 +6,7 @@ use crate::metrics::SharedRecorder;
 use crate::net::{Endpoint, NetEvent, Peer};
 use crate::rng::Rng;
 use crate::time::{ticks, ticks_at_least_one, Tick};
-use crate::wire::{ConnId, HttpKind, Unit};
+use crate::wire::{ConnId, HttpKind, Payload, Unit};
 use simul::agent::{Agent, AgentContext};
 use simul::message::Message;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -162,8 +162,8 @@ impl DestinationAgent {
     }
 }
 
-impl Agent for DestinationAgent {
-    fn on_message(&mut self, ctx: &mut AgentContext, message: &Message) {
+impl Agent<Payload> for DestinationAgent {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, Payload>, message: &Message<Payload>) {
         let now = ctx.time();
         let events = self
             .net
@@ -195,7 +195,7 @@ impl Agent for DestinationAgent {
         }
     }
 
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, Payload>) {
         let now = ctx.time();
         self.land_due(now);
         self.finish_due(now);

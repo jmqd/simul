@@ -95,7 +95,7 @@ The model's job is to show how much of the rent has to come from the bar.
 
 ### Friction
 
-Payloads are bytes, so party and order structs need serialising. A two-year run
+Parties and orders travel as variants of the model's message enum. A two-year run
 at minute ticks is about a million ticks per replication, which makes the
 next-event skip in `TODO.org` the main performance lever for this class of
 model.

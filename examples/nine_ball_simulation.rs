@@ -8,7 +8,6 @@ use simul::message::Message;
 use simul::{Halt, Simulation};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::missing_docs_in_private_items)]
@@ -22,14 +21,13 @@ struct NineBallPlayer {
     winner: Rc<Cell<Option<usize>>>,
 }
 
-#[allow(clippy::unwrap_used)]
-impl Agent for NineBallPlayer {
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
+/// Each turn's message carries the ball on the table.
+impl Agent<u8> for NineBallPlayer {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, u8>, msg: &Message<u8>) {
         let mut rng = ctx.rng();
         let mut balls_to_run = self.run_out_choices[self.run_out_distribution.sample(&mut rng)];
 
-        let mut ball =
-            u8::from_le_bytes(msg.custom_payload.as_deref().unwrap().try_into().unwrap());
+        let mut ball = msg.payload;
 
         while balls_to_run > 0 {
             balls_to_run -= 1;
@@ -55,7 +53,7 @@ impl Agent for NineBallPlayer {
             &self.opponent_name
         };
 
-        ctx.send(next_turn, Some(Arc::from([ball])));
+        ctx.send(next_turn, ball);
     }
 }
 
@@ -71,13 +69,11 @@ struct ApaNineBallPlayer {
     winner: Rc<Cell<Option<usize>>>,
 }
 
-#[allow(clippy::unwrap_used)]
-impl Agent for ApaNineBallPlayer {
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
+impl Agent<u8> for ApaNineBallPlayer {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, u8>, msg: &Message<u8>) {
         let mut rng = ctx.rng();
         let mut balls_to_run = self.run_out_choices[self.run_out_distribution.sample(&mut rng)];
-        let mut ball =
-            u8::from_le_bytes(msg.custom_payload.as_deref().unwrap().try_into().unwrap());
+        let mut ball = msg.payload;
 
         while balls_to_run > 0 {
             balls_to_run -= 1;
@@ -104,7 +100,7 @@ impl Agent for ApaNineBallPlayer {
             &self.opponent_name
         };
 
-        ctx.send(next_turn, Some(Arc::from([ball])));
+        ctx.send(next_turn, ball);
     }
 }
 
@@ -115,7 +111,7 @@ fn normal_nine_ball_simulation_alice_vs_john(
     starting_player: usize,
     seed: u64,
 ) -> String {
-    let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
+    let halt_condition = |s: &Simulation<u8>| s.agents().iter().all(|a| a.state.queue.is_empty());
     let winner = Rc::new(Cell::new(None));
 
     let alice = NineBallPlayer {
@@ -138,7 +134,7 @@ fn normal_nine_ball_simulation_alice_vs_john(
         winner: Rc::clone(&winner),
     };
 
-    let mut agent_initializers: Vec<AgentInitializer> = vec![
+    let mut agent_initializers: Vec<AgentInitializer<u8>> = vec![
         AgentInitializer {
             agent: Box::new(alice),
             options: AgentOptions::defaults_with_name("alice".to_string()),
@@ -153,7 +149,7 @@ fn normal_nine_ball_simulation_alice_vs_john(
         .get_mut(starting_player)
         .unwrap()
         .options
-        .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
+        .initial_queue = vec![Message::new(0, 1)].into();
 
     let mut sim = Simulation::builder(Halt::when(halt_condition))
         .seed(MasterSeed::from_u64(seed))
@@ -175,7 +171,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
     starting_player: usize,
     seed: u64,
 ) -> String {
-    let halt_condition = |s: &Simulation| s.agents().iter().all(|a| a.state.queue.is_empty());
+    let halt_condition = |s: &Simulation<u8>| s.agents().iter().all(|a| a.state.queue.is_empty());
     let winner = Rc::new(Cell::new(None));
 
     let alice = ApaNineBallPlayer {
@@ -213,7 +209,7 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         .get_mut(starting_player)
         .unwrap()
         .options
-        .initial_queue = vec![Message::new_with_payload(0, Some(Arc::from([1])))].into();
+        .initial_queue = vec![Message::new(0, 1)].into();
 
     let mut sim = Simulation::builder(Halt::when(halt_condition))
         .seed(MasterSeed::from_u64(seed))
@@ -291,7 +287,7 @@ mod tests {
             let winner = Rc::new(Cell::new(None));
             let run_out_distribution = WeightedIndex::new([1; 10])
                 .unwrap_or_else(|error| panic!("invalid test distribution: {error}"));
-            let agent: Box<dyn Agent> = if apa_rules {
+            let agent: Box<dyn Agent<u8>> = if apa_rules {
                 Box::new(ApaNineBallPlayer {
                     luck_chance: 0.0,
                     run_out_choices: [8; 10],
@@ -317,8 +313,7 @@ mod tests {
                     agent,
                     options: AgentOptions {
                         name: "player".to_string(),
-                        initial_queue: vec![Message::new_with_payload(0, Some(Arc::from([2])))]
-                            .into(),
+                        initial_queue: vec![Message::new(0, 2)].into(),
                         ..Default::default()
                     },
                 }])

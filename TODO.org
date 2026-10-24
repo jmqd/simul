@@ -36,7 +36,8 @@ What's the best practice in Rust? Do people have debug! stmts in libs?
 ** IDEA Consider allowing Messages w/ no target -- fanout / global broadcast
 ** TODO Model different types of Messages -- e.g. NewMessage, ConsumedMessage,
   ProducedMessage so states like =completed_time= are typed instead of =Option=
-** IDEA Should Messages be an algebraic type, in fact?
+** DONE Should Messages be an algebraic type, in fact?
+=Message<M>= carries the model's own message type, usually an enum.
 * Audit findings (2026-10-22)
 Code findings were reproduced with scratch tests or Miri; doc findings were
 checked against the code. Severity in brackets.

@@ -9,7 +9,7 @@
 
 use crate::rng::Rng;
 use crate::time::{secs, ticks, ticks_at_least_one, Tick};
-use crate::wire::{decode, ConnId, ConnKind, FrameWriter, Unit};
+use crate::wire::{decode, ConnId, ConnKind, FrameWriter, Payload, Unit};
 use simul::agent::{AgentContext, AgentId};
 use simul::message::Message;
 use std::collections::{BTreeMap, VecDeque};
@@ -596,7 +596,7 @@ impl Endpoint {
         }
     }
 
-    fn peer_id(&mut self, peer: usize, ctx: &AgentContext) -> AgentId {
+    fn peer_id(&mut self, peer: usize, ctx: &AgentContext<'_, Payload>) -> AgentId {
         let entry = &mut self.peers[peer];
         if let Some(id) = entry.id {
             return id;
@@ -734,12 +734,12 @@ impl Endpoint {
     /// Decodes a peer's message into events, answering handshakes itself.
     pub(crate) fn receive(
         &mut self,
-        message: &Message,
+        message: &Message<Payload>,
         now: Tick,
         faults: &FaultPlan,
         rng: &mut Rng,
     ) -> Vec<NetEvent> {
-        let Some(payload) = message.custom_payload.as_deref() else {
+        let Some(payload) = message.payload.as_deref() else {
             return Vec::new();
         };
         let peer = message
@@ -814,7 +814,7 @@ impl Endpoint {
     /// Moves bytes on every connection and sends this tick's deliveries.
     pub(crate) fn pump(
         &mut self,
-        ctx: &mut AgentContext,
+        ctx: &mut AgentContext<'_, Payload>,
         now: Tick,
         faults: &FaultPlan,
         rng: &mut Rng,

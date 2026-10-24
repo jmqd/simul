@@ -337,7 +337,7 @@ fn main() {
 
 /// Runs a workload with message history on, so every workload keeps its
 /// pre-opt-in work and fingerprint.
-fn simulate(builder: SimulationBuilder) -> Simulation {
+fn simulate<M: Clone>(builder: SimulationBuilder<M>) -> Simulation<M> {
     let mut simulation = builder
         .message_history(true)
         .build()
@@ -347,7 +347,7 @@ fn simulate(builder: SimulationBuilder) -> Simulation {
 }
 
 /// Digests the final time plus every agent's queue, histories, and total wait.
-fn histories(simulation: &Simulation) -> Fingerprint {
+fn histories<M>(simulation: &Simulation<M>) -> Fingerprint {
     simulation.agents().iter().fold(
         Fingerprint::new().mix(simulation.time()),
         |fingerprint, agent| {
@@ -372,7 +372,7 @@ fn histories(simulation: &Simulation) -> Fingerprint {
 
 fn periodic_pair(enable_queue_depth_metrics: bool) -> Fingerprint {
     let simulation = simulate(
-        Simulation::builder(Halt::AtTime(10_000))
+        Simulation::<()>::builder(Halt::AtTime(10_000))
             .agents(vec![
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),
                 periodic_consumer("consumer".to_string(), 1),
@@ -462,14 +462,14 @@ struct Relay {
     held: u8,
 }
 
-impl Agent for Relay {
-    fn on_message(&mut self, ctx: &mut AgentContext, message: &Message) {
+impl Agent<Arc<[u8]>> for Relay {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, Arc<[u8]>>, message: &Message<Arc<[u8]>>) {
         if self.held < self.hold {
             self.held += 1;
             ctx.set_processing_status(MessageProcessingStatus::InProgress);
         } else {
             self.held = 0;
-            ctx.send(&self.next, message.custom_payload.clone());
+            ctx.send(&self.next, Arc::clone(&message.payload));
         }
     }
 }
@@ -479,8 +479,8 @@ fn sim_relay_ring() -> Fingerprint {
     let agent_initializers: Vec<_> = (0..RELAYS)
         .map(|index| {
             let name = format!("relay-{index}");
-            let initial_queue: VecDeque<Message> = (0..3_u8)
-                .map(|seed| Message::new_with_payload(0, Some(Arc::from([index ^ seed; 24]))))
+            let initial_queue: VecDeque<Message<Arc<[u8]>>> = (0..3_u8)
+                .map(|seed| Message::new(0, Arc::from([index ^ seed; 24])))
                 .collect();
             AgentInitializer {
                 agent: Box::new(Relay {
@@ -503,7 +503,7 @@ fn sim_relay_ring() -> Fingerprint {
         .iter()
         .flat_map(|agent| &agent.state.queue)
         .fold(histories(&simulation), |fingerprint, message| {
-            let payload = message.custom_payload.as_deref().unwrap_or(&[]);
+            let payload = &message.payload;
             fingerprint.mix(payload.iter().map(|&byte| u64::from(byte)).sum())
         })
 }

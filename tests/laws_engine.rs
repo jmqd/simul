@@ -28,7 +28,10 @@ thread_local! {
     static CALLBACKS: RefCell<Vec<(DiscreteTime, usize)>> = const { RefCell::new(Vec::new()) };
 }
 
-fn halt_at_time(simulation: &Simulation) -> bool {
+/// The laws forward shared byte payloads, so they use them as the message type.
+type Payload = Option<Arc<[u8]>>;
+
+fn halt_at_time(simulation: &Simulation<Payload>) -> bool {
     HALT_CALLS.with(|calls| calls.borrow_mut().push(simulation.time()));
     simulation.time() >= HALT_AT.with(Cell::get)
 }
@@ -92,7 +95,7 @@ impl Chaos {
         usize::try_from(index).unwrap_or_else(|_| panic!("{index} is below a usize length"))
     }
 
-    fn act(&mut self, ctx: &mut AgentContext, received: Option<&Message>) {
+    fn act(&mut self, ctx: &mut AgentContext<'_, Payload>, received: Option<&Message<Payload>>) {
         // Mixing in the simulation stream makes every scheduling law also check
         // that ctx.rng() draws do not depend on how the run was executed.
         self.rng ^= ctx.rng().next_u64();
@@ -102,10 +105,10 @@ impl Chaos {
             0
         };
         for _ in 0..sends {
-            let payload: Option<Arc<[u8]>> = match self.next() % 3 {
+            let payload: Payload = match self.next() % 3 {
                 0 => None,
                 1 => Some(Arc::from([self.next().to_le_bytes()[0]])),
-                _ => received.and_then(|message| message.custom_payload.clone()),
+                _ => received.and_then(|message| message.payload.clone()),
             };
             let target = self.index_below(self.names.len());
             let bytes = payload.as_deref().map(<[u8]>::to_vec);
@@ -133,8 +136,8 @@ impl Chaos {
     }
 }
 
-impl Agent for Chaos {
-    fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {
+impl Agent<Payload> for Chaos {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, Payload>, msg: &Message<Payload>) {
         let in_progress = self.next() % 100 < self.in_progress_percent;
         CALLBACKS.with(|calls| calls.borrow_mut().push((ctx.time(), ctx.id().index())));
         self.events.push(Event::Message {
@@ -149,7 +152,7 @@ impl Agent for Chaos {
         self.act(ctx, Some(msg));
     }
 
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, Payload>) {
         self.events.push(Event::Tick(ctx.time()));
         CALLBACKS.with(|calls| calls.borrow_mut().push((ctx.time(), ctx.id().index())));
         self.act(ctx, None);
@@ -165,11 +168,11 @@ enum Size {
 }
 
 struct Case {
-    simulation: Simulation,
+    simulation: Simulation<Payload>,
     start: DiscreteTime,
     halt_at: DiscreteTime,
     /// Each agent's initial queue, addressed to that agent as the engine does.
-    initial_queues: Vec<Vec<Message>>,
+    initial_queues: Vec<Vec<Message<Payload>>>,
 }
 
 /// A wake time, sometimes already in the past.
@@ -197,7 +200,7 @@ fn chaos_agent(
     start: DiscreteTime,
     active_percent: u64,
     halt_per_million: u64,
-) -> AgentInitializer {
+) -> AgentInitializer<Payload> {
     let initial_mode = if rng.random_range(0..100) < active_percent {
         AgentMode::Proactive
     } else {
@@ -256,7 +259,7 @@ enum HaltStyle {
 }
 
 impl HaltStyle {
-    fn halt(self, halt_at: DiscreteTime) -> Halt {
+    fn halt(self, halt_at: DiscreteTime) -> Halt<Payload> {
         match self {
             Self::Predicate => Halt::when(halt_at_time),
             Self::AtTime => Halt::AtTime(halt_at),
@@ -333,12 +336,9 @@ fn build_case(
                         .options
                         .initial_queue
                         .push_back(if rng.random_bool(0.5) {
-                            Message::new(queued_time)
+                            Message::new(queued_time, None)
                         } else {
-                            Message::new_with_payload(
-                                queued_time,
-                                Some(Arc::from([rng.random::<u8>()])),
-                            )
+                            Message::new(queued_time, Some(Arc::from([rng.random::<u8>()])))
                         });
                 }
             }
@@ -377,7 +377,7 @@ fn build_case(
 }
 
 /// Everything observable except metrics and recorded messages.
-fn state_snapshot(simulation: &Simulation) -> String {
+fn state_snapshot(simulation: &Simulation<Payload>) -> String {
     let mut out = format!("time={}\n", simulation.time());
     let waits = simulation.calc_avg_wait_statistics();
     for agent in simulation.agents() {
@@ -396,7 +396,7 @@ fn state_snapshot(simulation: &Simulation) -> String {
 }
 
 /// Everything observable except metrics.
-fn snapshot(simulation: &Simulation) -> String {
+fn snapshot(simulation: &Simulation<Payload>) -> String {
     let mut out = state_snapshot(simulation);
     for agent in simulation.agents() {
         let _ = writeln!(out, "{:?} {:?}", agent.consumed(), agent.produced());
@@ -404,7 +404,7 @@ fn snapshot(simulation: &Simulation) -> String {
     out
 }
 
-fn metrics(simulation: &Simulation) -> Vec<(Vec<QueueDepthChange>, DiscreteTime)> {
+fn metrics(simulation: &Simulation<Payload>) -> Vec<(Vec<QueueDepthChange>, DiscreteTime)> {
     simulation
         .agents()
         .iter()
@@ -438,7 +438,7 @@ fn run(case: &mut Case) -> Trace {
 }
 
 /// Parses the `Chaos` events out of an agent's Debug output.
-fn chaos_events(agent: &SimulationAgent) -> Option<String> {
+fn chaos_events(agent: &SimulationAgent<Payload>) -> Option<String> {
     let debug = format!("{:?}", agent.agent);
     debug.starts_with("Chaos").then_some(debug)
 }
@@ -474,16 +474,16 @@ type MessageKey = (
     Option<Vec<u8>>,
 );
 
-fn message_key(message: &Message) -> MessageKey {
+fn message_key(message: &Message<Payload>) -> MessageKey {
     (
         message.queued_time,
         message.source,
         message.destination,
-        message.custom_payload.as_deref().map(<[u8]>::to_vec),
+        message.payload.as_deref().map(<[u8]>::to_vec),
     )
 }
 
-fn completed_time(seed: u64, message: &Message) -> DiscreteTime {
+fn completed_time(seed: u64, message: &Message<Payload>) -> DiscreteTime {
     message
         .completed_time
         .unwrap_or_else(|| panic!("seed {seed}: consumed message has no completion time"))
@@ -669,7 +669,12 @@ fn segmented_runs_match_one_run_without_interrupts() {
 }
 
 /// Checks a `Chaos` agent's event log against its consumed and produced history.
-fn check_chaos_history(seed: u64, simulation: &Simulation, agent: &SimulationAgent, debug: &str) {
+fn check_chaos_history(
+    seed: u64,
+    simulation: &Simulation<Payload>,
+    agent: &SimulationAgent<Payload>,
+    debug: &str,
+) {
     // Completed on_message calls, in order, are the consumed history.
     let mut rest = debug;
     for message in agent.consumed() {
@@ -722,7 +727,8 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
         let agents = simulation.agents();
         let end = simulation.time();
 
-        let mut sent: Vec<Vec<(DiscreteTime, usize, &Message)>> = vec![Vec::new(); agents.len()];
+        let mut sent: Vec<Vec<(DiscreteTime, usize, &Message<Payload>)>> =
+            vec![Vec::new(); agents.len()];
         for (handle, agent) in agents.iter().enumerate() {
             for message in agent.produced() {
                 assert_eq!(message.source, Some(agent_id(handle)), "seed {seed}");
@@ -927,7 +933,7 @@ fn queue_depth_metrics_agree_between_sparse_and_dense_scheduling() {
 }
 
 /// Applies the same seeded edits to the agents of a halted simulation.
-fn mutate_between_runs(simulation: &mut Simulation, seed: u64, round: u64) {
+fn mutate_between_runs(simulation: &mut Simulation<Payload>, seed: u64, round: u64) {
     let mut rng = ChaCha8Rng::seed_from_u64(seed.wrapping_mul(31).wrapping_add(round));
     let now = simulation.time();
     let names: Vec<String> = simulation.agents().iter().map(|a| a.name.clone()).collect();
@@ -940,7 +946,7 @@ fn mutate_between_runs(simulation: &mut Simulation, seed: u64, round: u64) {
         match rng.random_range(0..6) {
             0 => state.mode = random_mode(&mut rng, now),
             1 => state.wake_mode = random_mode(&mut rng, now),
-            2 => state.queue.push_back(Message::new(now)),
+            2 => state.queue.push_back(Message::new(now, None)),
             3 => state.queue.clear(),
             4 => {
                 *behavior =

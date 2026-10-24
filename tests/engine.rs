@@ -8,11 +8,11 @@ use simul::message::Message;
 use simul::{Halt, Simulation, SimulationMode};
 use std::sync::Arc;
 
-fn proactive_agent(name: &str, agent: impl Agent + 'static) -> AgentInitializer {
+fn proactive_agent<M>(name: &str, agent: impl Agent<M> + 'static) -> AgentInitializer<M> {
     proactive_agent_boxed(name, Box::new(agent))
 }
 
-fn proactive_agent_boxed(name: &str, agent: Box<dyn Agent>) -> AgentInitializer {
+fn proactive_agent_boxed<M>(name: &str, agent: Box<dyn Agent<M>>) -> AgentInitializer<M> {
     AgentInitializer {
         agent,
         options: AgentOptions {
@@ -48,7 +48,7 @@ impl Agent for NeighborSender {
     fn on_tick(&mut self, ctx: &mut AgentContext) {
         let own = ctx.name().to_string();
         for target in [&self.previous, &own, &self.next] {
-            ctx.send(target, None);
+            ctx.send(target, ());
         }
     }
 }
@@ -119,7 +119,7 @@ impl Agent for IdentitySender {
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
         for index in 0..=self.count {
-            ctx.send_to(AgentId::new(index), None);
+            ctx.send_to(AgentId::new(index), ());
         }
     }
 }
@@ -181,7 +181,7 @@ impl Agent for MissingTargetSender {
     fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
-        ctx.send("missing", None);
+        ctx.send("missing", ());
     }
 }
 
@@ -225,12 +225,10 @@ fn reading_unrecorded_history_panics_instead_of_looking_empty() {
 #[derive(Clone, Debug)]
 struct BurstSender;
 
-impl Agent for BurstSender {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
-        ctx.send("receiver", Some(Arc::from([1])));
-        ctx.send("receiver", Some(Arc::from([2])));
+impl Agent<u8> for BurstSender {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, u8>) {
+        ctx.send("receiver", 1);
+        ctx.send("receiver", 2);
     }
 }
 
@@ -247,13 +245,13 @@ fn messages_sent_by_one_callback_preserve_call_order() {
 
     simulation.run();
 
-    let payloads = |messages: &[Message]| {
+    let payloads = |messages: &[Message<u8>]| {
         messages
             .iter()
-            .map(|message| message.custom_payload.clone())
+            .map(|message| message.payload)
             .collect::<Vec<_>>()
     };
-    let expected = Some(vec![Some(Arc::from([1])), Some(Arc::from([2]))]);
+    let expected = Some(vec![1, 2]);
     assert_eq!(
         expected,
         simulation.produced_for_agent("sender").map(payloads)
@@ -265,7 +263,7 @@ fn messages_sent_by_one_callback_preserve_call_order() {
                 .state
                 .queue
                 .iter()
-                .map(|message| message.custom_payload.clone())
+                .map(|message| message.payload)
                 .collect::<Vec<_>>()
         })
     );
@@ -291,7 +289,7 @@ fn in_progress_message_stays_queued_until_completed() {
     .agents(vec![AgentInitializer {
         agent: Box::new(SlowConsumer),
         options: AgentOptions {
-            initial_queue: vec![Message::new(0)].into(),
+            initial_queue: vec![Message::new(0, ())].into(),
             name: "consumer".to_string(),
             ..Default::default()
         },
@@ -407,7 +405,7 @@ fn halt_variants_stop_at_the_documented_tick() {
 #[test]
 fn geometric_producer_arrival_gaps_have_the_configured_mean_and_spread() {
     let mean = 4.0;
-    let mut simulation = Simulation::builder(Halt::AtTime(40_000))
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(40_000))
         .agents(vec![
             simul::agent::geometric_producer("producer", mean, "consumer"),
             periodic_consumer("consumer", 1),
@@ -443,7 +441,7 @@ fn geometric_producer_arrival_gaps_have_the_configured_mean_and_spread() {
 
 #[test]
 fn geometric_agents_with_a_one_tick_mean_act_every_tick() {
-    let mut simulation = Simulation::builder(Halt::AtTime(10))
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(10))
         .agents(vec![
             simul::agent::geometric_producer("producer", 1.0, "consumer"),
             simul::agent::geometric_consumer("consumer", 1.0),
@@ -468,7 +466,7 @@ fn geometric_agents_with_a_one_tick_mean_act_every_tick() {
 #[test]
 #[should_panic(expected = "mean period must be finite and at least one tick")]
 fn geometric_agents_reject_means_below_one_tick() {
-    let _ = simul::agent::geometric_producer("producer", 0.5, "consumer");
+    let _ = simul::agent::geometric_producer::<_, ()>("producer", 0.5, "consumer");
 }
 
 #[test]
@@ -525,7 +523,7 @@ fn proactive_agents_handle_one_message_then_tick() {
 #[test]
 fn initial_queue_messages_are_addressed_to_their_owner() {
     let mut owner = periodic_consumer("owner", 1);
-    owner.options.initial_queue.push_back(Message::new(0));
+    owner.options.initial_queue.push_back(Message::new(0, ()));
     let mut simulation = Simulation::builder(Halt::AtTime(1))
         .agents(vec![periodic_consumer("other", 1), owner])
         .message_history(true)
@@ -542,7 +540,7 @@ fn initial_queue_messages_are_addressed_to_their_owner() {
 
 #[test]
 fn queue_depth_metrics_record_each_tick_depth() {
-    let mut simulation = Simulation::builder(Halt::AtTime(5))
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(5))
         .agents(vec![
             periodic_producer("producer", 1, "consumer"),
             periodic_consumer("consumer", 3),
@@ -641,7 +639,7 @@ fn halt_reason_reports_the_interrupt_that_ended_the_latest_run() {
     assert_eq!(1, simulation.time());
     assert_eq!(Some("done"), simulation.halt_reason());
 
-    let mut timed = Simulation::builder(Halt::AtTime(2))
+    let mut timed = Simulation::<()>::builder(Halt::AtTime(2))
         .agents(vec![periodic_consumer("idle", 1)])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -651,7 +649,7 @@ fn halt_reason_reports_the_interrupt_that_ended_the_latest_run() {
 
 #[test]
 fn sleep_overflow_does_not_wrap_or_change_mode() {
-    let mut simulation = Simulation::builder(Halt::AtTime(2))
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(2))
         .agents(vec![periodic_producer("sender", u64::MAX, "missing")])
         .starting_time(1)
         .build()
@@ -669,7 +667,7 @@ fn sleep_overflow_does_not_wrap_or_change_mode() {
 
 #[test]
 fn final_representable_tick_and_wake_time_are_allowed() {
-    let mut simulation = Simulation::builder(Halt::AtTime(u64::MAX))
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(u64::MAX))
         .agents(vec![periodic_producer("sender", 1, "missing")])
         .starting_time(u64::MAX - 1)
         .build()
@@ -771,7 +769,7 @@ impl Agent for ScheduledAgent {
             .unwrap_or_else(|error| panic!("{error}"))
             .push((ctx.time(), ctx.id().index()));
         if ctx.id().index() == 0 {
-            ctx.send("agent-65", Some(Arc::from([1])));
+            ctx.send("agent-65", ());
             ctx.sleep_for(ctx.time() % 3);
         } else {
             ctx.sleep_for(if ctx.time() < 6 { 1 } else { 100 });
@@ -786,7 +784,7 @@ impl Agent for ScheduledAgent {
         if ctx.time() % 4 == 1 {
             ctx.set_processing_status(MessageProcessingStatus::InProgress);
         }
-        ctx.send("agent-0", None);
+        ctx.send("agent-0", ());
         ctx.sleep_for(2);
     }
 }
@@ -868,7 +866,6 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
             assert_eq!(right.completed_time, left.completed_time);
             assert_eq!(right.source, left.source);
             assert_eq!(right.destination, left.destination);
-            assert_eq!(right.custom_payload, left.custom_payload);
         }
     }
     for agent in dense.agents() {
@@ -884,11 +881,9 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
 #[derive(Clone, Debug)]
 struct ChangingPayloadSender;
 
-impl Agent for ChangingPayloadSender {
-    fn on_message(&mut self, _ctx: &mut AgentContext, _msg: &Message) {}
-
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
-        ctx.send("receiver", (ctx.time() == 2).then(|| Arc::from([7])));
+impl Agent<Option<u8>> for ChangingPayloadSender {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, Option<u8>>) {
+        ctx.send("receiver", (ctx.time() == 2).then_some(7));
     }
 }
 
@@ -911,10 +906,7 @@ fn repeated_sends_preserve_payloads_and_timestamps() {
     for (time, message) in (0_u64..).zip(produced) {
         assert_eq!(message.queued_time, time);
         assert_eq!(message.completed_time, None);
-        assert_eq!(
-            message.custom_payload.as_deref(),
-            (time == 2).then_some([7].as_slice())
-        );
+        assert_eq!(message.payload, (time == 2).then_some(7));
     }
 
     let Some(consumed) = simulation.consumed_for_agent("receiver") else {
@@ -926,10 +918,7 @@ fn repeated_sends_preserve_payloads_and_timestamps() {
         assert_eq!(message.destination, Some(AgentId::new(1)));
         assert_eq!(message.queued_time, time);
         assert_eq!(message.completed_time, Some(time + 1));
-        assert_eq!(
-            message.custom_payload.as_deref(),
-            (time == 2).then_some([7].as_slice())
-        );
+        assert_eq!(message.payload, (time == 2).then_some(7));
     }
 }
 
@@ -947,7 +936,10 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
         })
         .collect();
     agents[65].options.initial_mode = AgentMode::AsleepUntil(5);
-    agents[65].options.initial_queue.push_back(Message::new(0));
+    agents[65]
+        .options
+        .initial_queue
+        .push_back(Message::new(0, ()));
     let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation| {
         simulation.find_by_name("agent-65").is_some_and(|agent| {
             (simulation.time() == 5 && agent.state.mode == AgentMode::AsleepUntil(5))
