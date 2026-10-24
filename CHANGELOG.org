@@ -16,7 +16,8 @@ outside state, which turns skipping off. A paused simulation reports the new
 let =find_by_name_mut= change an agent as its own type. Together they branch
 a run at a decision tick: run to it once, clone per alternative, patch each
 clone, and run on. Since draws depend only on seed, name, and tick, each
-branch equals a run that took its alternative from the start. With 10
+branch equals a run that took its alternative from the start, provided the
+alternatives act identically before the decision tick. With 10
 alternatives sharing 50% or 90% of a 4-million-tick run, the branches run
 1.82x or 5.27x faster than separate runs (ideal 1.82x, 5.26x), with identical
 results.

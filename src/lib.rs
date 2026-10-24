@@ -826,8 +826,9 @@ impl<M> Simulation<M> {
     /// time runs no tick.
     ///
     /// Pausing at a decision tick and cloning gives one branch per
-    /// alternative that shares the run so far; with equal seeds, each branch
-    /// matches a run that took that alternative from the start.
+    /// alternative that shares the run so far. With equal seeds, a branch
+    /// matches a run that took its alternative from the start when the
+    /// alternatives act identically before the decision tick.
     ///
     /// # Panics
     ///
