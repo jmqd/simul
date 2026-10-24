@@ -235,7 +235,15 @@ fn build(seed: u64, size: Size, queue_metric: bool, asleep_metric: bool, halts: 
         asleep_metric,
         halts,
         HaltStyle::Predicate,
+        History::Recorded,
     )
+}
+
+/// Whether a case keeps every consumed and produced message.
+#[derive(Clone, Copy)]
+enum History {
+    Recorded,
+    Off,
 }
 
 /// How a case expresses its halt time.
@@ -263,6 +271,7 @@ fn build_case(
     asleep_metric: bool,
     halts: bool,
     style: HaltStyle,
+    history: History,
 ) -> Case {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let count: usize = match (size, rng.random_range(0..4)) {
@@ -355,6 +364,7 @@ fn build_case(
         .starting_time(start)
         .queue_depth_metrics(queue_metric)
         .asleep_cycles_metric(asleep_metric)
+        .message_history(matches!(history, History::Recorded))
         .seed(MasterSeed::from_u64(seed))
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -366,11 +376,30 @@ fn build_case(
     }
 }
 
+/// Everything observable except metrics and recorded messages.
+fn state_snapshot(simulation: &Simulation) -> String {
+    let mut out = format!("time={}\n", simulation.time());
+    let waits = simulation.calc_avg_wait_statistics();
+    for agent in simulation.agents() {
+        let _ = writeln!(
+            out,
+            "{} {:?} {:?} consumed={} produced={} wait={:?}",
+            agent.name,
+            agent.agent,
+            agent.state,
+            agent.consumed_count(),
+            agent.produced_count(),
+            waits.get(&agent.name)
+        );
+    }
+    out
+}
+
 /// Everything observable except metrics.
 fn snapshot(simulation: &Simulation) -> String {
-    let mut out = format!("time={}\n", simulation.time());
+    let mut out = state_snapshot(simulation);
     for agent in simulation.agents() {
-        let _ = writeln!(out, "{} {:?} {:?}", agent.name, agent.agent, agent.state);
+        let _ = writeln!(out, "{:?} {:?}", agent.consumed(), agent.produced());
     }
     out
 }
@@ -493,6 +522,7 @@ fn skipping_quiet_ticks_matches_running_every_tick() {
             false,
             true,
             HaltStyle::Predicate,
+            History::Recorded,
         );
         let (_, every_tick_callbacks) = run(&mut every_tick);
         let mut skipping = build_case(
@@ -502,6 +532,7 @@ fn skipping_quiet_ticks_matches_running_every_tick() {
             false,
             true,
             HaltStyle::AtTime,
+            History::Recorded,
         );
         let (_, skipping_callbacks) = run(&mut skipping);
         assert_eq!(
@@ -531,6 +562,36 @@ fn skipping_quiet_ticks_matches_running_every_tick() {
         quiet_ticks > 1_000,
         "cases must contain quiet ticks to skip"
     );
+}
+
+#[test]
+fn recording_message_history_does_not_change_the_run() {
+    for seed in 0..CASES {
+        let metric = seed % 2 == 0;
+        let case = |history| {
+            build_case(
+                seed,
+                Size::Any,
+                metric,
+                metric,
+                true,
+                HaltStyle::Predicate,
+                history,
+            )
+        };
+        let mut recorded = case(History::Recorded);
+        let mut off = case(History::Off);
+        assert_eq!(run(&mut recorded), run(&mut off), "seed {seed}: trace");
+        assert!(
+            state_snapshot(&recorded.simulation) == state_snapshot(&off.simulation),
+            "seed {seed}: state differs"
+        );
+        assert_eq!(
+            metrics(&recorded.simulation),
+            metrics(&off.simulation),
+            "seed {seed}"
+        );
+    }
 }
 
 #[test]
@@ -611,7 +672,7 @@ fn segmented_runs_match_one_run_without_interrupts() {
 fn check_chaos_history(seed: u64, simulation: &Simulation, agent: &SimulationAgent, debug: &str) {
     // Completed on_message calls, in order, are the consumed history.
     let mut rest = debug;
-    for message in &agent.state.consumed {
+    for message in agent.consumed() {
         let completion = format!(
             "Message {{ time: {}, queued_time: {}, source: {:?}, in_progress: false }}",
             completed_time(seed, message),
@@ -638,11 +699,11 @@ fn check_chaos_history(seed: u64, simulation: &Simulation, agent: &SimulationAge
     // Every send, known or not, is the produced history in call order.
     assert_eq!(
         debug.matches("Sent(").count(),
-        agent.state.produced.len(),
+        agent.produced().len(),
         "seed {seed}: produced count"
     );
     let mut rest = debug;
-    for message in &agent.state.produced {
+    for message in agent.produced() {
         let (time, _, destination, payload) = message_key(message);
         rest = skip_past(
             seed,
@@ -663,7 +724,7 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
 
         let mut sent: Vec<Vec<(DiscreteTime, usize, &Message)>> = vec![Vec::new(); agents.len()];
         for (handle, agent) in agents.iter().enumerate() {
-            for message in &agent.state.produced {
+            for message in agent.produced() {
                 assert_eq!(message.source, Some(agent_id(handle)), "seed {seed}");
                 assert_eq!(message.completed_time, None, "seed {seed}");
                 assert!(
@@ -685,15 +746,15 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
             arrivals.sort_by_key(|&(time, source, _)| (time, source));
             expected.extend(arrivals.iter().map(|&(_, _, message)| message_key(message)));
             let held: Vec<_> = agent
-                .state
-                .consumed
+                .consumed()
                 .iter()
                 .chain(&agent.state.queue)
                 .map(message_key)
                 .collect();
             assert_eq!(expected, held, "seed {seed}: agent {handle} history");
 
-            for message in &agent.state.consumed {
+            let mut wait = 0.0;
+            for message in agent.consumed() {
                 let completed = completed_time(seed, message);
                 assert!((case.start..end).contains(&completed), "seed {seed}");
                 if message.source.is_some() {
@@ -702,7 +763,32 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
                         "seed {seed}: same-tick delivery"
                     );
                 }
+                wait += if completed >= message.queued_time {
+                    (completed - message.queued_time) as f64
+                } else {
+                    -((message.queued_time - completed) as f64)
+                };
             }
+            // Counts and waits are kept without history, so they must match it.
+            let consumed = agent.consumed().len();
+            assert_eq!(
+                u64::try_from(consumed).ok(),
+                Some(agent.consumed_count()),
+                "seed {seed}: agent {handle} consumed count"
+            );
+            assert_eq!(
+                u64::try_from(agent.produced().len()).ok(),
+                Some(agent.produced_count()),
+                "seed {seed}: agent {handle} produced count"
+            );
+            assert_eq!(
+                (consumed > 0).then(|| (wait / consumed as f64).to_bits()),
+                simulation
+                    .calc_avg_wait_statistics()
+                    .get(&agent.name)
+                    .map(|mean| mean.to_bits()),
+                "seed {seed}: agent {handle} mean wait"
+            );
             assert!(
                 agent.state.queue.iter().all(|m| m.completed_time.is_none()),
                 "seed {seed}"

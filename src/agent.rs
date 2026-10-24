@@ -90,6 +90,26 @@ pub(crate) struct AgentMetadata {
 
     /// The number of cycles this agent was sleeping for.
     pub asleep_cycle_count: DiscreteTime,
+
+    /// Messages this agent finished handling.
+    pub consumed_count: u64,
+
+    /// Messages this agent sent, delivered or not.
+    pub produced_count: u64,
+
+    /// Queued-to-completion waits of consumed messages, summed in
+    /// consumption order; negative for messages queued in the future.
+    pub total_wait: f64,
+}
+
+/// Every message an agent consumed and produced, in order.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MessageHistory {
+    /// Consumed messages, each with its completion time.
+    pub consumed: Vec<Message>,
+
+    /// Sent messages, including those addressed to no agent.
+    pub produced: Vec<Message>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,13 +123,77 @@ pub struct SimulationAgent {
     /// The name for the agent. Must be unique for the simulation.
     pub name: String,
 
-    /// Engine-managed mode, queue, and message histories. Callbacks see it
-    /// read-only through [`AgentContext::state`]; callers may edit it between
-    /// runs.
+    /// Engine-managed mode and queue. Callbacks see it read-only through
+    /// [`AgentContext::state`]; callers may edit it between runs.
     pub state: AgentState,
+
+    /// `None` unless the simulation records message history.
+    pub(crate) history: Option<MessageHistory>,
 }
 
 impl SimulationAgent {
+    /// Returns how many messages this agent finished handling.
+    #[must_use]
+    pub const fn consumed_count(&self) -> u64 {
+        self.metadata.consumed_count
+    }
+
+    /// Returns how many messages this agent sent, including sends to names
+    /// that match no agent.
+    #[must_use]
+    pub const fn produced_count(&self) -> u64 {
+        self.metadata.produced_count
+    }
+
+    /// Returns the messages this agent finished handling, oldest first, each
+    /// with its completion time.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the simulation records message history; see
+    /// [`SimulationBuilder::message_history`](crate::SimulationBuilder::message_history).
+    #[must_use]
+    pub fn consumed(&self) -> &[Message] {
+        &self.history().consumed
+    }
+
+    /// Returns the messages this agent sent, oldest first, including those
+    /// addressed to no agent.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the simulation records message history; see
+    /// [`SimulationBuilder::message_history`](crate::SimulationBuilder::message_history).
+    #[must_use]
+    pub fn produced(&self) -> &[Message] {
+        &self.history().produced
+    }
+
+    /// Returns the recorded history; asking for one that was never recorded
+    /// is a configuration bug, and an empty answer would hide it.
+    fn history(&self) -> &MessageHistory {
+        self.history.as_ref().unwrap_or_else(|| {
+            panic!(
+                "message history is off; enable it with SimulationBuilder::message_history(true)"
+            )
+        })
+    }
+
+    /// Counts a finished message and records it when history is on.
+    pub(crate) fn record_consumed(&mut self, mut message: Message, time: DiscreteTime) {
+        self.metadata.consumed_count += 1;
+        // Subtract integers first so short waits stay exact at large times.
+        self.metadata.total_wait += if time >= message.queued_time {
+            (time - message.queued_time) as f64
+        } else {
+            -((message.queued_time - time) as f64)
+        };
+        if let Some(history) = &mut self.history {
+            message.completed_time = Some(time);
+            history.consumed.push(message);
+        }
+    }
+
     /// Records that the current queue depth holds from `time` on.
     ///
     /// Several events can land on one tick (a delivery visible from tick `t`,
@@ -143,12 +227,6 @@ pub struct AgentState {
 
     /// The queue of incoming Messages for the Agent.
     pub queue: VecDeque<Message>,
-
-    /// The queue of messages already consumed by the agent.
-    pub consumed: Vec<Message>,
-
-    /// The queue of messages produced by the agent.
-    pub produced: Vec<Message>,
 }
 
 impl Default for AgentState {
@@ -157,8 +235,6 @@ impl Default for AgentState {
             mode: AgentMode::Dead,
             wake_mode: AgentMode::Dead,
             queue: VecDeque::new(),
-            consumed: vec![],
-            produced: vec![],
         }
     }
 }
@@ -224,7 +300,7 @@ pub struct AgentContext<'a> {
     /// Identifies the agent layout, which validates cached target identities.
     pub(crate) layout: u64,
 
-    /// The agent's mode, queue, and histories as of this callback.
+    /// The agent's mode and queue as of this callback.
     pub(crate) state: &'a AgentState,
 
     /// Whether the current message finished or stays queued.
@@ -281,9 +357,10 @@ impl<'a> AgentContext<'a> {
     /// Queues a message to the agent named `target` for end-of-tick delivery.
     ///
     /// Multiple messages sent by one callback are delivered in call order. A
-    /// target that names no agent is recorded in the sender's history without
-    /// a destination and is not delivered. Forward a received payload by
-    /// passing `message.custom_payload.clone()`, which shares its bytes.
+    /// target that names no agent is counted as produced, kept without a
+    /// destination in the sender's history when that is recorded, and not
+    /// delivered. Forward a received payload by passing
+    /// `message.custom_payload.clone()`, which shares its bytes.
     #[inline]
     pub fn send(&mut self, target: &str, payload: Option<Arc<[u8]>>) {
         let destination = self.agent_id(target);
@@ -462,7 +539,7 @@ pub struct AgentInitializer {
 /// agents get neither.
 pub trait Agent: std::fmt::Debug + DynClone {
     /// Handles the oldest queued message, at most once per tick. The message
-    /// is recorded as consumed afterwards unless the agent sets
+    /// counts as consumed afterwards unless the agent sets
     /// [`MessageProcessingStatus::InProgress`]. The default does nothing.
     #[allow(unused_variables)]
     fn on_message(&mut self, ctx: &mut AgentContext, msg: &Message) {}

@@ -1,5 +1,19 @@
 #+title: Changelog
 
+* DONE Record message histories only on request (breaking)
+=AgentState::consumed= and =produced= are gone. Agents count consumed and
+produced messages and sum their waits as they go
+(=SimulationAgent::consumed_count=, =produced_count=), so
+=calc_avg_wait_statistics= and the count statistics, which now return =u64=,
+need no history. =SimulationBuilder::message_history(true)= keeps every
+message, read with =SimulationAgent::consumed= and =produced= or
+=Simulation::consumed_for_agent= and =produced_for_agent=; these panic when
+history is off instead of returning an empty slice, which would make a halt
+condition on it never fire. Recorded histories are read-only. Without
+history, a delivery moves the message instead of cloning it: a 10-million-tick
+producer/consumer pair runs in about 300 ms instead of 770 ms and peaks at
+2 MiB instead of 918 MiB. With history on, time and memory are unchanged.
+
 * DONE Key agent streams by name and seek instead of hashing (breaking)
 Each agent's =AgentContext::rng()= streams come from one =ChaCha12= key,
 hashed once at build time from the simulation seed and the agent's name.

@@ -330,8 +330,8 @@ mod tests {
             assert_eq!(simulation.time(), 1);
             assert_eq!(
                 simulation
-                    .produced_for_agent("player")
-                    .map(<[Message]>::len),
+                    .find_by_name("player")
+                    .map(simul::agent::SimulationAgent::produced_count),
                 Some(0)
             );
         }

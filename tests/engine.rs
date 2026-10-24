@@ -2,7 +2,7 @@
 
 use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
-    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange,
+    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent,
 };
 use simul::message::Message;
 use simul::{Halt, Simulation, SimulationMode};
@@ -69,6 +69,7 @@ fn messages_route_to_lower_own_and_higher_handles() {
                     },
                 )
             }))
+            .message_history(true)
             .build()
             .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
@@ -80,8 +81,7 @@ fn messages_route_to_lower_own_and_higher_handles() {
                 panic!("agent-{handle} must exist");
             };
             let destinations: Vec<Option<AgentId>> = agent
-                .state
-                .produced
+                .produced()
                 .iter()
                 .map(|message| message.destination)
                 .collect();
@@ -131,6 +131,7 @@ fn send_to_delivers_by_identity_and_records_unknown_identities() {
             .agents((0..count).map(|handle| {
                 proactive_agent(&format!("agent-{handle}"), IdentitySender { count })
             }))
+            .message_history(true)
             .build()
             .unwrap_or_else(|error| panic!("{error}"));
         simulation.run();
@@ -141,8 +142,7 @@ fn send_to_delivers_by_identity_and_records_unknown_identities() {
             .collect();
         for agent in simulation.agents() {
             let destinations: Vec<Option<AgentId>> = agent
-                .state
-                .produced
+                .produced()
                 .iter()
                 .map(|message| message.destination)
                 .collect();
@@ -189,6 +189,7 @@ impl Agent for MissingTargetSender {
 fn unknown_destination_records_produced_message_without_delivery() {
     let mut simulation = Simulation::builder(Halt::AtTime(1))
         .agents(vec![proactive_agent("sender", MissingTargetSender)])
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
 
@@ -210,6 +211,17 @@ fn unknown_destination_records_produced_message_without_delivery() {
     );
 }
 
+#[test]
+#[should_panic(expected = "message history is off")]
+fn reading_unrecorded_history_panics_instead_of_looking_empty() {
+    let mut simulation = Simulation::builder(Halt::AtTime(1))
+        .agents(vec![proactive_agent("sender", MissingTargetSender)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    simulation.run();
+    let _ = simulation.produced_for_agent("sender");
+}
+
 #[derive(Clone, Debug)]
 struct BurstSender;
 
@@ -229,6 +241,7 @@ fn messages_sent_by_one_callback_preserve_call_order() {
             proactive_agent("sender", BurstSender),
             periodic_consumer("receiver".to_string(), 1),
         ])
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
 
@@ -272,8 +285,8 @@ impl Agent for SlowConsumer {
 #[test]
 fn in_progress_message_stays_queued_until_completed() {
     let mut simulation = Simulation::builder(Halt::when(|s: &Simulation| {
-        s.consumed_for_agent("consumer")
-            .is_some_and(|messages| messages.len() == 1)
+        s.find_by_name("consumer")
+            .is_some_and(|consumer| consumer.consumed_count() == 1)
     }))
     .agents(vec![AgentInitializer {
         agent: Box::new(SlowConsumer),
@@ -283,6 +296,7 @@ fn in_progress_message_stays_queued_until_completed() {
             ..Default::default()
         },
     }])
+    .message_history(true)
     .build()
     .unwrap_or_else(|error| panic!("{error}"));
 
@@ -383,8 +397,8 @@ fn halt_variants_stop_at_the_documented_tick() {
         run(
             0,
             Halt::when(|s: &Simulation| {
-                s.consumed_for_agent("consumer")
-                    .is_some_and(|consumed| consumed.len() == 2)
+                s.find_by_name("consumer")
+                    .is_some_and(|consumer| consumer.consumed_count() == 2)
             })
         )
     );
@@ -399,6 +413,7 @@ fn geometric_producer_arrival_gaps_have_the_configured_mean_and_spread() {
             periodic_consumer("consumer", 1),
         ])
         .seed(simul::experiment::MasterSeed::from_u64(3))
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
@@ -438,11 +453,15 @@ fn geometric_agents_with_a_one_tick_mean_act_every_tick() {
     simulation.run();
     assert_eq!(
         Some(10),
-        simulation.produced_for_agent("producer").map(<[_]>::len)
+        simulation
+            .find_by_name("producer")
+            .map(SimulationAgent::produced_count)
     );
     assert_eq!(
         Some(9),
-        simulation.consumed_for_agent("consumer").map(<[_]>::len)
+        simulation
+            .find_by_name("consumer")
+            .map(SimulationAgent::consumed_count)
     );
 }
 
@@ -497,7 +516,9 @@ fn proactive_agents_handle_one_message_then_tick() {
     );
     assert_eq!(
         Some(2),
-        simulation.consumed_for_agent("door").map(<[_]>::len)
+        simulation
+            .find_by_name("door")
+            .map(SimulationAgent::consumed_count)
     );
 }
 
@@ -507,6 +528,7 @@ fn initial_queue_messages_are_addressed_to_their_owner() {
     owner.options.initial_queue.push_back(Message::new(0));
     let mut simulation = Simulation::builder(Halt::AtTime(1))
         .agents(vec![periodic_consumer("other", 1), owner])
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
@@ -552,6 +574,7 @@ fn mutable_agent_access_preserves_identity_and_routing() {
         agents.extend((1..count).map(|i| periodic_consumer(format!("receiver-{i}"), 1)));
         let mut simulation = Simulation::builder(Halt::AtTime(2))
             .agents(agents)
+            .message_history(true)
             .build()
             .unwrap_or_else(|error| panic!("{error}"));
         let Some((behavior, state)) = simulation.find_by_name_mut("sender") else {
@@ -661,8 +684,8 @@ fn final_representable_tick_and_wake_time_are_allowed() {
     );
     assert_eq!(
         simulation
-            .produced_for_agent("sender")
-            .map(<[Message]>::len),
+            .find_by_name("sender")
+            .map(SimulationAgent::produced_count),
         Some(1)
     );
 }
@@ -688,6 +711,7 @@ fn reused_producers_resolve_targets_in_each_simulation() {
             periodic_consumer("bystander", 1),
             proactive_agent_boxed("producer", producer.agent.clone()),
         ])
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     second.run();
@@ -712,8 +736,8 @@ fn average_wait_preserves_short_durations_at_large_timestamps() {
     for starting_time in [0, 1_u64 << 53, u64::MAX - 2] {
         let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation| {
             simulation
-                .consumed_for_agent("receiver")
-                .is_some_and(|messages| !messages.is_empty())
+                .find_by_name("receiver")
+                .is_some_and(|receiver| receiver.consumed_count() > 0)
         }))
         .agents(vec![
             periodic_producer("sender", 1, "receiver"),
@@ -793,6 +817,7 @@ fn scheduling_scenario(metrics: bool) -> (Simulation, CallbackTrace) {
         .agents(agents)
         .queue_depth_metrics(metrics)
         .asleep_cycles_metric(metrics)
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     (simulation, trace)
@@ -821,22 +846,23 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
     assert_eq!(Some(12), dense.asleep_cycle_count("agent-129"));
     assert_eq!(Some(0), dense.asleep_cycle_count("agent-128"));
     for (left, right) in sparse.agents().iter().zip(dense.agents()) {
-        let (left, right) = (&left.state, &right.state);
-        assert_eq!(right.mode, left.mode);
-        assert_eq!(right.wake_mode, left.wake_mode);
-        assert_eq!(right.queue.len(), left.queue.len());
-        assert_eq!(right.produced.len(), left.produced.len());
-        assert_eq!(right.consumed.len(), left.consumed.len());
+        assert_eq!(right.state.mode, left.state.mode);
+        assert_eq!(right.state.wake_mode, left.state.wake_mode);
+        assert_eq!(right.state.queue.len(), left.state.queue.len());
+        assert_eq!(right.produced().len(), left.produced().len());
+        assert_eq!(right.consumed().len(), left.consumed().len());
         let left_messages = left
+            .state
             .queue
             .iter()
-            .chain(&left.produced)
-            .chain(&left.consumed);
+            .chain(left.produced())
+            .chain(left.consumed());
         let right_messages = right
+            .state
             .queue
             .iter()
-            .chain(&right.produced)
-            .chain(&right.consumed);
+            .chain(right.produced())
+            .chain(right.consumed());
         for (left, right) in left_messages.zip(right_messages) {
             assert_eq!(right.queued_time, left.queued_time);
             assert_eq!(right.completed_time, left.completed_time);
@@ -873,6 +899,7 @@ fn repeated_sends_preserve_payloads_and_timestamps() {
             proactive_agent("sender", ChangingPayloadSender),
             periodic_consumer("receiver", 1),
         ])
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
@@ -907,43 +934,6 @@ fn repeated_sends_preserve_payloads_and_timestamps() {
 }
 
 #[test]
-fn new_sends_do_not_inherit_edited_history() {
-    let mutations: [fn(&mut Message); 5] = [
-        |message| message.source = Some(AgentId::new(9)),
-        |message| message.destination = None,
-        |message| message.custom_payload = Some(Arc::from([])),
-        |message| message.queued_time = u64::MAX,
-        |message| message.completed_time = Some(u64::MAX),
-    ];
-    for mutate in mutations {
-        let mut simulation = Simulation::builder(Halt::Never)
-            .agents(vec![
-                periodic_producer("sender", 1, "receiver"),
-                periodic_consumer("receiver", 1),
-                proactive_agent("halter", HaltImmediately),
-            ])
-            .build()
-            .unwrap_or_else(|error| panic!("{error}"));
-        simulation.run();
-        let Some((_, state)) = simulation.find_by_name_mut("sender") else {
-            panic!("sender must exist");
-        };
-        mutate(&mut state.produced[0]);
-        simulation.run();
-
-        let Some(produced) = simulation.produced_for_agent("sender") else {
-            panic!("sender must exist");
-        };
-        let message = &produced[1];
-        assert_eq!(message.source, Some(AgentId::new(0)));
-        assert_eq!(message.destination, Some(AgentId::new(1)));
-        assert!(message.custom_payload.is_none());
-        assert_eq!(message.queued_time, 1);
-        assert_eq!(message.completed_time, None);
-    }
-}
-
-#[test]
 fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
     let trace = CallbackTrace::default();
     let mut agents: Vec<_> = (0..130)
@@ -961,10 +951,11 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
     let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation| {
         simulation.find_by_name("agent-65").is_some_and(|agent| {
             (simulation.time() == 5 && agent.state.mode == AgentMode::AsleepUntil(5))
-                || !agent.state.consumed.is_empty()
+                || agent.consumed_count() > 0
         })
     }))
     .agents(agents)
+    .message_history(true)
     .build()
     .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();

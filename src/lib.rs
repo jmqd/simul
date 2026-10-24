@@ -27,7 +27,8 @@ pub mod message;
 
 use agent::{
     Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
-    AgentMode, AgentState, MessageProcessingStatus, QueueDepthChange, SimulationAgent,
+    AgentMode, AgentState, MessageHistory, MessageProcessingStatus, QueueDepthChange,
+    SimulationAgent,
 };
 use experiment::{AgentStreams, MasterSeed, SeedDeriver};
 use message::Message;
@@ -61,7 +62,8 @@ const LINEAR_NAME_SCAN_LIMIT: usize = 8;
 )]
 const MAX_AGENTS: usize = u32::MAX as usize;
 
-/// Messages of room reserved in each history and queue of a small simulation.
+/// Messages of room reserved in each queue and recorded history of a small
+/// simulation.
 const SMALL_SIMULATION_HISTORY: usize = 16;
 
 /// Simulations with more agents than this may skip inactive agents each tick.
@@ -177,6 +179,8 @@ pub struct SimulationBuilder {
     queue_depth_metrics: bool,
     /// Whether visits to sleeping agents count asleep ticks.
     asleep_cycles_metric: bool,
+    /// Whether every consumed and produced message is kept.
+    message_history: bool,
     /// Root of every agent's [`AgentContext::rng`] stream.
     seed: MasterSeed,
 }
@@ -217,6 +221,15 @@ impl SimulationBuilder {
     /// dense scheduling.
     pub const fn asleep_cycles_metric(mut self, enabled: bool) -> Self {
         self.asleep_cycles_metric = enabled;
+        self
+    }
+
+    /// Keeps every message each agent consumes and produces, readable through
+    /// [`SimulationAgent::consumed`] and [`SimulationAgent::produced`]. Off
+    /// by default: a history holds every message until the simulation is
+    /// dropped. Counts and mean waits are kept either way.
+    pub const fn message_history(mut self, enabled: bool) -> Self {
+        self.message_history = enabled;
         self
     }
 
@@ -469,11 +482,7 @@ fn visit_agent(
                     agent.record_queue_depth(tick.time.saturating_add(1));
                 }
             }
-            MessageProcessingStatus::NoError => {
-                let mut msg = msg;
-                msg.completed_time = Some(tick.time);
-                agent.state.consumed.push(msg);
-            }
+            MessageProcessingStatus::NoError => agent.record_consumed(msg, tick.time),
         }
     }
     if let Some(sleep_until) = requested_sleep_until {
@@ -491,6 +500,7 @@ impl Simulation {
             starting_time: 0,
             queue_depth_metrics: false,
             asleep_cycles_metric: false,
+            message_history: false,
             seed: MasterSeed::from_u64(0),
         }
     }
@@ -531,13 +541,14 @@ impl Simulation {
         }
 
         // Small simulations are often run by the thousand in experiments;
-        // reserving histories up front avoids repeated growth.
+        // reserving queues and histories up front avoids repeated growth.
         let history_capacity = if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
             SMALL_SIMULATION_HISTORY
         } else {
             0
         };
         let deriver = SeedDeriver::new(parameters.seed);
+        let message_history = parameters.message_history;
         let mut agent_streams = Vec::with_capacity(initializers.len());
         let agents: Vec<SimulationAgent> = parameters
             .agent_initializers
@@ -558,9 +569,11 @@ impl Simulation {
                         mode: agent_initializer.options.initial_mode,
                         wake_mode: agent_initializer.options.wake_mode,
                         queue,
+                    },
+                    history: message_history.then(|| MessageHistory {
                         consumed: Vec::with_capacity(history_capacity),
                         produced: Vec::with_capacity(history_capacity),
-                    },
+                    }),
                 }
             })
             .collect();
@@ -579,10 +592,16 @@ impl Simulation {
         })
     }
 
-    /// Returns the consumed messages for a given Agent during the Simulation.
+    /// Returns the messages the agent named `name` consumed, or `None` if no
+    /// agent has this name.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless message history is on; see
+    /// [`SimulationBuilder::message_history`].
     #[must_use]
     pub fn consumed_for_agent(&self, name: &str) -> Option<&[Message]> {
-        Some(&self.find_by_name(name)?.state.consumed)
+        Some(self.find_by_name(name)?.consumed())
     }
 
     /// Returns a `SimulationAgent` by name.
@@ -625,10 +644,16 @@ impl Simulation {
         Some((&mut agent.agent, &mut agent.state))
     }
 
-    /// Returns the produced messages for a given Agent during the Simulation.
+    /// Returns the messages the agent named `name` sent, or `None` if no agent
+    /// has this name.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless message history is on; see
+    /// [`SimulationBuilder::message_history`].
     #[must_use]
     pub fn produced_for_agent(&self, name: &str) -> Option<&[Message]> {
-        Some(&self.find_by_name(name)?.state.produced)
+        Some(self.find_by_name(name)?.produced())
     }
 
     /// Returns the agent's queue depth changes in time order, or `None` if no
@@ -821,28 +846,18 @@ impl Simulation {
 
     /// Returns each agent's mean wait from queueing to completion over its
     /// consumed messages, keyed by agent name. Agents that consumed nothing
-    /// are omitted.
+    /// are omitted. Needs no message history.
     #[must_use]
     pub fn calc_avg_wait_statistics(&self) -> NameStatistics<f64> {
         let mut data = NameStatistics::new();
         for agent in self
             .agents
             .iter()
-            .filter(|agent| !agent.state.consumed.is_empty())
+            .filter(|agent| agent.consumed_count() > 0)
         {
-            let mut sum_of_times: f64 = 0f64;
-            for completed in &agent.state.consumed {
-                let completed_time = completed.completed_time.unwrap_or(completed.queued_time);
-                sum_of_times += if completed_time >= completed.queued_time {
-                    (completed_time - completed.queued_time) as f64
-                } else {
-                    -((completed.queued_time - completed_time) as f64)
-                };
-            }
-
             data.insert(
                 agent.name.clone(),
-                sum_of_times / agent.state.consumed.len() as f64,
+                agent.metadata.total_wait / agent.consumed_count() as f64,
             );
         }
 
@@ -862,25 +877,25 @@ impl Simulation {
         data
     }
 
-    /// Calculates the length of the consumed messages for each Agent.
+    /// Counts the messages each agent consumed.
     #[must_use]
-    pub fn calc_consumed_len_statistics(&self) -> NameStatistics<usize> {
+    pub fn calc_consumed_len_statistics(&self) -> NameStatistics<u64> {
         let mut data = NameStatistics::new();
 
         for agent in &self.agents {
-            data.insert(agent.name.clone(), agent.state.consumed.len());
+            data.insert(agent.name.clone(), agent.consumed_count());
         }
 
         data
     }
 
-    /// Calculates the length of the produced messages for each Agent.
+    /// Counts the messages each agent sent, delivered or not.
     #[must_use]
-    pub fn calc_produced_len_statistics(&self) -> NameStatistics<usize> {
+    pub fn calc_produced_len_statistics(&self) -> NameStatistics<u64> {
         let mut data = NameStatistics::new();
 
         for agent in &self.agents {
-            data.insert(agent.name.clone(), agent.state.produced.len());
+            data.insert(agent.name.clone(), agent.produced_count());
         }
 
         data
@@ -921,9 +936,15 @@ impl Simulation {
         for command in command_buffer.drain(..) {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
+                    let sender = &mut self.agents[command.agent_handle];
+                    sender.metadata.produced_count += 1;
+                    if let Some(history) = &mut sender.history {
+                        history.produced.push(message.clone());
+                    }
+
                     if let Some(destination) = message.destination {
                         let receiver = &mut self.agents[destination.index()];
-                        receiver.state.queue.push_back(message.clone());
+                        receiver.state.queue.push_back(message);
                         if self.enable_queue_depth_metric {
                             // Deliveries become visible at the next tick.
                             receiver.record_queue_depth(next_time);
@@ -934,10 +955,6 @@ impl Simulation {
                             }
                         }
                     }
-
-                    let commanding_agent = &mut self.agents[command.agent_handle];
-
-                    commanding_agent.state.produced.push(message);
                 }
 
                 AgentCommandType::HaltSimulation(reason) => {

@@ -335,8 +335,13 @@ fn main() {
     }
 }
 
+/// Runs a workload with message history on, so every workload keeps its
+/// pre-opt-in work and fingerprint.
 fn simulate(builder: SimulationBuilder) -> Simulation {
-    let mut simulation = builder.build().unwrap_or_else(|error| panic!("{error}"));
+    let mut simulation = builder
+        .message_history(true)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     simulation
 }
@@ -347,8 +352,7 @@ fn histories(simulation: &Simulation) -> Fingerprint {
         Fingerprint::new().mix(simulation.time()),
         |fingerprint, agent| {
             let waited: u64 = agent
-                .state
-                .consumed
+                .consumed()
                 .iter()
                 .map(|message| {
                     message
@@ -359,8 +363,8 @@ fn histories(simulation: &Simulation) -> Fingerprint {
                 .sum();
             fingerprint
                 .mix_len(agent.state.queue.len())
-                .mix_len(agent.state.consumed.len())
-                .mix_len(agent.state.produced.len())
+                .mix_len(agent.consumed().len())
+                .mix_len(agent.produced().len())
                 .mix(waited)
         },
     )
@@ -407,7 +411,7 @@ fn sim_fan_in() -> Fingerprint {
         Simulation::builder(Halt::when(|simulation: &Simulation| {
             simulation
                 .find_by_name("sink")
-                .is_some_and(|sink| sink.state.consumed.len() >= 1_500)
+                .is_some_and(|sink| sink.consumed_count() >= 1_500)
         }))
         .agents(agent_initializers),
     );
@@ -528,7 +532,7 @@ fn exp_search_sim() -> Fingerprint {
                     Simulation::builder(Halt::when(|simulation: &Simulation| {
                         simulation
                             .find_by_name("consumer")
-                            .is_some_and(|consumer| consumer.state.consumed.len() > 10)
+                            .is_some_and(|consumer| consumer.consumed_count() > 10)
                     }))
                     .agents(vec![
                         periodic_producer("producer".to_string(), 2, "consumer".to_string()),

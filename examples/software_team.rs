@@ -955,7 +955,7 @@ impl SoftwareTeamReport {
         };
 
         for agent in simulation.agents() {
-            for message in &agent.state.produced {
+            for message in agent.produced() {
                 match Payload::decode(message) {
                     Some(Payload::Work { .. }) => report.released += 1,
                     Some(Payload::ReviewRequest { .. }) => report.review_requests += 1,
@@ -1069,6 +1069,8 @@ fn build_simulation(params: SoftwareTeamParameters) -> Simulation {
             ),
         ])
         .queue_depth_metrics(true)
+        // The report decodes every sent and merged message afterwards.
+        .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"))
 }

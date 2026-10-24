@@ -135,10 +135,18 @@ A `Simulation` is finished when its `Halt` condition holds (`Halt::AtTime(t)`,
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the
-target matched no agent, in which case the message is recorded but not
+target matched no agent, in which case the message is counted but not
 delivered). `Simulation::agent(id)` and `Simulation::agent_id(name)` translate
 between identities and agents. Create initial messages with `Message::new` or
 `Message::new_with_payload`, not struct literals.
+
+Every agent counts the messages it consumed and produced
+(`SimulationAgent::consumed_count`, `produced_count`) and their total wait, so
+the `calc_*_statistics` methods and halt conditions on counts need nothing
+else. To keep the messages themselves, build with `.message_history(true)`;
+`SimulationAgent::consumed` and `produced` then return them in order. History
+is off by default because it holds every message for the whole run, and the
+history accessors panic when it is off rather than look empty.
 
 Payloads are `Option<Arc<[u8]>>`. Building one allocates once, for example
 `Some(Arc::from([tag, value]))`; clones, histories, and forwarded payloads such

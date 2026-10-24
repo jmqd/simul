@@ -17,7 +17,7 @@ use std::convert::Infallible;
 
 const PRODUCER_PERIOD: u64 = 2;
 const MAX_CONSUMER_PERIOD: u64 = 10;
-const HALT_CONSUMED_COUNT: usize = 10;
+const HALT_CONSUMED_COUNT: u64 = 10;
 const CANDIDATE_BUDGET: u64 = 1000;
 const MASTER_SEED: MasterSeed = MasterSeed::from_u64(0x42_45_4E_43_48);
 
@@ -37,9 +37,7 @@ fn simulation_builder(consumer_period: u64) -> SimulationBuilder {
         simulation
             .find_by_name("consumer")
             .expect("consumer to exist")
-            .state
-            .consumed
-            .len()
+            .consumed_count()
             > HALT_CONSUMED_COUNT
     };
 
