@@ -16,8 +16,8 @@ exist.
 ** DONE Trim the published package and document the public API
 =Cargo.toml= lists what =cargo publish= ships: sources, tests, examples,
 benchmarks, the README, this changelog, and the license; development tooling,
-local notes, and an unreferenced 368 KB image stay out (about 70 files down to
-38). Every public item is documented and =missing_docs= keeps it that way, the
+local notes, and an unreferenced 368 KB image stay out (52 files down to 38).
+Every public item is documented and =missing_docs= keeps it that way, the
 crate docs open with a runnable example, and PERFORMANCE.md's stale
 =opt-level= note is replaced by a measurement: =opt-level = 2= retires 1.8%
 more instructions than the release default.
