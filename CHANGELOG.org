@@ -1,11 +1,23 @@
 #+title: Changelog
 
-* DONE Rename MessageProcessingStatus::NoError to Done (breaking)
+* 0.6.0 (unreleased)
+A breaking release; =README.md= describes the new API. Newest entries first.
+
+** DONE Trim the published package and document the public API
+=Cargo.toml= lists what =cargo publish= ships: sources, tests, examples,
+benchmarks, the README, this changelog, and the license; development tooling,
+local notes, and an unreferenced 368 KB image stay out (about 70 files down to
+38). Every public item is documented and =missing_docs= keeps it that way, the
+crate docs open with a runnable example, and PERFORMANCE.md's stale
+=opt-level= note is replaced by a measurement: =opt-level = 2= retires 1.8%
+more instructions than the release default.
+
+** DONE Rename MessageProcessingStatus::NoError to Done (breaking)
 The status says whether a handled message is finished, not whether it failed:
 =Done= consumes it and =InProgress= keeps it at the front of the queue. The
 enum now derives =Clone=, =Copy=, =Debug=, =Eq=, =Hash=, and =PartialEq=.
 
-* DONE Construct agents with AgentInitializer::reactive and proactive (breaking)
+** DONE Construct agents with AgentInitializer::reactive and proactive (breaking)
 =AgentInitializer::reactive(name, agent)= and =proactive(name, agent)= replace
 the =AgentInitializer { agent: Box::new(..), options: AgentOptions { .. } }=
 literal, with =.asleep_until(t)= to start asleep and =.initial_queue(messages)=
@@ -14,13 +26,7 @@ removed; =AgentOptions= stays public for unusual mode combinations. Every
 example, test, and benchmark now builds agents this way, and the helpers each
 one had defined for it are gone.
 
-* DONE Version 0.6.0
-Bump the crate to 0.6.0 for the breaking changes below. The README describes
-the builder, message delivery, seeded streams, halt reasons, failure mode, and
-change-based queue metrics, and drops the Poisson cafe plotting section, whose
-example and agents no longer exist.
-
-* DONE Seed simulations from experiment trials
+** DONE Seed simulations from experiment trials
 =SimulationBuilder::trial(&TrialContext)= seeds a simulation from the trial's
 common-random =TrialNoise= stream tagged =simul::Simulation=. Candidates
 evaluated in one common-random group share their agents' draws replication by
@@ -29,7 +35,7 @@ replication, and each replication draws afresh, so paired comparisons under
 previously connected a trial to a simulation seed; =simple_experiment= now
 does, with unchanged output.
 
-* DONE Send messages that arrive after a delay
+** DONE Send messages that arrive after a delay
 =AgentContext::send_after(delay, id, payload)= makes a message visible to
 its target from tick =time() + delay=; =send_after(1, ..)= is =send_to=. The
 message counts as sent at once and carries =queued_time= =time() + delay - 1=,
@@ -42,7 +48,7 @@ ticks took 143 ms polling every tick and takes 2 ms with =send_after=, with the
 same replies. A zero delay panics. The engine laws now send a third of their
 chaos messages with delays.
 
-* DONE Read finished agents back as their own type
+** DONE Read finished agents back as their own type
 =SimulationAgent::downcast_ref::<A>()= returns an agent's behavior as an =A=,
 or =None= for any other type, so results can stay in agent fields instead of
 in =Rc<Cell<_>>= or lock-guarded state shared with the agent. Agents get a
@@ -51,7 +57,7 @@ supertrait itself, so the message type need not be ='static=. The nine-ball
 example reads each match's winner from the players instead of an
 =Rc<Cell<Option<usize>>>=.
 
-* DONE Type messages by the simulation's message type (breaking)
+** DONE Type messages by the simulation's message type (breaking)
 =Simulation<M>=, =Agent<M>=, =AgentContext<'_, M>=, and =Message<M>= carry one
 message type chosen by the model, usually an enum, with =()= as the default.
 =ctx.send= and =send_to= take an =M=, =Message::new(time, payload)= replaces
@@ -67,7 +73,7 @@ payload moves into the receiver's queue; only =message_history(true)= needs
 =M: Clone=. Byte payloads remain available as =M = Option<Arc<[u8]>>=, which the
 ETL example and the engine laws use. =Message<()>= is 32 bytes.
 
-* DONE Add an ETL placement simulation example
+** DONE Add an ETL placement simulation example
 =examples/etl_placement= asks where a Supabase ETL replicator should run when
 its source Postgres is in us-west-2 and its destination in us-east-1. Three
 agents exchange units over flow-level TCP with per-connection RTT draws,
@@ -79,7 +85,7 @@ random numbers through a CDC rate × =max_fill_ms= sweep, an initial copy,
 and six faults. Every parameter names its source or is marked ASSUMPTION.
 Run =cargo run --release --example etl_placement -- --help= for options.
 
-* DONE Record message histories only on request (breaking)
+** DONE Record message histories only on request (breaking)
 =AgentState::consumed= and =produced= are gone. Agents count consumed and
 produced messages and sum their waits as they go
 (=SimulationAgent::consumed_count=, =produced_count=), so
@@ -93,7 +99,7 @@ history, a delivery moves the message instead of cloning it: a 10-million-tick
 producer/consumer pair runs in about 300 ms instead of 770 ms and peaks at
 2 MiB instead of 918 MiB. With history on, time and memory are unchanged.
 
-* DONE Key agent streams by name and seek instead of hashing (breaking)
+** DONE Key agent streams by name and seek instead of hashing (breaking)
 Each agent's =AgentContext::rng()= streams come from one =ChaCha12= key,
 hashed once at build time from the simulation seed and the agent's name.
 Each tick is a stream of that key, and each call within a tick reads its own
@@ -103,7 +109,7 @@ agent, such as a seventh table. A call costs about 75 ns instead of 260 ns.
 =SeedDeriver::agent_seed= is replaced by =SeedDeriver::agent_streams= and
 =AgentStreams::rng=. Frozen V1 experiment streams are unchanged.
 
-* DONE Sample rand distributions from seeded streams
+** DONE Sample rand distributions from seeded streams
 =TrialRng= implements =rand::TryRng= with =Infallible= errors, and therefore
 =rand::Rng=, so =rand= and =rand_distr= samplers can draw from
 =AgentContext::rng()=, trial streams, and proposal streams. The inherent
@@ -111,7 +117,7 @@ methods are unchanged. The nine-ball example drew from the unseeded thread
 RNG for lack of this; it now seeds each match, so its output is
 reproducible, and every luck chance replays the same match seeds.
 
-* DONE Skip quiet ticks
+** DONE Skip quiet ticks
 With =Halt::AtTime= or =Halt::Never= and the asleep-cycle metric off, a tick
 in which no callback ran jumps time to the next tick where an agent can act,
 capped at the halt time. Such ticks issue no commands, so results match
@@ -119,7 +125,7 @@ running every tick; =Halt::when= predicates still see every tick. A producer
 acting every 1,000 ticks beside 10,000 idle agents runs 10 million ticks in
 6.9 ms instead of 603 ms.
 
-* DONE Record queue depths as changes (breaking)
+** DONE Record queue depths as changes (breaking)
 =Simulation::queue_depth_metrics= returns =&[QueueDepthChange]= (=time=,
 =depth=), recorded only when a pop, a delivery, or an in-progress requeue
 changes the depth an agent's visit observes; expanding the changes step-wise
@@ -127,14 +133,14 @@ reproduces the old per-tick series. The metric no longer forces dense
 scheduling. 10,000 idle agents over 10,000 ticks with the metric on run in
 6.2 ms and 7.6 MB instead of 824 ms and 1.95 GB.
 
-* DONE Measure circular means from a reference elite
+** DONE Measure circular means from a reference elite
 =circular_mean= sums angles relative to the best elite, so one elite or
 identical elites refit to their exact coordinate, and an exact half-turn tie
 always moves in the negative direction instead of depending on how the
 platform's =sin=, =cos=, and =atan2= round. Circular CEM results change in
 their last bits.
 
-* DONE Make CEM updates independent of sample order
+** DONE Make CEM updates independent of sample order
 Elites are ordered best first with ties broken by point, and the selection
 path sorts them before fitting, so =tell= gives bit-identical updates for any
 input order or NaN placement. Before, one NaN in front of tied samples could
@@ -142,26 +148,26 @@ change the elite set, and above 12 samples the fitted mean could differ in the
 last bit. =best()= on a tie now keeps the lowest point instead of the last one
 scanned.
 
-* DONE Read elite fractions as decimals
+** DONE Read elite fractions as decimals
 =elite_count= snaps a product within a few ulps of an integer to that integer
 before rounding up, so 0.07 of 100 samples selects 7 elites instead of 8.
 Populations whose products used to round up by one ulp now select one fewer
 elite, which changes their CEM updates.
 
-* DONE Drop the log dependency; report halt reasons (breaking)
+** DONE Drop the log dependency; report halt reasons (breaking)
 The engine no longer emits =log= records, so =log= is gone from the dependency
 tree and the per-tick =debug!= calls are gone from the hot loop. The reason
 passed to =send_halt_interrupt= used to be logged at =info= and is now
 returned by =Simulation::halt_reason()=.
 
-* DONE Seal Bernoulli and scalar summaries (breaking)
+** DONE Seal Bernoulli and scalar summaries (breaking)
 =BernoulliSummary= and =ScalarSummary= fields are private; read them with
 same-named getters such as =rate()= and =mean()=. Only =BernoulliReducer= and
 =ScalarReducer= build them, so summaries are always finite and selection
 policies never see a NaN rate. =CandidateSummary= stays a public data carrier
 for caller-defined statistics.
 
-* DONE Build simulations with Simulation::builder (breaking)
+** DONE Build simulations with Simulation::builder (breaking)
 =SimulationParameters=, =Simulation::new=, and =Simulation::try_new= are
 replaced by =Simulation::builder(halt)=, which takes the required =Halt= up
 front and offers =agent=, =agents=, =starting_time=, =seed=,
@@ -169,13 +175,13 @@ front and offers =agent=, =agents=, =starting_time=, =seed=,
 =Result<Simulation, SimulationError>=. The old =Default= halted before the
 first tick, so a forgotten halt check silently ran nothing.
 
-* DONE Declare halt conditions with Halt (breaking)
+** DONE Declare halt conditions with Halt (breaking)
 =SimulationParameters::halt_check: fn(&Simulation) -> bool= is replaced by
 =halt: Halt=: =Halt::AtTime(t)= stops once time reaches =t=, =Halt::Never= runs
 until a halt interrupt, and =Halt::when(predicate)= accepts closures that
 capture state, which function pointers could not.
 
-* DONE Replace Poisson agents with seeded geometric agents (breaking)
+** DONE Replace Poisson agents with seeded geometric agents (breaking)
 =poisson_distributed_producer= and =poisson_distributed_consumer= took a
 =rand_distr::Poisson<f64>=, drew from the unseeded thread RNG, and treated a
 zero-tick sample as one tick, so their mean period was λ + e^{-λ} and their
@@ -184,7 +190,7 @@ gaps were not memoryless. =geometric_producer(name, mean, target)= and
 tick from =AgentContext::rng()=, with exactly the requested mean (at least 1),
 and the public API no longer exposes =rand_distr= types.
 
-* DONE Seed simulations and give agents per-tick random streams (breaking)
+** DONE Seed simulations and give agents per-tick random streams (breaking)
 =Simulation::builder(..).seed(..)= roots =AgentContext::rng()=, which returns
 a =TrialRng= derived from the seed, the agent's =AgentId=, the tick, and the
 call's index within the tick, under the new =simul/v1/agent= namespace
@@ -194,43 +200,43 @@ segments. Frozen V1 experiment streams are unchanged.
 Superseded by "Key agent streams by name and seek instead of hashing":
 streams are keyed by agent name, not =AgentId=, and are not hashed per call.
 
-* DONE Deliver messages to Proactive agents (breaking)
+** DONE Deliver messages to Proactive agents (breaking)
 Each tick, an awake agent with a queued message handles the oldest one in
 =on_message=; a Proactive agent then also gets =on_tick=. Messages sent to
 Proactive agents used to pile up unread. =Agent::on_message= now has a default
 empty body, so agents that never receive messages need not implement it.
 
-* DONE Fail simulations whose callbacks panic (breaking)
+** DONE Fail simulations whose callbacks panic (breaking)
 A panic from an agent callback or the halt check leaves the simulation
 =SimulationMode::Failed=, and =run= refuses to resume it instead of replaying
 part of the interrupted tick. =Simulation::mode()= reports the mode, and
 =SimulationMode= is now =Copy=.
 
-* DONE Make AgentContext fields read-only (breaking)
+** DONE Make AgentContext fields read-only (breaking)
 =name=, =time=, =state=, and =message_processing_status= are private. Read
 them with =ctx.name()=, =ctx.time()=, and =ctx.state()=; set the status with
 =set_processing_status=. Callbacks could previously overwrite =ctx.name=,
 which rerouted sends in simulations of eight or fewer agents.
 
-* DONE Expose engine types only through their modules (breaking)
+** DONE Expose engine types only through their modules (breaking)
 The crate root no longer glob re-exports =agent::*= and =message::*=; import
 them from =simul::agent= and =simul::message=. =AgentCommand= and
 =AgentCommandType= were public but unusable outside the engine and are now
 crate-private.
 
-* DONE Address initial-queue messages to their owner
+** DONE Address initial-queue messages to their owner
 =Simulation::try_new= sets each initial-queue message's =destination= to the
 agent that owns the queue, so consumed initial messages no longer look
 undeliverable. Messages pushed into a queue between runs keep the
 =destination= they were built with.
 
-* DONE Reflect linear cross-entropy coordinates exactly
+** DONE Reflect linear cross-entropy coordinates exactly
 Linear coordinates below zero reflect as =|value| % 2= instead of through
 =rem_euclid(2.0)=, which rounded =2 + value=. A draw of -0.3 now reflects to
 exactly 0.3, and tiny negative draws such as -1e-200 no longer collapse to 0.
 Some reflected samples change in their last bits.
 
-* DONE Keep runners and search consistent when callbacks panic
+** DONE Keep runners and search consistent when callbacks panic
 A panic payload whose destructor panics becomes the documented
 =WorkloadPanic= / =WorkerWorkloadPanic= error instead of unwinding out of
 =run_serial= or =run_parallel=. Discarding partial parallel output keeps
@@ -240,12 +246,12 @@ and =tell= runs every policy comparison and summary clone before changing
 state, so a caught generator, policy, or =Clone= panic leaves the search
 unchanged and retryable.
 
-* DONE Rank NaN lowest in Bernoulli selection policies
+** DONE Rank NaN lowest in Bernoulli selection policies
 =MaximizeBernoulliRate= and =MaximizeWilsonLowerBound= rank a NaN rate or bound
 below every number instead of treating it as equal to all of them, so
 =select_best= no longer depends on input order for such summaries.
 
-* DONE Share message payloads as Arc<[u8]> (breaking)
+** DONE Share message payloads as Arc<[u8]> (breaking)
 =Message::custom_payload= is a public =Option<Arc<[u8]>>=, and =send=, =send_to=,
 and =Message::new_with_payload= take that type. A new payload allocates once,
 forwarding =message.custom_payload.clone()= only increments a reference count,
@@ -258,7 +264,7 @@ software-team examples build payloads from stack arrays. Payload forwarding in a
 Superseded by "Type messages by the simulation's message type": payloads are
 the model's own type, and =Option<Arc<[u8]>>= is one choice of it.
 
-* DONE Reuse bounded parallel workers across batches
+** DONE Reuse bounded parallel workers across batches
 =ParallelExecutor= retains a dedicated Rayon pool with construction-time capacity.
 Each run still validates and allocates before initializing fresh caller-thread
 workspaces, then returns canonical replayable records. Empty and failed batches
@@ -266,7 +272,7 @@ leave the executor reusable; one-shot =run_parallel= remains available. Ported
 from perf-hotpaths ec14848; 2,000 batches of 16 trials take 28 ms instead of
 120 ms with one-shot pools.
 
-* DONE Skip inactive agents during sparse simulation phases
+** DONE Skip inactive agents during sparse simulation phases
 Simulations with more than 64 agents and neither per-tick metric use a ready
 bitmap and wake heap while retaining handle-ordered callbacks, end-of-tick
 delivery, and per-tick halt checks. Scheduling state is rebuilt on resume, and
@@ -275,7 +281,7 @@ metrics-enabled simulations scan densely. Ported from perf-hotpaths d9ed3ad; a
 520-agent sparse population retires 76% fewer instructions, and 10,000 ticks
 with 10,000 idle agents run in 19 ms instead of 552 ms.
 
-* DONE Cut per-message, per-trial, and search overhead
+** DONE Cut per-message, per-trial, and search overhead
 Simulations with at most eight agents route messages by scanning names; larger
 ones hash names with rustc-hash, and Clippy bans the std hash maps. Built-in
 producers cache their target identity per simulation layout, so an agent cloned
@@ -290,7 +296,7 @@ With the AgentId change, retired instructions on the deterministic workloads fal
 32-81% for simulations, 56% for a 1,000-candidate simulation search, 4-19% for
 trial streams and search bookkeeping, and 5% for CEM, with identical outputs.
 
-* DONE Identify message agents by AgentId
+** DONE Identify message agents by AgentId
 Agents have dense AgentId identities in construction order. Messages carry source
 and destination identities instead of names, so a send without a payload allocates
 nothing. Message::new(time) and Message::new_with_payload(time, payload) no longer
@@ -300,7 +306,7 @@ AgentContext::id replaces handle; send_to sends by identity, agent_id resolves a
 name once, and Simulation::agent and agent_id translate identities.
 SimulationError::TooManyAgents rejects more than u32::MAX agents.
 
-* DONE Refresh dependencies and tooling (October 2026)
+** DONE Refresh dependencies and tooling (October 2026)
 Pin Rust 1.99.1 and update rand to 0.10.3, rayon to 1.12.0, compatible Cargo
 lockfile dependencies, and the Nix flake inputs. Update Dylint to 6.2.0 with
 nightly-2026-08-20. Keep the library MSRV at 1.85; tests and benchmarks require 1.86.
@@ -311,71 +317,71 @@ compilation, and the Nix package and dev shell on Apple Silicon. All four Nix
 platforms evaluate; Intel macOS and Linux builds were not exercised.
 Dylint completes with non-fatal assertion-order and crate-wide-allow warnings.
 
-* DONE Add a catalogue of example candidates
+** DONE Add a catalogue of example candidates
 Describe example programs worth writing, each chosen for a real-world dynamic
 that averaged models miss. Include a worked brief for a billiards cafe that maps
 onto the agent engine and the experiment module, and link it from the README.
 
-* DONE Avoid temporary allocations for singleton search results
+** DONE Avoid temporary allocations for singleton search results
 Skip within-batch duplicate sets and the canonical sorting buffer when a tell
 contains one result. Preserve identity validation and atomic rejection of invalid
 results, while keeping canonical ordering for batches.
 
-* DONE Stabilize Wilson confidence intervals at numeric extremes
+** DONE Stabilize Wilson confidence intervals at numeric extremes
 Rationalize the lower confidence bound to avoid cancellation, and rescale large
 z-scores before squaring. Preserve representable tiny bounds instead of rounding
 them away through intermediate overflow or underflow.
 
-* DONE Preserve tiny centers in complete circular refits
+** DONE Preserve tiny centers in complete circular refits
 At learning rate one, use the elite center directly instead of subtracting and
 re-adding the previous center. Small representable circular coordinates no longer
 round to zero during a complete refit.
 
-* DONE Preserve tiny optimizer standard deviations
+** DONE Preserve tiny optimizer standard deviations
 Avoid variance underflow and subnormal precision loss during smoothing and
 complete refits. Use deviation arithmetic when the weighted variance cannot
 retain normal precision, rather than collapsing a representable spread to its
 minimum. Normal-scale seeded optimizer replay remains bit-identical.
 
-* DONE Update reviewed random-number dependencies
+** DONE Update reviewed random-number dependencies
 Upgrade rand to 0.10.3 and zerocopy/zerocopy-derive to 0.8.62 for upstream numeric
 and pointer-metadata fixes. Keep the library MSRV at 1.85; frozen seed vectors,
 seeded optimizer proposals, and simulation replay remain unchanged.
 
-* DONE Update the development toolchain to Rust 1.99.0
+** DONE Update the development toolchain to Rust 1.99.0
 Refresh rust-overlay to provide the pinned compiler on all four Nix platforms.
 Keep the library MSRV at 1.85 and adapt empty-result assertions to the new Clippy
 diagnostics. Seeded optimizer and simulation replay matches Rust 1.98.1 exactly.
 
-* DONE Reuse repeated payload-free message contents
+** DONE Reuse repeated payload-free message contents
 Consecutive sends with unchanged source and destination can share retained
 contents instead of reallocating message bodies and names. Timestamps and
 copy-on-write edits remain independent; payload and history changes are respected.
 Superseded by "Identify message agents by AgentId": messages no longer hold
 names or shared bodies.
 
-* DONE Reduce per-turn allocation in the nine-ball example
+** DONE Reduce per-turn allocation in the nine-ball example
 Build each player's weighted distribution once per match, borrow message payloads
 when decoding the ball, and borrow the next player's name when sending a turn.
 
-* DONE Skip projection for already-normalized optimizer coordinates
+** DONE Skip projection for already-normalized optimizer coordinates
 Avoid floating-point remainder operations for coordinates already inside their
 linear or circular domain. Seeded proposal and update replay remains bit-identical.
 
-* DONE Fail license checks when collection or filtering fails
+** DONE Fail license checks when collection or filtering fails
 Preserve errors from cargo-license instead of reporting success for missing or
 failed tooling. A license-filter error also fails the check.
 
-* DONE Restore the nine-ball simulation example
+** DONE Restore the nine-ball simulation example
 Record the winning agent explicitly, give both normal-rules players unique names,
 and queue the opening turn only for the chosen starter. Winning turns halt without
 scheduling another turn. Label the APA and normal-rules result tables correctly.
 
-* DONE Preserve short waits at large simulation timestamps
+** DONE Preserve short waits at large simulation timestamps
 Subtract integer timestamps before converting waiting durations to floating point.
 One-tick waits remain accurate above 2^53 and near the u64 time limit.
 
-* DONE Refresh dependencies and tooling (September 2026)
+** DONE Refresh dependencies and tooling (September 2026)
 Pin Rust 1.98.1 and update BLAKE3 to 1.8.7, Criterion to 0.8.2, log to 0.4.34,
 and compatible Cargo lockfile dependencies, replacing yanked chacha20 0.10.1.
 Keep the library MSRV at 1.85; tests and benchmarks require 1.86.
@@ -388,22 +394,22 @@ examples, an optimized benchmark, and the Nix build on Apple Silicon.
 All four Nix platforms evaluate; Intel macOS and Linux builds were not exercised.
 Dylint completes with non-fatal assertion-order and crate-wide-allow warnings.
 
-* DONE Consolidate typed experiments and eager worker setup
+** DONE Consolidate typed experiments and eager worker setup
 Use one trial/replay protocol with bounded canonical serial and parallel runners.
 Worker initialization is fallible and eager; explicit storage is allocated before
 callbacks, and callback unwinding yields run-level errors without retries.
 Remove the duplicate replicated runner, TrialKey alias, and simulation-coupled
 search wrappers. Retain generic annealing and cross-entropy optimization.
 
-* DONE Sample finite bounds without interval-width overflow
+** DONE Sample finite bounds without interval-width overflow
 Opposite-sign extreme endpoints use a finite convex combination.
 Representable-width intervals retain their existing deterministic samples.
 
-* DONE Reject unrepresentable scalar statistics
+** DONE Reject unrepresentable scalar statistics
 Scalar reduction reports arithmetic overflow without changing accepted state.
 Aggregation preserves that failure instead of returning non-finite statistics.
 
-* DONE Share retained message contents without deep cloning
+** DONE Share retained message contents without deep cloning
 Message histories and delivery share strings and payloads with copy-on-write
 mutation; completion timestamps remain independent. Construct messages with
 =Message::new= or =Message::new_with_payload= instead of struct literals.
@@ -411,36 +417,37 @@ Superseded by "Identify message agents by AgentId" and "Share message payloads
 as Arc<[u8]>": messages hold identities, not strings, and only payloads are
 shared.
 
-* DONE Use one replication result allocation
+** DONE Use one replication result allocation
 Workers fill disjoint output ranges directly; partial results are dropped on
 failure. Worker-count tests cover single-CPU and unavailable-parallelism hosts.
 The obsolete =WorkerChunkRecords= allocation-error variant was removed.
 
-* DONE Preserve optimizer numerical boundaries
+** DONE Preserve optimizer numerical boundaries
 Circular proposals stay in =[0, 1)=, finite sampling and deviation smoothing
 avoid overflow, and annealing preserves acceptance across extreme finite scores.
 
-* DONE Reject simulation time overflow consistently
+** DONE Reject simulation time overflow consistently
 Tick advancement is checked before callbacks; sleep requests reject overflowing
 wake times before changing state. Both checks also apply in release builds.
 
-* DONE Protect agent routing identity
+** DONE Protect agent routing identity
 AgentContext exposes its handle through =handle()= instead of a writable field.
 =find_by_name_mut= returns mutable behavior and state, not a replaceable agent.
 Command dispatch uses bounds-checked indexing.
 
-* DONE Add SimulationParams struct and pass it into the constructor.
-* DONE Rename =Ticket= to =Message= or =Packet= for better readability.
+* 0.5.1 and earlier
+** DONE Add SimulationParams struct and pass it into the constructor.
+** DONE Rename =Ticket= to =Message= or =Packet= for better readability.
 Also considering "Event"
-* DONE Remove env_logger dependency
+** DONE Remove env_logger dependency
 Note: Moved to dev-dependencies
-* DONE Address all uses of =unwrap()=
+** DONE Address all uses of =unwrap()=
 More or less did a first pass. I have more work to do here, but those are bigger changes.
-* DONE Poisson creation helper functions for Agents
-* DONE Add Default implementation for SimulationParameters
-* DONE Add Default implementation for Agent?
-* DONE create typedef for u64 for discrete time
-** DONE Fix Agent Debug derive for stable rust (nightly only, apparently)
+** DONE Poisson creation helper functions for Agents
+** DONE Add Default implementation for SimulationParameters
+** DONE Add Default implementation for Agent?
+** DONE create typedef for u64 for discrete time
+*** DONE Fix Agent Debug derive for stable rust (nightly only, apparently)
 This wasn't a nightly issue, this was a rust version issue.
 
 This reproduced the issue:

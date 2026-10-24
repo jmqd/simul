@@ -20,6 +20,17 @@ queueing systems, distributed systems, performance engineering, and so on.
 homepage = "https://github.com/jmqd/simul"
 repository = "https://github.com/jmqd/simul"
 readme = "README.md"
+# Ship sources, tests, examples, benches, and user docs; development tooling
+# and local notes stay out of the published package.
+include = [
+    "/src/**",
+    "/tests/**",
+    "/examples/**",
+    "/benches/**",
+    "/README.md",
+    "/CHANGELOG.org",
+    "/LICENSE",
+]
 
 [profile.release]
 lto = "fat"

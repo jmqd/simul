@@ -19,10 +19,84 @@
 //!   experiments to approximate a global optimum, simulating queueing systems,
 //!   distributed systems, performance engineering/analysis, and so on.
 //!
+//! # Example
+//!
+//! A customer orders a drink every 3 ticks; a barista serves each order and
+//! rests for as long as the drink takes. Every agent sends and receives the
+//! simulation's message type, here `Drink`.
+//!
+//! ```
+//! use simul::agent::{Agent, AgentContext, AgentInitializer};
+//! use simul::message::Message;
+//! use simul::{Halt, Simulation};
+//!
+//! #[derive(Clone, Copy, Debug)]
+//! enum Drink {
+//!     Coffee,
+//!     Tea,
+//! }
+//!
+//! #[derive(Clone, Debug)]
+//! struct Customer;
+//!
+//! impl Agent<Drink> for Customer {
+//!     fn on_tick(&mut self, ctx: &mut AgentContext<'_, Drink>) {
+//!         // Draws come from the simulation seed, so equal seeds give equal runs.
+//!         let drink = if ctx.rng().uniform_f64() < 0.5 {
+//!             Drink::Coffee
+//!         } else {
+//!             Drink::Tea
+//!         };
+//!         ctx.send("barista", drink);
+//!         ctx.sleep_for(3);
+//!     }
+//! }
+//!
+//! #[derive(Clone, Debug, Default)]
+//! struct Barista {
+//!     coffees: u32,
+//!     teas: u32,
+//! }
+//!
+//! impl Agent<Drink> for Barista {
+//!     fn on_message(&mut self, ctx: &mut AgentContext<'_, Drink>, order: &Message<Drink>) {
+//!         match order.payload {
+//!             Drink::Coffee => {
+//!                 self.coffees += 1;
+//!                 ctx.sleep_for(2);
+//!             }
+//!             Drink::Tea => {
+//!                 self.teas += 1;
+//!                 ctx.sleep_for(1);
+//!             }
+//!         }
+//!     }
+//! }
+//!
+//! let mut simulation = Simulation::builder(Halt::AtTime(30))
+//!     .agents([
+//!         AgentInitializer::proactive("customer", Customer),
+//!         AgentInitializer::reactive("barista", Barista::default()),
+//!     ])
+//!     .build()?;
+//! simulation.run();
+//!
+//! // Results stay in the agents; read the barista back as its own type.
+//! let barista = simulation
+//!     .find_by_name("barista")
+//!     .and_then(|agent| agent.downcast_ref::<Barista>())
+//!     .expect("the barista is a Barista");
+//! assert_eq!(10, barista.coffees + barista.teas);
+//! # Ok::<(), simul::SimulationError>(())
+//! ```
+#![warn(missing_docs)]
 
+/// Agents, the per-tick context they act through, and built-in producers and
+/// consumers.
 pub mod agent;
 /// Deterministic engine-independent experiment, reduction, and search APIs.
 pub mod experiment;
+/// Messages that agents send each other.
 pub mod message;
 
 use agent::{

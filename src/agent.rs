@@ -114,6 +114,12 @@ pub(crate) struct MessageHistory<M> {
     pub copy: fn(&Message<M>) -> Message<M>,
 }
 
+/// An agent inside a simulation: its behavior, name, engine-managed state, and
+/// message counts.
+///
+/// Read agents after a run with [`Simulation::agents`](crate::Simulation::agents)
+/// or [`Simulation::find_by_name`](crate::Simulation::find_by_name), and get
+/// the behavior back as its own type with [`SimulationAgent::downcast_ref`].
 #[derive(Debug, Clone)]
 pub struct SimulationAgent<M = ()> {
     /// The agent that the user constructed; contains user state and behavior.
@@ -230,6 +236,8 @@ impl<M> SimulationAgent<M> {
     }
 }
 
+/// The engine-managed part of an agent: its current mode, the mode it wakes
+/// into, and its queue of messages not yet handled.
 #[derive(Debug, Clone)]
 pub struct AgentState<M = ()> {
     /// The mode that the agent is in.
