@@ -497,7 +497,7 @@ fn visit_agent<M>(
         agent_count: tick.agent_count,
         layout: tick.layout,
         state: &agent.state,
-        message_processing_status: MessageProcessingStatus::NoError,
+        message_processing_status: MessageProcessingStatus::Done,
         stream_root: &tick.agent_streams[handle],
         calls: 0,
     };
@@ -508,7 +508,7 @@ fn visit_agent<M>(
     }
     let status = std::mem::replace(
         &mut ctx.message_processing_status,
-        MessageProcessingStatus::NoError,
+        MessageProcessingStatus::Done,
     );
     if proactive {
         agent.agent.on_tick(&mut ctx);
@@ -522,7 +522,7 @@ fn visit_agent<M>(
                     agent.record_queue_depth(tick.time.saturating_add(1));
                 }
             }
-            MessageProcessingStatus::NoError => agent.record_consumed(msg, tick.time),
+            MessageProcessingStatus::Done => agent.record_consumed(msg, tick.time),
         }
     }
     if let Some(sleep_until) = requested_sleep_until {

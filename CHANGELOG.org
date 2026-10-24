@@ -1,5 +1,10 @@
 #+title: Changelog
 
+* DONE Rename MessageProcessingStatus::NoError to Done (breaking)
+The status says whether a handled message is finished, not whether it failed:
+=Done= consumes it and =InProgress= keeps it at the front of the queue. The
+enum now derives =Clone=, =Copy=, =Debug=, =Eq=, =Hash=, and =PartialEq=.
+
 * DONE Construct agents with AgentInitializer::reactive and proactive (breaking)
 =AgentInitializer::reactive(name, agent)= and =proactive(name, agent)= replace
 the =AgentInitializer { agent: Box::new(..), options: AgentOptions { .. } }=

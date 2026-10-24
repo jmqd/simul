@@ -272,8 +272,17 @@ pub(crate) enum AgentCommandType<M> {
 /// route messages by name.
 pub(crate) type Peers<'a, M> = (&'a [SimulationAgent<M>], &'a [SimulationAgent<M>]);
 
+/// Whether the message an agent just handled is finished.
+///
+/// Set it from [`Agent::on_message`] with
+/// [`AgentContext::set_processing_status`]; each visit starts as `Done`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MessageProcessingStatus {
-    NoError,
+    /// The message is consumed: it is counted, its wait is recorded, and it
+    /// leaves the queue.
+    Done,
+    /// The message stays at the front of the queue and is handled again on
+    /// the agent's next visit.
     InProgress,
 }
 
@@ -505,7 +514,8 @@ impl<'a, M> AgentContext<'a, M> {
         *self.requested_sleep_until = Some(wake_time);
     }
 
-    /// Records whether the current message remains in progress or finished cleanly.
+    /// Marks the message being handled as [`MessageProcessingStatus::Done`]
+    /// (the default) or [`MessageProcessingStatus::InProgress`].
     #[inline]
     pub const fn set_processing_status(&mut self, status: MessageProcessingStatus) {
         self.message_processing_status = status;
