@@ -492,6 +492,13 @@ fn skip_past<'a>(seed: u64, rest: &'a str, needle: &str) -> &'a str {
 /// stable sort on this key keeps.
 type ArrivalKey = (DiscreteTime, DiscreteTime, usize);
 
+/// Whether an arrival was sent with `send_after`, which queues it later than
+/// the tick it was sent.
+const fn was_delayed((key, _): &(ArrivalKey, &Message<Payload>)) -> bool {
+    let (queued, sent_at, _) = *key;
+    queued > sent_at
+}
+
 type MessageKey = (
     DiscreteTime,
     Option<AgentId>,
@@ -743,9 +750,48 @@ fn check_chaos_history(
     }
 }
 
+/// Arrived messages for each receiver, keyed for their delivery order.
+type Arrivals<'a> = Vec<Vec<(ArrivalKey, &'a Message<Payload>)>>;
+
+/// Splits every sent message into those that arrived, by receiver, and the
+/// keys of those still in flight, checking each send's identity and timing.
+fn sends_by_receiver(seed: u64, case: &Case) -> (Arrivals<'_>, Vec<MessageKey>) {
+    let agents = case.simulation.agents();
+    let end = case.simulation.time();
+    let mut sent: Arrivals<'_> = vec![Vec::new(); agents.len()];
+    let mut in_flight = Vec::new();
+    for (handle, agent) in agents.iter().enumerate() {
+        let send_ticks: Vec<DiscreteTime> = agent.downcast_ref::<Chaos>().map_or_else(
+            || agent.produced().iter().map(|m| m.queued_time).collect(),
+            |chaos| chaos.send_ticks.clone(),
+        );
+        assert_eq!(send_ticks.len(), agent.produced().len(), "seed {seed}");
+        for (message, &sent_at) in agent.produced().iter().zip(&send_ticks) {
+            assert_eq!(message.source, Some(agent_id(handle)), "seed {seed}");
+            assert_eq!(message.completed_time, None, "seed {seed}");
+            assert!((case.start..end).contains(&sent_at), "seed {seed}");
+            assert!(message.queued_time >= sent_at, "seed {seed}");
+            if let Some(destination) = message.destination {
+                assert!(destination.index() < agents.len(), "seed {seed}");
+                if message.queued_time < end {
+                    let key = (message.queued_time, sent_at, handle);
+                    sent[destination.index()].push((key, message));
+                } else {
+                    in_flight.push(message_key(message));
+                }
+            }
+        }
+    }
+    (sent, in_flight)
+}
+
 #[test]
 fn messages_are_conserved_and_delivered_in_issue_order() {
     let mut halted_in_flight = 0;
+    let mut delayed_arrivals = 0;
+    // Arrival ticks where a delayed message and an ordinary send reach one
+    // receiver, which is where their relative order matters.
+    let mut mixed_arrival_ticks = 0;
     for seed in 0..CASES {
         let mut case = build(seed, Size::Any, false, false, true);
         run(&mut case);
@@ -753,30 +799,7 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
         let agents = simulation.agents();
         let end = simulation.time();
 
-        let mut sent: Vec<Vec<(ArrivalKey, &Message<Payload>)>> = vec![Vec::new(); agents.len()];
-        let mut in_flight = Vec::new();
-        for (handle, agent) in agents.iter().enumerate() {
-            let send_ticks: Vec<DiscreteTime> = agent.downcast_ref::<Chaos>().map_or_else(
-                || agent.produced().iter().map(|m| m.queued_time).collect(),
-                |chaos| chaos.send_ticks.clone(),
-            );
-            assert_eq!(send_ticks.len(), agent.produced().len(), "seed {seed}");
-            for (message, &sent_at) in agent.produced().iter().zip(&send_ticks) {
-                assert_eq!(message.source, Some(agent_id(handle)), "seed {seed}");
-                assert_eq!(message.completed_time, None, "seed {seed}");
-                assert!((case.start..end).contains(&sent_at), "seed {seed}");
-                assert!(message.queued_time >= sent_at, "seed {seed}");
-                if let Some(destination) = message.destination {
-                    assert!(destination.index() < agents.len(), "seed {seed}");
-                    if message.queued_time < end {
-                        let key = (message.queued_time, sent_at, handle);
-                        sent[destination.index()].push((key, message));
-                    } else {
-                        in_flight.push(message_key(message));
-                    }
-                }
-            }
-        }
+        let (mut sent, mut in_flight) = sends_by_receiver(seed, &case);
         let mut still_in_flight: Vec<_> = simulation.in_flight().map(message_key).collect();
         in_flight.sort();
         halted_in_flight += in_flight.len();
@@ -789,6 +812,14 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
                 .collect();
             let mut arrivals = std::mem::take(&mut sent[handle]);
             arrivals.sort_by_key(|&(key, _)| key);
+            delayed_arrivals += arrivals
+                .iter()
+                .filter(|arrival| was_delayed(arrival))
+                .count();
+            mixed_arrival_ticks += arrivals
+                .chunk_by(|(left, _), (right, _)| left.0 == right.0)
+                .filter(|tick| tick.iter().any(was_delayed) && !tick.iter().all(was_delayed))
+                .count();
             expected.extend(arrivals.iter().map(|&(_, message)| message_key(message)));
             let held: Vec<_> = agent
                 .consumed()
@@ -847,6 +878,14 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
     assert!(
         halted_in_flight > 50,
         "cases must halt with delayed messages still in flight"
+    );
+    assert!(
+        delayed_arrivals > 500,
+        "cases must deliver delayed messages"
+    );
+    assert!(
+        mixed_arrival_ticks > 20,
+        "cases must deliver delayed and ordinary messages in one tick"
     );
 }
 

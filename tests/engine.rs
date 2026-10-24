@@ -759,24 +759,27 @@ fn average_wait_preserves_short_durations_at_large_timestamps() {
 
 type CallbackTrace = std::sync::Arc<std::sync::Mutex<Vec<(u64, usize)>>>;
 
+/// The tick and sender handle of a message, so payloads tell sends apart.
+type Stamp = (u64, usize);
+
 #[derive(Clone, Debug)]
 struct ScheduledAgent(CallbackTrace);
 
-impl Agent for ScheduledAgent {
-    fn on_tick(&mut self, ctx: &mut AgentContext) {
+impl Agent<Stamp> for ScheduledAgent {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, Stamp>) {
         self.0
             .lock()
             .unwrap_or_else(|error| panic!("{error}"))
             .push((ctx.time(), ctx.id().index()));
         if ctx.id().index() == 0 {
-            ctx.send("agent-65", ());
+            ctx.send("agent-65", (ctx.time(), 0));
             ctx.sleep_for(ctx.time() % 3);
         } else {
             ctx.sleep_for(if ctx.time() < 6 { 1 } else { 100 });
         }
     }
 
-    fn on_message(&mut self, ctx: &mut AgentContext, _: &Message) {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, Stamp>, _: &Message<Stamp>) {
         self.0
             .lock()
             .unwrap_or_else(|error| panic!("{error}"))
@@ -784,12 +787,12 @@ impl Agent for ScheduledAgent {
         if ctx.time() % 4 == 1 {
             ctx.set_processing_status(MessageProcessingStatus::InProgress);
         }
-        ctx.send("agent-0", ());
+        ctx.send("agent-0", (ctx.time(), ctx.id().index()));
         ctx.sleep_for(2);
     }
 }
 
-fn scheduling_scenario(metrics: bool) -> (Simulation, CallbackTrace) {
+fn scheduling_scenario(metrics: bool) -> (Simulation<Stamp>, CallbackTrace) {
     let trace = CallbackTrace::default();
     let agents: Vec<_> = (0..130)
         .map(|index| {
@@ -866,6 +869,7 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
             assert_eq!(right.completed_time, left.completed_time);
             assert_eq!(right.source, left.source);
             assert_eq!(right.destination, left.destination);
+            assert_eq!(right.payload, left.payload);
         }
     }
     for agent in dense.agents() {
@@ -939,8 +943,8 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
     agents[65]
         .options
         .initial_queue
-        .push_back(Message::new(0, ()));
-    let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation| {
+        .push_back(Message::new(0, (0, 65)));
+    let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation<Stamp>| {
         simulation.find_by_name("agent-65").is_some_and(|agent| {
             (simulation.time() == 5 && agent.state.mode == AgentMode::AsleepUntil(5))
                 || agent.consumed_count() > 0
