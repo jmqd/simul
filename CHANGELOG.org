@@ -6,6 +6,20 @@ minimum (was 1.71), and the crate builds on rand 0.10 (was 0.9): =TrialRng=
 implements its traits, so code that samples from it with rand or rand_distr
 needs rand 0.10 and rand_distr 0.6. Newest entries first.
 
+** DONE Balance parallel batches across workers (breaking)
+=run_parallel= and =ParallelExecutor::run= no longer give each worker one
+fixed contiguous shard. Each worker keeps its one caller-built workspace and
+claims small contiguous chunks of the canonical batch until none remain, so
+uneven trial costs no longer leave workers idle. Records, their order, and
+the factory calls are unchanged. On an M2 Max with 8 workers, workers are busy
+93% instead of 56% of the run when trial cost grows with the candidate, and
+95% instead of 82% for i.i.d. lognormal costs (sigma 0.5); one very long
+trial still bounds the batch. Cheap uniform batches retire the same
+instructions. =ParallelRunError::WorkerWorkloadPanic { worker }= becomes
+=WorkloadPanic { trial }=, the lowest panicking trial in canonical order,
+which does not depend on the schedule; after a panic, workers finish their
+claimed chunks and claim no more.
+
 ** DONE Generate ChaCha12 streams with the chacha20 crate
 =TrialRng= and =AgentStreams= draw from RustCrypto's =chacha20= (already a
 dependency of rand 0.10) instead of =rand_chacha=, whose =ppv-lite86= backend

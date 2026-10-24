@@ -864,7 +864,7 @@ impl ParallelConfig {
 /// Worker capacity is captured at construction as the smaller of the requested
 /// count and available parallelism (or one if availability cannot be determined).
 /// Later runs reuse those threads, even when batch sizes or available parallelism
-/// change; each batch uses at most one shard per worker and at most one per trial.
+/// change; each batch uses at most one workspace per worker and at most one per trial.
 /// Only the pool and configuration persist. Workspaces and output storage belong
 /// to each run, so mutable evaluator state is never implicitly carried forward.
 #[cfg(feature = "parallel")]
@@ -895,7 +895,7 @@ impl ParallelExecutor {
     ///
     /// The evaluator contract and failure ordering are the same as [`run_parallel`].
     /// Every run validates input and allocates all batch storage before invoking
-    /// fresh workspace factories on the caller thread, once per nonempty shard.
+    /// fresh workspace factories on the caller thread, once per worker.
     /// All factories must succeed before evaluation starts. Empty batches invoke
     /// no callbacks. Workspaces are dropped after the batch, including on failure;
     /// the pool remains available for later runs without creating new threads.
@@ -904,7 +904,7 @@ impl ParallelExecutor {
     ///
     /// Returns batch validation/allocation or workspace-initialization failures
     /// before evaluation. When unwinding is enabled, callback panics are caught;
-    /// evaluator panics join all shards, select the lowest failing shard identity,
+    /// evaluator panics join all workers, select the lowest panicking trial,
     /// and discard partial output without retries.
     pub fn run<C, O, E, W, WE>(
         &self,
@@ -940,20 +940,21 @@ pub enum ParallelRunError<WE> {
     Pool(rayon::ThreadPoolBuildError),
     /// A caller-thread workspace factory returned a typed error.
     WorkerInitialization {
-        /// Zero-based contiguous shard identity.
+        /// Zero-based index of the failing factory call.
         worker: usize,
         /// Original workspace initialization error.
         source: WE,
     },
     /// A caller-thread workspace factory panicked.
     WorkerFactoryPanic {
-        /// Zero-based contiguous shard identity.
+        /// Zero-based index of the panicking factory call.
         worker: usize,
     },
-    /// An evaluator panicked; all shards joined and partial output was discarded.
-    WorkerWorkloadPanic {
-        /// Lowest zero-based contiguous shard identity whose evaluator panicked.
-        worker: usize,
+    /// An evaluator panicked; all workers joined and partial output was discarded.
+    WorkloadPanic {
+        /// The lowest panicking trial in canonical order. Every trial before it
+        /// was evaluated, so the identity does not depend on scheduling.
+        trial: TrialId,
     },
 }
 
@@ -969,8 +970,8 @@ impl<WE: fmt::Display> fmt::Display for ParallelRunError<WE> {
             Self::WorkerFactoryPanic { worker } => {
                 write!(formatter, "worker {worker} factory panicked")
             }
-            Self::WorkerWorkloadPanic { worker } => {
-                write!(formatter, "worker {worker} evaluator panicked")
+            Self::WorkloadPanic { trial } => {
+                write!(formatter, "evaluator panicked on trial {trial:?}")
             }
         }
     }
@@ -983,20 +984,26 @@ impl<WE: std::error::Error + 'static> std::error::Error for ParallelRunError<WE>
             Self::Batch(source) => Some(source),
             Self::Pool(source) => Some(source),
             Self::WorkerInitialization { source, .. } => Some(source),
-            Self::WorkerFactoryPanic { .. } | Self::WorkerWorkloadPanic { .. } => None,
+            Self::WorkerFactoryPanic { .. } | Self::WorkloadPanic { .. } => None,
         }
     }
 }
 
-/// A contiguous canonical input shard with output storage reserved before callbacks.
+/// Chunks per worker: enough to even out uneven trial costs, few enough that
+/// claiming one is negligible next to evaluating it.
 #[cfg(feature = "parallel")]
-struct ParallelShard<'a, C, O, E> {
+const CHUNKS_PER_WORKER: usize = 8;
+
+/// A contiguous canonical run of trials with its output storage reserved
+/// before callbacks; workers claim chunks in canonical order.
+#[cfg(feature = "parallel")]
+struct ParallelChunk<'a, C, O, E> {
     /// Borrowed canonical input, never cloned or redistributed during evaluation.
     trials: &'a [TrialSpec<C>],
     /// Guard for the initialized prefix of one disjoint output range.
     records: RecordRange<'a, TrialRecord<O, E>>,
-    /// Whether evaluation unwound before the shard completed.
-    panicked: bool,
+    /// The trial whose evaluation unwound, if one did.
+    panicked: Option<TrialId>,
 }
 
 /// Owns destruction of partially initialized output until the run succeeds.
@@ -1038,18 +1045,21 @@ impl<T> Drop for RecordRange<'_, T> {
 ///
 /// Conforming evaluators must depend only on the candidate, context, immutable
 /// configuration, and unobservable worker-local scratch. Output order is always
-/// canonical and independent of scheduling or worker count. Each contiguous
-/// canonical shard owns exactly one mutable workspace, initialized on the caller
-/// thread. All storage and the dedicated pool are prepared before factories run;
-/// all factories succeed before any evaluation begins. Empty input needs neither.
-/// Use [`ParallelExecutor`] to reuse a dedicated pool across multiple batches.
+/// canonical and independent of scheduling or worker count. Each worker owns
+/// exactly one mutable workspace, initialized on the caller thread, and claims
+/// small contiguous chunks of the canonical batch until none remain, so uneven
+/// trial costs do not leave workers idle. All storage and the dedicated pool
+/// are prepared before factories run; all factories succeed before any
+/// evaluation begins. Empty input needs neither. Use [`ParallelExecutor`] to
+/// reuse a dedicated pool across multiple batches.
 ///
 /// # Errors
 ///
 /// Returns typed batch, pool, or workspace-initialization failures before any
 /// evaluations. When unwinding is enabled, factory and evaluator panics become
-/// typed errors. Evaluator panics join all shards, select the lowest failing shard
-/// identity, and discard partial output without retrying callbacks.
+/// typed errors. After an evaluator panic, workers finish their claimed chunks
+/// and claim no more; the error names the lowest panicking trial in canonical
+/// order, and partial output is discarded without retrying callbacks.
 #[cfg(feature = "parallel")]
 pub fn run_parallel<C, O, E, W, WE>(
     master_seed: MasterSeed,
@@ -1102,32 +1112,34 @@ where
         rayon::ThreadPool::current_num_threads,
     );
     let workers = capacity.min(ordered.len());
+    let chunk_size = ordered.len().div_ceil(workers * CHUNKS_PER_WORKER);
+    let chunk_count = ordered.len().div_ceil(chunk_size);
+    let allocation = |source| ParallelRunError::Batch(RunError::Allocation(source));
     let mut workspaces = Vec::new();
-    workspaces
-        .try_reserve_exact(workers)
-        .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
-    let mut shards = Vec::new();
-    shards
-        .try_reserve_exact(workers)
-        .map_err(|source| ParallelRunError::Batch(RunError::Allocation(source)))?;
-
-    let base_size = ordered.len().div_euclid(workers);
-    let remainder = ordered.len().rem_euclid(workers);
-    let mut remaining = ordered.as_slice();
-    let mut remaining_output = &mut records.spare_capacity_mut()[..ordered.len()];
-    for worker in 0..workers {
-        let size = base_size + usize::from(worker < remainder);
-        let (trials, rest) = remaining.split_at(size);
-        remaining = rest;
-        let (storage, rest) = remaining_output.split_at_mut(size);
-        remaining_output = rest;
-        shards.push(ParallelShard {
+    workspaces.try_reserve_exact(workers).map_err(allocation)?;
+    let mut chunks = Vec::new();
+    chunks.try_reserve_exact(chunk_count).map_err(allocation)?;
+    // Each worker keeps the chunks it evaluated, so their guards outlive the
+    // parallel section; any worker may evaluate every chunk.
+    let mut finished = Vec::new();
+    finished.try_reserve_exact(workers).map_err(allocation)?;
+    for _ in 0..workers {
+        let mut done = Vec::new();
+        done.try_reserve_exact(chunk_count).map_err(allocation)?;
+        finished.push(done);
+    }
+    let output = &mut records.spare_capacity_mut()[..ordered.len()];
+    for (trials, storage) in ordered
+        .chunks(chunk_size)
+        .zip(output.chunks_mut(chunk_size))
+    {
+        chunks.push(ParallelChunk {
             trials,
             records: RecordRange {
                 storage,
                 initialized: 0,
             },
-            panicked: false,
+            panicked: None,
         });
     }
 
@@ -1148,44 +1160,98 @@ where
         workspaces.push(workspace);
     }
 
+    let queue = std::sync::Mutex::new(chunks.into_iter());
+    let stop = std::sync::atomic::AtomicBool::new(false);
     pool.install(|| {
-        shards
+        workspaces
             .par_iter_mut()
-            .zip(workspaces.par_iter_mut())
-            .for_each(|(shard, workspace)| {
-                shard.panicked = catch_callback(|| {
-                    for trial in shard.trials {
-                        let context =
-                            TrialContext::new(master_seed, trial.key, trial.common_random_group);
-                        let result = evaluate(workspace, &trial.candidate, &context);
-                        shard.records.push(TrialRecord {
-                            key: trial.key,
-                            replay: context.replay_key(),
-                            result,
-                        });
-                    }
-                })
-                .is_err();
+            .zip(finished.par_iter_mut())
+            .for_each(|(workspace, done)| {
+                evaluate_claimed_chunks(&queue, &stop, workspace, done, master_seed, &evaluate);
             });
     });
-    if let Some(worker) = shards.iter().position(|shard| shard.panicked) {
-        return Err(ParallelRunError::WorkerWorkloadPanic { worker });
+    if let Some(trial) = finished
+        .iter()
+        .flatten()
+        .filter_map(|chunk| chunk.panicked)
+        .min()
+    {
+        return Err(ParallelRunError::WorkloadPanic { trial });
     }
-    for shard in &mut shards {
+    let mut evaluated = 0;
+    for chunk in finished.iter_mut().flatten() {
         assert_eq!(
-            shard.records.initialized,
-            shard.records.storage.len(),
-            "a shard that did not panic must have written every reserved slot"
+            chunk.records.initialized,
+            chunk.records.storage.len(),
+            "a chunk that did not panic must have written every reserved slot"
         );
-        shard.records.initialized = 0;
+        evaluated += chunk.records.initialized;
+        chunk.records.initialized = 0;
     }
-    drop(shards);
-    // SAFETY: the assertion above proved every shard initialized its whole
-    // range, the ranges are disjoint and cover ordered.len() reserved slots,
-    // and all parallel work joined. Guards are disarmed and no mutable slices
-    // remain; records is sole owner.
+    assert_eq!(
+        evaluated,
+        ordered.len(),
+        "without a panic, workers claim every chunk"
+    );
+    drop(finished);
+    drop(queue);
+    // SAFETY: the assertions above proved that the evaluated chunks are
+    // fully initialized and together cover all ordered.len() reserved slots;
+    // chunk ranges are disjoint and all parallel work joined. Guards are
+    // disarmed and no mutable slices remain; records is sole owner.
     unsafe { records.set_len(ordered.len()) };
     Ok(records)
+}
+
+/// One worker's loop: claims chunks in canonical order and evaluates them
+/// with its workspace, keeping each evaluated chunk in `done`.
+///
+/// Workers stop claiming after any panic but finish a claimed chunk. Since
+/// chunks are claimed in canonical order, the lowest panicking trial is always
+/// evaluated and so reported.
+#[cfg(feature = "parallel")]
+fn evaluate_claimed_chunks<'a, C, O, E, W>(
+    queue: &std::sync::Mutex<std::vec::IntoIter<ParallelChunk<'a, C, O, E>>>,
+    stop: &std::sync::atomic::AtomicBool,
+    workspace: &mut W,
+    done: &mut Vec<ParallelChunk<'a, C, O, E>>,
+    master_seed: MasterSeed,
+    evaluate: &impl Fn(&mut W, &C, &TrialContext) -> Result<O, E>,
+) {
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        let claimed = queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next();
+        let Some(mut chunk) = claimed else {
+            break;
+        };
+        let unwound = catch_callback(|| {
+            for trial in chunk.trials {
+                let context = TrialContext::new(master_seed, trial.key, trial.common_random_group);
+                let result = evaluate(workspace, &trial.candidate, &context);
+                chunk.records.push(TrialRecord {
+                    key: trial.key,
+                    replay: context.replay_key(),
+                    result,
+                });
+            }
+        })
+        .is_err();
+        if unwound {
+            chunk.panicked = chunk
+                .trials
+                .get(chunk.records.initialized)
+                .map(|trial| trial.key);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        // Capacity for every chunk was reserved before callbacks.
+        done.push(chunk);
+        if unwound {
+            // The workspace may be half-updated.
+            break;
+        }
+    }
 }
 
 /// A finite floating-point value accepted for ranking or replacement policies.

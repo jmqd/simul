@@ -42,14 +42,17 @@ Use-cases:
   candidate inputs, and evaluator configuration. Named common-random streams
   share noise across candidates; `ValidationHoldout` separates validation noise.
 - With `parallel`, `run_parallel` uses a dedicated bounded Rayon pool and one
-  mutable workspace per contiguous shard. Its factory is
+  mutable workspace per worker. Its factory is
   `FnMut() -> Result<W, WE>`, called on the caller thread. Explicit batch/output
   storage and the pool are prepared before factories, and every factory succeeds
   before evaluation starts. Requested workers are capped by work and available
   parallelism. Evaluators must use only their inputs, context, immutable
   configuration, and unobservable scratch for worker-count-independent results.
-  Shards write directly into disjoint ranges of one final result allocation;
-  initialization guards drop partial results on failure without a second buffer.
+  Workers claim small contiguous chunks of the canonical batch until none
+  remain, so trials of uneven cost do not leave workers idle. Chunks write
+  directly into disjoint ranges of one final result allocation; initialization
+  guards drop partial results on failure without a second buffer. An evaluator
+  panic is reported as the lowest panicking trial, whatever the schedule.
   For repeated batches, construct `ParallelExecutor::new(config)` once and call
   `executor.run(seed, trials, init_worker, evaluate)`. Worker capacity is fixed at
   construction; each batch initializes fresh workspaces on its caller thread.

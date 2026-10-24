@@ -431,9 +431,10 @@ mod parallel {
                 Ok::<_, Infallible>(())
             },
         );
+        let second = TrialId::new(CandidateId::new(2), ReplicationId::new(1));
         assert!(matches!(
             result,
-            Err(ParallelRunError::WorkerWorkloadPanic { worker: 0 })
+            Err(ParallelRunError::WorkloadPanic { trial }) if trial == second
         ));
         assert_eq!(evaluations.load(Ordering::SeqCst), 2);
         assert_eq!(1, dropped.load(Ordering::SeqCst));
@@ -500,7 +501,7 @@ mod parallel {
 
     #[cfg(panic = "unwind")]
     #[test]
-    fn failed_output_drops_partial_and_completed_shards_exactly_once() {
+    fn failed_output_drops_partial_and_completed_chunks_exactly_once() {
         for workers in [1, 4] {
             let drops: [AtomicUsize; 8] = std::array::from_fn(|_| AtomicUsize::new(0));
             let created: [AtomicUsize; 8] = std::array::from_fn(|_| AtomicUsize::new(0));
@@ -518,9 +519,10 @@ mod parallel {
                     Ok::<_, Infallible>(Tracked(&drops[index]))
                 },
             );
+            let first_panic = TrialId::new(CandidateId::new(1), ReplicationId::new(0));
             assert!(matches!(
                 result,
-                Err(ParallelRunError::WorkerWorkloadPanic { worker: 0 })
+                Err(ParallelRunError::WorkloadPanic { trial }) if trial == first_panic
             ));
             assert_eq!(created[0].load(Ordering::SeqCst), 1);
             for (created, dropped) in created.iter().zip(&drops) {
@@ -529,6 +531,34 @@ mod parallel {
                     dropped.load(Ordering::SeqCst)
                 );
             }
+        }
+    }
+
+    // Workers race, and a later panic can happen first in real time; the
+    // error must still name the lowest panicking trial.
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn workload_panic_names_the_lowest_panicking_trial_under_any_schedule() {
+        let lowest = TrialId::new(CandidateId::new(37), ReplicationId::new(0));
+        for _ in 0..50 {
+            let result = run_parallel(
+                MASTER_SEED,
+                (0..64).map(|id| trial(id, 0)),
+                ParallelConfig::new(nonzero(4), nonzero(64)),
+                || Ok::<_, Infallible>(()),
+                |(), id, _| {
+                    assert!(![37, 41, 50, 63].contains(id), "workload panic");
+                    if *id < 37 {
+                        // Let workers on later chunks reach their panics first.
+                        std::thread::yield_now();
+                    }
+                    Ok::<_, Infallible>(())
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(ParallelRunError::WorkloadPanic { trial }) if trial == lowest
+            ));
         }
     }
 
