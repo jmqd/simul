@@ -3,6 +3,16 @@
 * 0.6.0 (unreleased)
 A breaking release; =README.md= describes the new API. Newest entries first.
 
+** DONE Describe the 0.6.0 API in the README
+The README covers the builder and its options, declarative halting, typed
+messages, custom agents built with =AgentInitializer::reactive= and
+=proactive=, delivery to Proactive agents, sleeping and =InProgress=, seeded
+=ctx.rng()= streams, delayed sends, halt reasons and the =Failed= mode, message
+counts and opt-in history, change-based queue metrics, and tick skipping. Its
+Rust examples run as doctests, so they keep compiling against the current API.
+The Poisson cafe plotting section is gone; its example and agents no longer
+exist.
+
 ** DONE Trim the published package and document the public API
 =Cargo.toml= lists what =cargo publish= ships: sources, tests, examples,
 benchmarks, the README, this changelog, and the license; development tooling,

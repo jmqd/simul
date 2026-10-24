@@ -25,8 +25,9 @@ Use-cases:
 
 - For some examples, see the `examples` subdirectory.
 - For ideas not yet implemented, see [`examples/CANDIDATES.md`](./examples/CANDIDATES.md).
-- For use cases where your agents need their own custom state, define a struct,
-  implement `Agent`, and add it with `Simulation::builder(halt).agent(..)`.
+- For agents with their own state, implement `Agent` for your type and add it
+  with `AgentInitializer::reactive` or `AgentInitializer::proactive`; see
+  [Custom agents](#custom-agents).
 
 ## Typed experiments
 
@@ -116,6 +117,84 @@ fn main() -> Result<(), SimulationError> {
 }
 ```
 
+## Custom agents
+
+Implement `Agent<M>` for your own types, where `M` is the simulation's message
+type. `AgentInitializer::reactive(name, agent)` runs an agent only when it has
+messages; `AgentInitializer::proactive(name, agent)` also calls its `on_tick`
+every tick it is awake. `.asleep_until(t)` starts an agent asleep until tick
+`t`, and `.initial_queue(messages)` gives it messages before the first tick.
+
+``` rust
+use simul::agent::{Agent, AgentContext, AgentInitializer};
+use simul::message::Message;
+use simul::{Halt, Simulation, SimulationError};
+
+/// Everything the agents say to each other.
+#[derive(Clone, Copy, Debug)]
+enum Drink {
+    Coffee,
+    Tea,
+}
+
+/// Orders a drink every 3 ticks.
+#[derive(Clone, Debug)]
+struct Customer;
+
+impl Agent<Drink> for Customer {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, Drink>) {
+        // Draws come from the simulation seed, so equal seeds give equal runs.
+        let drink = if ctx.rng().uniform_f64() < 0.5 {
+            Drink::Coffee
+        } else {
+            Drink::Tea
+        };
+        ctx.send("barista", drink);
+        ctx.sleep_for(3);
+    }
+}
+
+/// Serves each order, then rests for as long as the drink takes.
+#[derive(Clone, Debug, Default)]
+struct Barista {
+    coffees: u32,
+    teas: u32,
+}
+
+impl Agent<Drink> for Barista {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, Drink>, order: &Message<Drink>) {
+        match order.payload {
+            Drink::Coffee => {
+                self.coffees += 1;
+                ctx.sleep_for(2);
+            }
+            Drink::Tea => {
+                self.teas += 1;
+                ctx.sleep_for(1);
+            }
+        }
+    }
+}
+
+fn main() -> Result<(), SimulationError> {
+    let mut simulation = Simulation::builder(Halt::AtTime(30))
+        .agents([
+            AgentInitializer::proactive("customer", Customer),
+            AgentInitializer::reactive("barista", Barista::default()),
+        ])
+        .build()?;
+    simulation.run();
+
+    // Results stay in the agents; read the barista back as its own type.
+    let barista = simulation
+        .find_by_name("barista")
+        .and_then(|agent| agent.downcast_ref::<Barista>())
+        .expect("the barista is a Barista");
+    assert_eq!(10, barista.coffees + barista.teas);
+    Ok(())
+}
+```
+
 ## Simulation Concepts / Abstraction
 
 - A simulation is a collection of `Agents` that interact with each other via
@@ -140,6 +219,18 @@ fn main() -> Result<(), SimulationError> {
 - Randomness comes from `ctx.rng()`, a stream derived from the simulation's
   seed, the agent's name, and the tick, so equal seeds give equal runs, and
   adding or reordering other agents does not change an agent's draws.
+- `ctx.sleep_for(ticks)` puts an agent to sleep; it then wakes into the mode it
+  was built with. An agent that has not finished a message calls
+  `ctx.set_processing_status(MessageProcessingStatus::InProgress)` to keep it
+  at the front of its queue for its next visit; the default, `Done`, consumes
+  it.
+- `Simulation::builder(halt)` also takes `.seed(..)`, `.starting_time(..)`,
+  `.trial(..)`, `.message_history(..)`, `.queue_depth_metrics(..)`, and
+  `.asleep_cycles_metric(..)`; `build()` returns an error for duplicate names.
+- Built-in agents send `M::default()` or consume with no side effects:
+  `periodic_producer`, `periodic_consumer`, and `geometric_producer` /
+  `geometric_consumer`, whose gaps are memoryless with a given mean (at least
+  one tick).
 
 The simulation runs all the logic of calling `on_tick` and `on_message`,
 distributing messages, tracking metrics, incrementing time, and when to halt.
@@ -147,7 +238,8 @@ A `Simulation` is finished when its `Halt` condition holds (`Halt::AtTime(t)`,
 `Halt::Never`, or `Halt::when(predicate)`), or after the tick in which an
 `Agent` calls `ctx.send_halt_interrupt(reason)`; `Simulation::halt_reason()`
 returns that reason. If a callback panics, the simulation becomes
-`SimulationMode::Failed` and refuses to run again.
+`SimulationMode::Failed` and refuses to run again; `Simulation::mode()` reports
+whether it is constructed, running, completed, or failed.
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the

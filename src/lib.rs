@@ -99,6 +99,12 @@ pub mod experiment;
 /// Messages that agents send each other.
 pub mod message;
 
+// Runs the README's Rust examples as doctests so they keep compiling against
+// the current API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 use agent::{
     Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
     AgentMode, AgentState, MessageHistory, MessageProcessingStatus, QueueDepthChange,
