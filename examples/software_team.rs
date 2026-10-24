@@ -8,7 +8,7 @@
     reason = "self-contained example with discrete tick arithmetic and local domain types"
 )]
 
-use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
+use simul::agent::{Agent, AgentContext, AgentInitializer};
 use simul::message::Message;
 use simul::{DiscreteTime, Halt, Simulation};
 use std::collections::VecDeque;
@@ -851,68 +851,25 @@ impl SoftwareTeamReport {
     }
 }
 
-fn proactive_agent(name: &str, agent: impl Agent<Payload> + 'static) -> AgentInitializer<Payload> {
-    AgentInitializer {
-        agent: Box::new(agent),
-        options: AgentOptions {
-            initial_mode: AgentMode::Proactive,
-            wake_mode: AgentMode::Proactive,
-            name: name.to_string(),
-            ..Default::default()
-        },
-    }
-}
-
-fn reactive_agent(
-    name: &str,
-    agent: impl Agent<Payload> + 'static,
-    initial_queue: VecDeque<Message<Payload>>,
-) -> AgentInitializer<Payload> {
-    AgentInitializer {
-        agent: Box::new(agent),
-        options: AgentOptions {
-            initial_mode: AgentMode::Reactive,
-            wake_mode: AgentMode::Reactive,
-            name: name.to_string(),
-            initial_queue,
-        },
-    }
-}
-
 fn build_simulation(params: SoftwareTeamParameters) -> Simulation<Payload> {
     Simulation::builder(Halt::Never)
         .agents(vec![
-            proactive_agent(PRODUCT, ProductManager::new(params)),
-            proactive_agent(MEETINGS, MeetingScheduler { params }),
-            proactive_agent(SLACK, CommunicationScheduler { params }),
-            reactive_agent(
-                developer_name(0),
-                Developer::new(0, params),
-                vec![initial_tick()].into(),
-            ),
-            reactive_agent(
-                developer_name(1),
-                Developer::new(1, params),
-                vec![initial_tick()].into(),
-            ),
-            reactive_agent(
-                developer_name(2),
-                Developer::new(2, params),
-                vec![initial_tick()].into(),
-            ),
-            reactive_agent(
-                DECISIONS,
-                DecisionMaker::new(params),
-                vec![initial_tick()].into(),
-            ),
-            reactive_agent(
-                CI,
-                ContinuousIntegration::new(params),
-                vec![initial_tick()].into(),
-            ),
-            reactive_agent(MERGE, MergeBot, VecDeque::new()),
-            reactive_agent(METRICS, MetricsSink, VecDeque::new()),
-            proactive_agent(
+            AgentInitializer::proactive(PRODUCT, ProductManager::new(params)),
+            AgentInitializer::proactive(MEETINGS, MeetingScheduler { params }),
+            AgentInitializer::proactive(SLACK, CommunicationScheduler { params }),
+            AgentInitializer::reactive(developer_name(0), Developer::new(0, params))
+                .initial_queue([initial_tick()]),
+            AgentInitializer::reactive(developer_name(1), Developer::new(1, params))
+                .initial_queue([initial_tick()]),
+            AgentInitializer::reactive(developer_name(2), Developer::new(2, params))
+                .initial_queue([initial_tick()]),
+            AgentInitializer::reactive(DECISIONS, DecisionMaker::new(params))
+                .initial_queue([initial_tick()]),
+            AgentInitializer::reactive(CI, ContinuousIntegration::new(params))
+                .initial_queue([initial_tick()]),
+            AgentInitializer::reactive(MERGE, MergeBot),
+            AgentInitializer::reactive(METRICS, MetricsSink),
+            AgentInitializer::proactive(
                 STOPPER,
                 Stopper {
                     stop_at: params.total_ticks(),

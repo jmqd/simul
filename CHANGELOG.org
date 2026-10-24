@@ -1,5 +1,14 @@
 #+title: Changelog
 
+* DONE Construct agents with AgentInitializer::reactive and proactive (breaking)
+=AgentInitializer::reactive(name, agent)= and =proactive(name, agent)= replace
+the =AgentInitializer { agent: Box::new(..), options: AgentOptions { .. } }=
+literal, with =.asleep_until(t)= to start asleep and =.initial_queue(messages)=
+to queue messages before the first tick. =AgentOptions::defaults_with_name= is
+removed; =AgentOptions= stays public for unusual mode combinations. Every
+example, test, and benchmark now builds agents this way, and the helpers each
+one had defined for it are gone.
+
 * DONE Version 0.6.0
 Bump the crate to 0.6.0 for the breaking changes below. The README describes
 the builder, message delivery, seeded streams, halt reasons, failure mode, and

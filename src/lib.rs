@@ -1118,9 +1118,7 @@ mod tests {
 
     #[test]
     fn sleeping_reactive_agent_preserves_messages_until_wakeup() {
-        let mut consumer = periodic_consumer("consumer".to_string(), 1);
-        consumer.options.initial_mode = AgentMode::AsleepUntil(3);
-        consumer.options.wake_mode = AgentMode::Reactive;
+        let consumer = periodic_consumer("consumer".to_string(), 1).asleep_until(3);
         let mut simulation = Simulation::<()>::builder(Halt::AtTime(5))
             .agents(vec![
                 periodic_producer("producer".to_string(), 1, "consumer".to_string()),

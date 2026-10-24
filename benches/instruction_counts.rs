@@ -20,8 +20,8 @@
 
 use rand::{RngExt as _, SeedableRng as _};
 use simul::agent::{
-    periodic_consumer, periodic_producer, Agent, AgentContext, AgentInitializer, AgentMode,
-    AgentOptions, MessageProcessingStatus,
+    periodic_consumer, periodic_producer, Agent, AgentContext, AgentInitializer,
+    MessageProcessingStatus,
 };
 use simul::experiment::search::{sample_bounded, SearchStrategy, SeededRandomSearch, Told};
 use simul::experiment::{
@@ -34,7 +34,6 @@ use simul::experiment::{
 use simul::message::Message;
 use simul::{Halt, Simulation, SimulationBuilder};
 use std::cmp::Ordering;
-use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -478,23 +477,13 @@ fn sim_relay_ring() -> Fingerprint {
     const RELAYS: u8 = 16;
     let agent_initializers: Vec<_> = (0..RELAYS)
         .map(|index| {
-            let name = format!("relay-{index}");
-            let initial_queue: VecDeque<Message<Arc<[u8]>>> = (0..3_u8)
-                .map(|seed| Message::new(0, Arc::from([index ^ seed; 24])))
-                .collect();
-            AgentInitializer {
-                agent: Box::new(Relay {
-                    next: format!("relay-{}", (index + 1) % RELAYS),
-                    hold: index % 3,
-                    held: 0,
-                }),
-                options: AgentOptions {
-                    initial_mode: AgentMode::Reactive,
-                    wake_mode: AgentMode::Reactive,
-                    initial_queue,
-                    name,
-                },
-            }
+            let relay = Relay {
+                next: format!("relay-{}", (index + 1) % RELAYS),
+                hold: index % 3,
+                held: 0,
+            };
+            AgentInitializer::reactive(format!("relay-{index}"), relay)
+                .initial_queue((0..3_u8).map(|seed| Message::new(0, Arc::from([index ^ seed; 24]))))
         })
         .collect();
     let simulation = simulate(Simulation::builder(Halt::AtTime(4_000)).agents(agent_initializers));

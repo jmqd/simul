@@ -544,12 +544,20 @@ impl CachedTarget {
     }
 }
 
-/// Configuration for how an agent should start the simulation.
+/// How an agent starts a simulation: its name, modes, and initial queue.
+///
+/// [`AgentInitializer::reactive`] and [`AgentInitializer::proactive`] fill
+/// these in; set the fields directly only for unusual mode combinations.
 #[derive(Debug, Clone)]
 pub struct AgentOptions<M = ()> {
+    /// The mode the agent starts in.
     pub initial_mode: AgentMode,
+    /// The mode the agent returns to when a sleep ends.
     pub wake_mode: AgentMode,
+    /// Messages queued before the first tick, oldest first. The engine sets
+    /// each one's `destination` to this agent.
     pub initial_queue: VecDeque<Message<M>>,
+    /// The agent's name, unique within its simulation.
     pub name: String,
 }
 
@@ -565,22 +573,76 @@ impl<M> Default for AgentOptions<M> {
     }
 }
 
-impl<M> AgentOptions<M> {
-    #[must_use]
-    pub fn defaults_with_name(name: String) -> Self {
-        Self {
-            name,
-            ..Default::default()
-        }
-    }
-}
-
-/// An initializer for an agent. The `agent` holds the behavior and `on_`
-/// functions; the options are configuration for constructing the agent.
+/// An agent's behavior together with how it starts the simulation.
+///
+/// ```
+/// use simul::agent::{Agent, AgentContext, AgentInitializer};
+/// use simul::message::Message;
+///
+/// #[derive(Clone, Debug)]
+/// struct Clock;
+///
+/// impl Agent for Clock {
+///     fn on_tick(&mut self, ctx: &mut AgentContext) {
+///         ctx.sleep_for(10);
+///     }
+/// }
+///
+/// // Ticks every 10 ticks, starting at tick 5, with one message waiting.
+/// let clock = AgentInitializer::proactive("clock", Clock)
+///     .asleep_until(5)
+///     .initial_queue([Message::new(0, ())]);
+/// ```
 #[derive(Debug, Clone)]
 pub struct AgentInitializer<M = ()> {
+    /// The agent's behavior and state.
     pub agent: Box<dyn Agent<M>>,
+    /// The agent's name, modes, and initial queue.
     pub options: AgentOptions<M>,
+}
+
+impl<M> AgentInitializer<M> {
+    /// An agent that acts only on messages: it starts `Reactive` and returns
+    /// to `Reactive` after every sleep.
+    pub fn reactive(name: impl Into<String>, agent: impl Agent<M> + 'static) -> Self {
+        Self::with_mode(name.into(), Box::new(agent), AgentMode::Reactive)
+    }
+
+    /// An agent that also acts on its own: it starts `Proactive`, gets
+    /// [`Agent::on_tick`] every tick it is awake, and returns to `Proactive`
+    /// after every sleep.
+    pub fn proactive(name: impl Into<String>, agent: impl Agent<M> + 'static) -> Self {
+        Self::with_mode(name.into(), Box::new(agent), AgentMode::Proactive)
+    }
+
+    /// Builds an initializer that starts in and wakes into `mode`.
+    fn with_mode(name: String, agent: Box<dyn Agent<M>>, mode: AgentMode) -> Self {
+        Self {
+            agent,
+            options: AgentOptions {
+                initial_mode: mode,
+                wake_mode: mode,
+                initial_queue: VecDeque::new(),
+                name,
+            },
+        }
+    }
+
+    /// Starts the agent asleep until tick `time`; it then wakes into the mode
+    /// it was constructed with.
+    #[must_use]
+    pub const fn asleep_until(mut self, time: DiscreteTime) -> Self {
+        self.options.initial_mode = AgentMode::AsleepUntil(time);
+        self
+    }
+
+    /// Replaces the messages queued for the agent before the first tick,
+    /// oldest first.
+    #[must_use]
+    pub fn initial_queue(mut self, messages: impl IntoIterator<Item = Message<M>>) -> Self {
+        self.options.initial_queue = messages.into_iter().collect();
+        self
+    }
 }
 
 /// The bread and butter of the Simulation -- the Agent.
@@ -701,12 +763,12 @@ pub fn geometric_consumer<M>(
         }
     }
 
-    AgentInitializer {
-        agent: Box::new(GeometricConsumer {
+    AgentInitializer::reactive(
+        name,
+        GeometricConsumer {
             service: GeometricTicks::new(mean_service_ticks),
-        }),
-        options: AgentOptions::defaults_with_name(name.into()),
-    }
+        },
+    )
 }
 
 /// A `Proactive` producer that sends `M::default()` to `target`.
@@ -740,18 +802,13 @@ pub fn geometric_producer<M: Default>(
         }
     }
 
-    AgentInitializer {
-        agent: Box::new(GeometricProducer {
+    AgentInitializer::proactive(
+        name,
+        GeometricProducer {
             interarrival: GeometricTicks::new(mean_interarrival_ticks),
             target: CachedTarget::new(target.into()),
-        }),
-        options: AgentOptions {
-            initial_mode: AgentMode::Proactive,
-            wake_mode: AgentMode::Proactive,
-            name: name.into(),
-            ..Default::default()
         },
-    }
+    )
 }
 
 /// A simple agent that sends `M::default()` to `target` on a period.
@@ -776,18 +833,13 @@ pub fn periodic_producer<M: Default>(
         }
     }
 
-    AgentInitializer {
-        agent: Box::new(PeriodicProducer {
+    AgentInitializer::proactive(
+        name,
+        PeriodicProducer {
             period,
             target: CachedTarget::new(target.into()),
-        }),
-        options: AgentOptions {
-            initial_mode: AgentMode::Proactive,
-            wake_mode: AgentMode::Proactive,
-            name: name.into(),
-            ..Default::default()
         },
-    }
+    )
 }
 
 /// A simple agent that consumes messages on a period with no side effects.
@@ -805,8 +857,5 @@ pub fn periodic_consumer<M>(name: impl Into<String>, period: DiscreteTime) -> Ag
         }
     }
 
-    AgentInitializer {
-        agent: Box::new(PeriodicConsumer { period }),
-        options: AgentOptions::defaults_with_name(name.into()),
-    }
+    AgentInitializer::reactive(name, PeriodicConsumer { period })
 }

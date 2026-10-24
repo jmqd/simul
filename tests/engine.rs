@@ -8,10 +8,6 @@ use simul::message::Message;
 use simul::{Halt, Simulation, SimulationMode};
 use std::sync::Arc;
 
-fn proactive_agent<M>(name: &str, agent: impl Agent<M> + 'static) -> AgentInitializer<M> {
-    proactive_agent_boxed(name, Box::new(agent))
-}
-
 fn proactive_agent_boxed<M>(name: &str, agent: Box<dyn Agent<M>>) -> AgentInitializer<M> {
     AgentInitializer {
         agent,
@@ -61,8 +57,8 @@ fn messages_route_to_lower_own_and_higher_handles() {
         let mut simulation = Simulation::builder(Halt::AtTime(1))
             .agents((0..count).map(|handle| {
                 let [previous, _, next] = neighbors(handle);
-                proactive_agent(
-                    &name(handle),
+                AgentInitializer::proactive(
+                    name(handle),
                     NeighborSender {
                         previous: name(previous),
                         next: name(next),
@@ -129,7 +125,7 @@ fn send_to_delivers_by_identity_and_records_unknown_identities() {
     for count in [3_u32, 9] {
         let mut simulation = Simulation::builder(Halt::AtTime(1))
             .agents((0..count).map(|handle| {
-                proactive_agent(&format!("agent-{handle}"), IdentitySender { count })
+                AgentInitializer::proactive(format!("agent-{handle}"), IdentitySender { count })
             }))
             .message_history(true)
             .build()
@@ -165,7 +161,7 @@ fn send_to_delivers_by_identity_and_records_unknown_identities() {
 #[test]
 fn halt_interrupt_stops_simulation() {
     let mut simulation = Simulation::builder(Halt::Never)
-        .agents(vec![proactive_agent("halter", HaltImmediately)])
+        .agents(vec![AgentInitializer::proactive("halter", HaltImmediately)])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
 
@@ -188,7 +184,10 @@ impl Agent for MissingTargetSender {
 #[test]
 fn unknown_destination_records_produced_message_without_delivery() {
     let mut simulation = Simulation::builder(Halt::AtTime(1))
-        .agents(vec![proactive_agent("sender", MissingTargetSender)])
+        .agents(vec![AgentInitializer::proactive(
+            "sender",
+            MissingTargetSender,
+        )])
         .message_history(true)
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -215,7 +214,10 @@ fn unknown_destination_records_produced_message_without_delivery() {
 #[should_panic(expected = "message history is off")]
 fn reading_unrecorded_history_panics_instead_of_looking_empty() {
     let mut simulation = Simulation::builder(Halt::AtTime(1))
-        .agents(vec![proactive_agent("sender", MissingTargetSender)])
+        .agents(vec![AgentInitializer::proactive(
+            "sender",
+            MissingTargetSender,
+        )])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
@@ -236,7 +238,7 @@ impl Agent<u8> for BurstSender {
 fn messages_sent_by_one_callback_preserve_call_order() {
     let mut simulation = Simulation::builder(Halt::AtTime(1))
         .agents(vec![
-            proactive_agent("sender", BurstSender),
+            AgentInitializer::proactive("sender", BurstSender),
             periodic_consumer("receiver".to_string(), 1),
         ])
         .message_history(true)
@@ -286,14 +288,9 @@ fn in_progress_message_stays_queued_until_completed() {
         s.find_by_name("consumer")
             .is_some_and(|consumer| consumer.consumed_count() == 1)
     }))
-    .agents(vec![AgentInitializer {
-        agent: Box::new(SlowConsumer),
-        options: AgentOptions {
-            initial_queue: vec![Message::new(0, ())].into(),
-            name: "consumer".to_string(),
-            ..Default::default()
-        },
-    }])
+    .agents(vec![
+        AgentInitializer::reactive("consumer", SlowConsumer).initial_queue([Message::new(0, ())])
+    ])
     .message_history(true)
     .build()
     .unwrap_or_else(|error| panic!("{error}"));
@@ -329,7 +326,7 @@ fn draws(seed: u64, name: &str, before: usize, after: usize) -> Vec<u64> {
     let drawer = Drawer::default();
     let idle = |i: usize| periodic_consumer(format!("idle-{i}"), 1);
     let mut agents: Vec<_> = (0..before).map(idle).collect();
-    agents.push(proactive_agent(name, drawer.clone()));
+    agents.push(AgentInitializer::proactive(name, drawer.clone()));
     agents.extend((before..before + after).map(idle));
     let mut simulation = Simulation::builder(Halt::AtTime(4))
         .agents(agents)
@@ -491,7 +488,7 @@ fn proactive_agents_handle_one_message_then_tick() {
     let mut simulation = Simulation::builder(Halt::AtTime(3))
         .agents(vec![
             periodic_producer("producer", 1, "door"),
-            proactive_agent("door", log.clone()),
+            AgentInitializer::proactive("door", log.clone()),
         ])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -522,8 +519,7 @@ fn proactive_agents_handle_one_message_then_tick() {
 
 #[test]
 fn initial_queue_messages_are_addressed_to_their_owner() {
-    let mut owner = periodic_consumer("owner", 1);
-    owner.options.initial_queue.push_back(Message::new(0, ()));
+    let owner = periodic_consumer("owner", 1).initial_queue([Message::new(0, ())]);
     let mut simulation = Simulation::builder(Halt::AtTime(1))
         .agents(vec![periodic_consumer("other", 1), owner])
         .message_history(true)
@@ -568,7 +564,7 @@ fn queue_depth_metrics_record_each_tick_depth() {
 #[test]
 fn mutable_agent_access_preserves_identity_and_routing() {
     for count in [2, 9] {
-        let mut agents = vec![proactive_agent("sender", MissingTargetSender)];
+        let mut agents = vec![AgentInitializer::proactive("sender", MissingTargetSender)];
         agents.extend((1..count).map(|i| periodic_consumer(format!("receiver-{i}"), 1)));
         let mut simulation = Simulation::builder(Halt::AtTime(2))
             .agents(agents)
@@ -614,7 +610,7 @@ impl Agent for BoundaryCallback {
 fn time_overflow_fails_before_callbacks() {
     let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut simulation = Simulation::builder(Halt::Never)
-        .agents(vec![proactive_agent(
+        .agents(vec![AgentInitializer::proactive(
             "worker",
             BoundaryCallback(called.clone()),
         )])
@@ -631,7 +627,10 @@ fn time_overflow_fails_before_callbacks() {
 fn halt_reason_reports_the_interrupt_that_ended_the_latest_run() {
     let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut simulation = Simulation::builder(Halt::Never)
-        .agents(vec![proactive_agent("worker", BoundaryCallback(called))])
+        .agents(vec![AgentInitializer::proactive(
+            "worker",
+            BoundaryCallback(called),
+        )])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(None, simulation.halt_reason());
@@ -895,7 +894,7 @@ impl Agent<Option<u8>> for ChangingPayloadSender {
 fn repeated_sends_preserve_payloads_and_timestamps() {
     let mut simulation = Simulation::builder(Halt::AtTime(5))
         .agents(vec![
-            proactive_agent("sender", ChangingPayloadSender),
+            AgentInitializer::proactive("sender", ChangingPayloadSender),
             periodic_consumer("receiver", 1),
         ])
         .message_history(true)
@@ -985,10 +984,8 @@ fn all_sleeping_agents_still_check_halt_between_wakeups() {
     let trace = CallbackTrace::default();
     let agents: Vec<_> = (0..130)
         .map(|index| {
-            let mut agent =
-                proactive_agent(&format!("agent-{index}"), ScheduledAgent(trace.clone()));
-            agent.options.initial_mode = AgentMode::AsleepUntil(10);
-            agent
+            AgentInitializer::proactive(format!("agent-{index}"), ScheduledAgent(trace.clone()))
+                .asleep_until(10)
         })
         .collect();
     let mut simulation = Simulation::builder(Halt::AtTime(3))
@@ -1015,13 +1012,12 @@ fn callback_panic_fails_the_simulation_without_waking_later_agents() {
     }
     let mut agents: Vec<_> = (0..130)
         .map(|index| {
-            let mut agent = periodic_consumer(format!("agent-{index}"), 1);
-            agent.options.initial_mode = AgentMode::AsleepUntil(u64::MAX);
-            agent
+            // Only agent 65 is due to wake; the rest sleep for the whole run.
+            let wake = if index == 65 { 0 } else { u64::MAX };
+            periodic_consumer(format!("agent-{index}"), 1).asleep_until(wake)
         })
         .collect();
-    agents[0] = proactive_agent("agent-0", PanicTick);
-    agents[65].options.initial_mode = AgentMode::AsleepUntil(0);
+    agents[0] = AgentInitializer::proactive("agent-0", PanicTick);
     let mut simulation = Simulation::builder(Halt::Never)
         .agents(agents)
         .build()
@@ -1056,7 +1052,7 @@ fn finished_agents_read_back_as_their_own_type() {
     let mut simulation = Simulation::builder(Halt::AtTime(5))
         .agents(vec![
             periodic_consumer("idle", 1),
-            proactive_agent("counter", TickCounter::default()),
+            AgentInitializer::proactive("counter", TickCounter::default()),
         ])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -1110,11 +1106,8 @@ fn delayed_run(halt_at: u64) -> Simulation<u8> {
     let script = vec![(0, 3, 1), (0, 0, 2), (2, 0, 3)];
     let mut simulation = Simulation::builder(Halt::AtTime(halt_at))
         .agents(vec![
-            proactive_agent("sender", ScriptedSender(script)),
-            AgentInitializer {
-                agent: Box::new(Inbox::default()),
-                options: AgentOptions::defaults_with_name("inbox".to_string()),
-            },
+            AgentInitializer::proactive("sender", ScriptedSender(script)),
+            AgentInitializer::reactive("inbox", Inbox::default()),
         ])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -1171,7 +1164,7 @@ impl Agent for ZeroDelay {
 #[should_panic(expected = "a message cannot arrive in the tick it is sent")]
 fn delayed_messages_need_a_positive_delay() {
     let mut simulation = Simulation::builder(Halt::AtTime(1))
-        .agents(vec![proactive_agent("sender", ZeroDelay)])
+        .agents(vec![AgentInitializer::proactive("sender", ZeroDelay)])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
@@ -1193,11 +1186,8 @@ fn skipping_quiet_ticks_stops_at_the_next_arrival() {
     // Beyond 64 agents the sparse schedule serves the run instead of scans.
     for idle in [0, 100] {
         let mut agents = vec![
-            proactive_agent("sender", SendOnceThenSleep),
-            AgentInitializer {
-                agent: Box::new(Inbox::default()),
-                options: AgentOptions::defaults_with_name("inbox".to_string()),
-            },
+            AgentInitializer::proactive("sender", SendOnceThenSleep),
+            AgentInitializer::reactive("inbox", Inbox::default()),
         ];
         agents.extend((0..idle).map(|i| periodic_consumer(format!("idle-{i}"), 1)));
         let mut simulation = Simulation::builder(Halt::AtTime(100))
@@ -1229,7 +1219,10 @@ fn trial_draws(common_random_group: u64) -> Vec<Option<Vec<u64>>> {
         .chain(schedule.trials(CandidateId::new(1), ()));
     let records = run_serial(MasterSeed::from_u64(5), trials, |(), context| {
         let mut simulation = Simulation::builder(Halt::AtTime(3))
-            .agents(vec![proactive_agent("sampler", Sampler::default())])
+            .agents(vec![AgentInitializer::proactive(
+                "sampler",
+                Sampler::default(),
+            )])
             .trial(context)
             .build()
             .unwrap_or_else(|error| panic!("{error}"));

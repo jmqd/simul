@@ -4,7 +4,7 @@
 extern crate criterion;
 
 use criterion::{criterion_group, Criterion};
-use simul::agent::{periodic_consumer, periodic_producer, AgentMode};
+use simul::agent::{periodic_consumer, periodic_producer};
 use simul::{Halt, Simulation};
 use std::hint::black_box;
 
@@ -17,11 +17,10 @@ fn run_periodic_simulation(
         periodic_producer("producer".to_string(), 1, "consumer".to_string()),
         periodic_consumer("consumer".to_string(), 1),
     ];
-    agent_initializers.extend((0..idle_agents).map(|index| {
-        let mut agent = periodic_consumer(format!("idle-{index}"), 1);
-        agent.options.initial_mode = AgentMode::AsleepUntil(u64::MAX);
-        agent
-    }));
+    agent_initializers.extend(
+        (0..idle_agents)
+            .map(|index| periodic_consumer(format!("idle-{index}"), 1).asleep_until(u64::MAX)),
+    );
     let mut simulation = Simulation::builder(Halt::AtTime(ticks))
         .agents(agent_initializers)
         .queue_depth_metrics(enable_queue_depth_metrics)

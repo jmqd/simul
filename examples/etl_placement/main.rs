@@ -38,7 +38,7 @@ use config::{Config, Durability, Placement, TableSpec};
 use metrics::{Recorder, SharedRecorder};
 use net::{FaultPlan, Peer, Window};
 use rng::Rng;
-use simul::agent::{AgentInitializer, AgentMode, AgentOptions};
+use simul::agent::AgentInitializer;
 use simul::experiment::{
     aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
     NonFinitePolicy, TrialContext, TrialRecord, TrialSpec,
@@ -47,25 +47,9 @@ use simul::{Halt, Simulation};
 use std::convert::Infallible;
 use std::rc::Rc;
 use time::{secs, ticks, Tick};
-use wire::Payload;
 
 const MASTER_SEED: MasterSeed = MasterSeed::from_u64(0x00E7_1A2C_E3E7);
 const MB: f64 = 1e6;
-
-fn proactive(
-    name: &str,
-    agent: impl simul::agent::Agent<Payload> + 'static,
-) -> AgentInitializer<Payload> {
-    AgentInitializer {
-        agent: Box::new(agent),
-        options: AgentOptions {
-            initial_mode: AgentMode::Proactive,
-            wake_mode: AgentMode::Proactive,
-            name: name.to_owned(),
-            ..AgentOptions::default()
-        },
-    }
-}
 
 /// Everything one run reports.
 #[derive(Clone, Debug)]
@@ -130,9 +114,9 @@ fn run_trial(config: &Config, context: &TrialContext) -> Outcome {
     );
     let mut simulation = Simulation::builder(Halt::AtTime(config.duration))
         .agents([
-            proactive(source::NAME, postgres),
-            proactive(etl::NAME, replicator),
-            proactive(sink::NAME, destination),
+            AgentInitializer::proactive(source::NAME, postgres),
+            AgentInitializer::proactive(etl::NAME, replicator),
+            AgentInitializer::proactive(sink::NAME, destination),
         ])
         .build()
         .unwrap_or_else(|error| panic!("the agent layout is valid: {error}"));

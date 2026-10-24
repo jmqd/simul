@@ -2,7 +2,7 @@
 use rand::prelude::*;
 use rand_distr::weighted::WeightedIndex;
 use rustc_hash::FxHashMap;
-use simul::agent::{Agent, AgentContext, AgentInitializer, AgentOptions};
+use simul::agent::{Agent, AgentContext, AgentInitializer};
 use simul::experiment::MasterSeed;
 use simul::message::Message;
 use simul::{Halt, Simulation};
@@ -147,22 +147,11 @@ fn normal_nine_ball_simulation_alice_vs_john(
         opponent_name: "alice".to_string(),
     };
 
-    let mut agent_initializers: Vec<AgentInitializer<u8>> = vec![
-        AgentInitializer {
-            agent: Box::new(alice),
-            options: AgentOptions::defaults_with_name("alice".to_string()),
-        },
-        AgentInitializer {
-            agent: Box::new(john),
-            options: AgentOptions::defaults_with_name("john".to_string()),
-        },
+    let opening = |player| (player == starting_player).then(|| Message::new(0, 1));
+    let agent_initializers = vec![
+        AgentInitializer::reactive("alice", alice).initial_queue(opening(0)),
+        AgentInitializer::reactive("john", john).initial_queue(opening(1)),
     ];
-
-    agent_initializers
-        .get_mut(starting_player)
-        .unwrap()
-        .options
-        .initial_queue = vec![Message::new(0, 1)].into();
 
     let mut sim = Simulation::builder(Halt::when(halt_condition))
         .seed(MasterSeed::from_u64(seed))
@@ -201,22 +190,11 @@ fn nine_ball_apa_rules_simulation_alice_vs_john(
         opponent_name: "alice".to_string(),
     };
 
-    let mut agent_initializers = vec![
-        AgentInitializer {
-            agent: Box::new(alice),
-            options: AgentOptions::defaults_with_name("alice".to_string()),
-        },
-        AgentInitializer {
-            agent: Box::new(john),
-            options: AgentOptions::defaults_with_name("john".to_string()),
-        },
+    let opening = |player| (player == starting_player).then(|| Message::new(0, 1));
+    let agent_initializers = vec![
+        AgentInitializer::reactive("alice", alice).initial_queue(opening(0)),
+        AgentInitializer::reactive("john", john).initial_queue(opening(1)),
     ];
-
-    agent_initializers
-        .get_mut(starting_player)
-        .unwrap()
-        .options
-        .initial_queue = vec![Message::new(0, 1)].into();
 
     let mut sim = Simulation::builder(Halt::when(halt_condition))
         .seed(MasterSeed::from_u64(seed))
@@ -290,34 +268,33 @@ mod tests {
         for apa_rules in [false, true] {
             let run_out_distribution = WeightedIndex::new([1; 10])
                 .unwrap_or_else(|error| panic!("invalid test distribution: {error}"));
-            let agent: Box<dyn Agent<u8>> = if apa_rules {
-                Box::new(ApaNineBallPlayer {
-                    luck_chance: 0.0,
-                    run_out_choices: [8; 10],
-                    run_out_distribution,
-                    winning_threshold: 9,
-                    score: 0,
-                    opponent_name: "opponent".to_string(),
-                })
+            let player = if apa_rules {
+                AgentInitializer::reactive(
+                    "player",
+                    ApaNineBallPlayer {
+                        luck_chance: 0.0,
+                        run_out_choices: [8; 10],
+                        run_out_distribution,
+                        winning_threshold: 9,
+                        score: 0,
+                        opponent_name: "opponent".to_string(),
+                    },
+                )
             } else {
-                Box::new(NineBallPlayer {
-                    luck_chance: 0.0,
-                    run_out_choices: [8; 10],
-                    run_out_distribution,
-                    winning_threshold: 1,
-                    score: 0,
-                    opponent_name: "opponent".to_string(),
-                })
+                AgentInitializer::reactive(
+                    "player",
+                    NineBallPlayer {
+                        luck_chance: 0.0,
+                        run_out_choices: [8; 10],
+                        run_out_distribution,
+                        winning_threshold: 1,
+                        score: 0,
+                        opponent_name: "opponent".to_string(),
+                    },
+                )
             };
             let mut simulation = Simulation::builder(Halt::AtTime(2))
-                .agents(vec![AgentInitializer {
-                    agent,
-                    options: AgentOptions {
-                        name: "player".to_string(),
-                        initial_queue: vec![Message::new(0, 2)].into(),
-                        ..Default::default()
-                    },
-                }])
+                .agents(vec![player.initial_queue([Message::new(0, 2)])])
                 .build()
                 .unwrap_or_else(|error| panic!("{error}"));
             simulation.run();

@@ -327,12 +327,12 @@ fn build_case(
             let target = names[rng.random_range(0..names.len())].clone();
             let mut initializer = match rng.random_range(0..100) {
                 0..20 => {
-                    let mut producer = periodic_producer(name, rng.random_range(1..=40), target);
+                    let producer = periodic_producer(name, rng.random_range(1..=40), target);
                     if rng.random_range(0..100) >= active_percent {
-                        producer.options.initial_mode =
-                            AgentMode::AsleepUntil(deadline(&mut rng, start, 100));
+                        producer.asleep_until(deadline(&mut rng, start, 100))
+                    } else {
+                        producer
                     }
-                    producer
                 }
                 20..45 => periodic_consumer(name, rng.random_range(0..=10)),
                 _ => chaos_agent(

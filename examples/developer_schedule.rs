@@ -1,4 +1,4 @@
-use simul::agent::{Agent, AgentContext, AgentInitializer, AgentMode, AgentOptions};
+use simul::agent::{Agent, AgentContext, AgentInitializer};
 use simul::message::Message;
 use simul::{Halt, Simulation};
 
@@ -61,29 +61,16 @@ impl Agent<usize> for ProductivityRecorder {
 fn main() {
     let mut simulation = Simulation::builder(Halt::AtTime(128))
         .agents(vec![
-            AgentInitializer {
-                agent: Box::new(Developer {
+            AgentInitializer::proactive(
+                "developer",
+                Developer {
                     schedule: [
                         false, false, false, false, false, false, false, false, false, false,
                         false, false, false, false, false, false, false, false,
                     ],
-                }),
-                options: AgentOptions {
-                    initial_mode: AgentMode::Proactive,
-                    wake_mode: AgentMode::Proactive,
-                    name: "developer".to_owned(),
-                    ..Default::default()
                 },
-            },
-            AgentInitializer {
-                agent: Box::new(ProductivityRecorder::default()),
-                options: AgentOptions {
-                    initial_mode: AgentMode::Reactive,
-                    wake_mode: AgentMode::Reactive,
-                    name: "productivity_recorder".to_owned(),
-                    ..Default::default()
-                },
-            },
+            ),
+            AgentInitializer::reactive("productivity_recorder", ProductivityRecorder::default()),
         ])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
