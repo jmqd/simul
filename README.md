@@ -138,7 +138,8 @@ fn main() -> Result<(), SimulationError> {
   tick, so quiet ticks are still skipped. Messages that have not arrived when a
   run halts stay in `Simulation::in_flight` for the next run.
 - Randomness comes from `ctx.rng()`, a stream derived from the simulation's
-  seed, the agent, and the tick, so equal seeds give equal runs.
+  seed, the agent's name, and the tick, so equal seeds give equal runs, and
+  adding or reordering other agents does not change an agent's draws.
 
 The simulation runs all the logic of calling `on_tick` and `on_message`,
 distributing messages, tracking metrics, incrementing time, and when to halt.
@@ -151,8 +152,9 @@ returns that reason. If a callback panics, the simulation becomes
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the
 target matched no agent, in which case the message is counted but not
-delivered; initial queue entries are addressed to their owner). `Simulation::agent(id)` and `Simulation::agent_id(name)` translate
-between identities and agents. Create initial messages with
+delivered; initial queue entries are addressed to their owner).
+`Simulation::agent(id)` and `Simulation::agent_id(name)` translate between
+identities and agents. Create initial messages with
 `Message::new(time, payload)`, not struct literals.
 
 Every agent counts the messages it consumed and produced
