@@ -1996,6 +1996,27 @@ mod tests {
         hasher.finalize().to_hex().to_string()
     }
 
+    /// Interleaves odd counts of `u32`s, fills of 1-16 bytes, and `u64`s at
+    /// odd word offsets across several block refills: word alignment at the
+    /// buffer boundary is where two block generators could disagree.
+    fn mixed_digest(mut rng: TrialRng) -> String {
+        let mut hasher = blake3::Hasher::new();
+        for round in 0..8 {
+            for _ in 0..3 {
+                hasher.update(&rand::Rng::next_u32(&mut rng).to_le_bytes());
+            }
+            hasher.update(&rng.next_u64().to_le_bytes());
+            for length in [1, 7, 9] {
+                let mut bytes = vec![0_u8; length + round];
+                rng.fill_bytes(&mut bytes);
+                hasher.update(&bytes);
+                hasher.update(&rng.next_u64().to_le_bytes());
+            }
+            hasher.update(&rng.uniform_f64().to_bits().to_le_bytes());
+        }
+        hasher.finalize().to_hex().to_string()
+    }
+
     // Seeds alone do not pin replay: the `ChaCha12` output behind them must
     // not change when the generator implementation does.
     #[test]
@@ -2032,6 +2053,19 @@ mod tests {
                 "578ad4043a18d76b6723c1dc71bffde470f85ac6e82ca7f69256366f2028643c",
             ],
             digests.each_ref().map(String::as_str)
+        );
+        let mixed = [
+            mixed_digest(deriver.proposal_seed(5).rng()),
+            mixed_digest(streams.rng(0, 0)),
+            mixed_digest(streams.rng(1 << 33, 5)),
+        ];
+        assert_eq!(
+            [
+                "e4f3de0e273b4cc10205c77d4f0db8c7e15f61436346ef18fffda4659ffc0f0e",
+                "4a4cd371a5044e2ae2d5512a3e1c39f8db404d82b17f16dbf8b85bd482626ad1",
+                "2be74cae07ba3a50c1cbb2e8bd4969b2fe13f79e8bb789ef3e21badcc0d5dfcc",
+            ],
+            mixed.each_ref().map(String::as_str)
         );
     }
 
