@@ -540,11 +540,14 @@ mod parallel {
     #[test]
     fn workload_panic_names_the_lowest_panicking_trial_under_any_schedule() {
         let lowest = TrialId::new(CandidateId::new(37), ReplicationId::new(0));
-        for _ in 0..50 {
+        let schedules = [1, 2, 4, 8, 12]
+            .into_iter()
+            .flat_map(|workers| [workers; 20]);
+        for workers in schedules {
             let result = run_parallel(
                 MASTER_SEED,
                 (0..64).map(|id| trial(id, 0)),
-                ParallelConfig::new(nonzero(4), nonzero(64)),
+                ParallelConfig::new(nonzero(workers), nonzero(64)),
                 || Ok::<_, Infallible>(()),
                 |(), id, _| {
                     assert!(![37, 41, 50, 63].contains(id), "workload panic");
@@ -555,10 +558,13 @@ mod parallel {
                     Ok::<_, Infallible>(())
                 },
             );
-            assert!(matches!(
-                result,
-                Err(ParallelRunError::WorkloadPanic { trial }) if trial == lowest
-            ));
+            assert!(
+                matches!(
+                    result,
+                    Err(ParallelRunError::WorkloadPanic { trial }) if trial == lowest
+                ),
+                "{workers} workers: {result:?}"
+            );
         }
     }
 
