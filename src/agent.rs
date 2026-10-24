@@ -393,6 +393,39 @@ impl<'a, M> AgentContext<'a, M> {
         self.queue_message(destination, payload);
     }
 
+    /// Queues `payload` to `target`, visible to it from tick
+    /// `time() + delay`; `send_after(1, ..)` is [`Self::send_to`].
+    ///
+    /// Use it for latency and for timers, such as a self-addressed timeout,
+    /// instead of polling every tick: a waiting agent stays idle, so quiet
+    /// ticks can still be skipped. The message counts as sent now but carries
+    /// `queued_time` `time() + delay - 1`, so it queues, records, and reports
+    /// its wait as if sent that tick. Messages arriving in one tick come in
+    /// send order, so delayed ones precede that tick's ordinary sends. A run
+    /// that halts first leaves it in [`Simulation::in_flight`](crate::Simulation::in_flight).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `delay` is zero, since a message cannot arrive in the tick it
+    /// is sent, or if the arrival tick exceeds `u64::MAX`.
+    #[inline]
+    pub fn send_after(&mut self, delay: DiscreteTime, target: AgentId, payload: M) {
+        assert!(delay > 0, "a message cannot arrive in the tick it is sent");
+        let Some(arrival) = self.time.checked_add(delay) else {
+            panic!("message arrival exceeds u64::MAX");
+        };
+        let destination = (target.index() < self.agent_count).then_some(target);
+        self.commands.push(AgentCommand {
+            ty: AgentCommandType::SendMessage(Message::sent(
+                arrival - 1,
+                self.id,
+                destination,
+                payload,
+            )),
+            agent_handle: self.id.index(),
+        });
+    }
+
     /// Returns the identity of the agent named `name`, if one exists.
     ///
     /// Callbacks that message one peer repeatedly can resolve it once and use

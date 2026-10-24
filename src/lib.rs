@@ -35,7 +35,7 @@ use message::Message;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
-use std::collections::{hash_map::Entry, BinaryHeap};
+use std::collections::{hash_map::Entry, BTreeMap, BinaryHeap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -125,6 +125,12 @@ pub struct Simulation<M = ()> {
 
     /// The reason given by the interrupt that ended the latest run, if any.
     halt_reason: Option<String>,
+
+    /// Messages sent with a delay, by arrival tick and then send order.
+    in_flight: BTreeMap<(DiscreteTime, u64), Message<M>>,
+
+    /// Send-order number of the next delayed message.
+    next_in_flight: u64,
 }
 
 /// When a simulation stops running.
@@ -613,6 +619,8 @@ impl<M> Simulation<M> {
             layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
             agent_streams,
             halt_reason: None,
+            in_flight: BTreeMap::new(),
+            next_in_flight: 0,
         })
     }
 
@@ -688,6 +696,13 @@ impl<M> Simulation<M> {
     #[must_use]
     pub fn asleep_cycle_count(&self, name: &str) -> Option<DiscreteTime> {
         Some(self.find_by_name(name)?.metadata.asleep_cycle_count)
+    }
+
+    /// Returns messages sent with [`AgentContext::send_after`] that have not
+    /// arrived yet, in arrival order. A run that halts leaves them in flight,
+    /// and the next run delivers them.
+    pub fn in_flight(&self) -> impl Iterator<Item = &Message<M>> {
+        self.in_flight.values()
     }
 
     /// Runs the simulation until its halt condition holds or an agent sends a
@@ -795,13 +810,16 @@ impl<M> Simulation<M> {
                 schedule = Some(SparseSchedule::new(&self.agents));
             }
             // A tick without callbacks issued no commands, so state can change
-            // again only when an agent becomes runnable; jump to that tick.
+            // again only when an agent becomes runnable or a delayed message
+            // arrives; jump to that tick and deliver what arrives then.
             if let Some(bound) = skip_bound {
                 if callbacks == 0 && self.mode == SimulationMode::Running {
-                    let next_event = match &schedule {
+                    let next_agent = match &schedule {
                         Some(active) => active.next_event(self.time),
                         None => self.next_event_dense(self.time),
                     };
+                    let next_arrival = self.in_flight.first_key_value().map(|(key, _)| key.0);
+                    let next_event = next_agent.into_iter().chain(next_arrival).min();
                     let target = match (next_event, bound) {
                         (Some(event), Some(halt)) => event.min(halt),
                         (None, Some(halt)) => halt,
@@ -809,6 +827,7 @@ impl<M> Simulation<M> {
                         (None, None) => self.time,
                     };
                     self.time = self.time.max(target);
+                    self.deliver_due(self.time, schedule.as_mut());
                 }
             }
         }
@@ -966,6 +985,9 @@ impl<M> Simulation<M> {
         mut schedule: Option<&mut SparseSchedule>,
         next_time: DiscreteTime,
     ) {
+        // Delayed messages arriving next tick were sent in earlier ticks, so
+        // they arrive ahead of this tick's sends.
+        self.deliver_due(next_time, schedule.as_deref_mut());
         for command in command_buffer.drain(..) {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
@@ -975,18 +997,18 @@ impl<M> Simulation<M> {
                         history.produced.push((history.copy)(&message));
                     }
 
-                    if let Some(destination) = message.destination {
-                        let receiver = &mut self.agents[destination.index()];
-                        receiver.state.queue.push_back(message);
-                        if self.enable_queue_depth_metric {
-                            // Deliveries become visible at the next tick.
-                            receiver.record_queue_depth(next_time);
+                    match message.destination {
+                        // A delayed send carries the tick before its arrival.
+                        Some(_) if message.queued_time >= next_time => {
+                            let arrival = message.queued_time.saturating_add(1);
+                            self.in_flight
+                                .insert((arrival, self.next_in_flight), message);
+                            self.next_in_flight += 1;
                         }
-                        if let Some(active) = schedule.as_deref_mut() {
-                            if receiver.state.mode == AgentMode::Reactive {
-                                active.set_ready(destination.index(), true);
-                            }
+                        Some(destination) => {
+                            self.deliver(destination, message, schedule.as_deref_mut(), next_time);
                         }
+                        None => {}
                     }
                 }
 
@@ -997,6 +1019,41 @@ impl<M> Simulation<M> {
                     }
                     self.mode = SimulationMode::Completed;
                 }
+            }
+        }
+    }
+
+    /// Appends a message to its receiver's queue, visible from `visible_at`.
+    #[inline]
+    fn deliver(
+        &mut self,
+        destination: AgentId,
+        message: Message<M>,
+        schedule: Option<&mut SparseSchedule>,
+        visible_at: DiscreteTime,
+    ) {
+        let receiver = &mut self.agents[destination.index()];
+        receiver.state.queue.push_back(message);
+        if self.enable_queue_depth_metric {
+            receiver.record_queue_depth(visible_at);
+        }
+        if let Some(active) = schedule {
+            if receiver.state.mode == AgentMode::Reactive {
+                active.set_ready(destination.index(), true);
+            }
+        }
+    }
+
+    /// Delivers delayed messages that arrive at or before `now`, in arrival
+    /// order, then send order.
+    fn deliver_due(&mut self, now: DiscreteTime, mut schedule: Option<&mut SparseSchedule>) {
+        while let Some(entry) = self.in_flight.first_entry() {
+            if entry.key().0 > now {
+                break;
+            }
+            let message = entry.remove();
+            if let Some(destination) = message.destination {
+                self.deliver(destination, message, schedule.as_deref_mut(), now);
             }
         }
     }

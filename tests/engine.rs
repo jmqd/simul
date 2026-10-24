@@ -1072,3 +1072,135 @@ fn finished_agents_read_back_as_their_own_type() {
         "another agent type does not match"
     );
 }
+
+/// Sends `(tick, delay, payload)` steps to agent 1; delay 0 means `send_to`.
+#[derive(Clone, Debug)]
+struct ScriptedSender(Vec<(u64, u64, u8)>);
+
+impl Agent<u8> for ScriptedSender {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, u8>) {
+        for &(tick, delay, payload) in &self.0 {
+            if tick != ctx.time() {
+                continue;
+            }
+            if delay == 0 {
+                ctx.send_to(AgentId::new(1), payload);
+            } else {
+                ctx.send_after(delay, AgentId::new(1), payload);
+            }
+        }
+    }
+}
+
+/// Logs `(tick, payload, queued_time)` for each message it handles.
+#[derive(Clone, Debug, Default)]
+struct Inbox(Vec<(u64, u8, u64)>);
+
+impl Agent<u8> for Inbox {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, u8>, msg: &Message<u8>) {
+        self.0.push((ctx.time(), msg.payload, msg.queued_time));
+    }
+}
+
+fn delayed_run(halt_at: u64) -> Simulation<u8> {
+    let script = vec![(0, 3, 1), (0, 0, 2), (2, 0, 3)];
+    let mut simulation = Simulation::builder(Halt::AtTime(halt_at))
+        .agents(vec![
+            proactive_agent("sender", ScriptedSender(script)),
+            AgentInitializer {
+                agent: Box::new(Inbox::default()),
+                options: AgentOptions::defaults_with_name("inbox".to_string()),
+            },
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    simulation.run();
+    simulation
+}
+
+fn inbox(simulation: &Simulation<u8>) -> Vec<(u64, u8, u64)> {
+    simulation
+        .find_by_name("inbox")
+        .and_then(|agent| agent.downcast_ref::<Inbox>())
+        .map(|inbox| inbox.0.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn delayed_messages_arrive_after_their_delay_ahead_of_later_sends() {
+    // Message 1 arrives at tick 3 with message 3, but was sent first; the
+    // inbox takes one message per tick, so message 3 waits until tick 4.
+    assert_eq!(
+        vec![(1, 2, 0), (3, 1, 2), (4, 3, 2)],
+        inbox(&delayed_run(10))
+    );
+
+    let halted = delayed_run(2);
+    assert_eq!(vec![(1, 2, 0)], inbox(&halted));
+    assert_eq!(
+        vec![(1, 2)],
+        halted
+            .in_flight()
+            .map(|message| (message.payload, message.queued_time))
+            .collect::<Vec<_>>(),
+        "a halted run keeps messages that have not arrived"
+    );
+    assert_eq!(
+        Some(2),
+        halted
+            .find_by_name("sender")
+            .map(SimulationAgent::produced_count),
+        "a delayed message counts as sent when it is sent"
+    );
+}
+
+#[derive(Clone, Debug)]
+struct ZeroDelay;
+
+impl Agent for ZeroDelay {
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        ctx.send_after(0, ctx.id(), ());
+    }
+}
+
+#[test]
+#[should_panic(expected = "a message cannot arrive in the tick it is sent")]
+fn delayed_messages_need_a_positive_delay() {
+    let mut simulation = Simulation::builder(Halt::AtTime(1))
+        .agents(vec![proactive_agent("sender", ZeroDelay)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    simulation.run();
+}
+
+/// Sends one delayed message to agent 1 at tick 0, then sleeps for good.
+#[derive(Clone, Debug)]
+struct SendOnceThenSleep;
+
+impl Agent<u8> for SendOnceThenSleep {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, u8>) {
+        ctx.send_after(50, AgentId::new(1), 9);
+        ctx.sleep_for(1_000);
+    }
+}
+
+#[test]
+fn skipping_quiet_ticks_stops_at_the_next_arrival() {
+    // Beyond 64 agents the sparse schedule serves the run instead of scans.
+    for idle in [0, 100] {
+        let mut agents = vec![
+            proactive_agent("sender", SendOnceThenSleep),
+            AgentInitializer {
+                agent: Box::new(Inbox::default()),
+                options: AgentOptions::defaults_with_name("inbox".to_string()),
+            },
+        ];
+        agents.extend((0..idle).map(|i| periodic_consumer(format!("idle-{i}"), 1)));
+        let mut simulation = Simulation::builder(Halt::AtTime(100))
+            .agents(agents)
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
+        simulation.run();
+        assert_eq!(vec![(50, 9, 49)], inbox(&simulation), "{idle} idle agents");
+    }
+}

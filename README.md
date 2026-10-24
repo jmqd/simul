@@ -127,6 +127,11 @@ fn main() -> Result<(), SimulationError> {
   via the `&mut ctx: AgentContext` passed into `on_tick` and `on_message`.
   `ctx.send(name, payload)` resolves a name; `ctx.send_to(id, payload)` skips
   the lookup, and `ctx.agent_id(name)` resolves a peer once for reuse.
+- `ctx.send_after(delay, id, payload)` delivers a message `delay` ticks later
+  instead of at the end of the tick. Use it for latency and, sent to `ctx.id()`,
+  for timeouts: an agent waiting on a timer stays idle instead of polling every
+  tick, so quiet ticks are still skipped. Messages that have not arrived when a
+  run halts stay in `Simulation::in_flight` for the next run.
 
 The simulation runs all the logic of calling `on_tick` and `on_message`,
 distributing messages, tracking metrics, incrementing time, and when to halt.
@@ -169,8 +174,9 @@ ready bitmap and wake heap during sparse phases, switching to dense scans as
 activity rises. Smaller simulations and runs with the asleep-cycle metric keep
 dense scans. Callback order, end-of-tick delivery, and halt checks match dense
 scans. With `Halt::AtTime` or `Halt::Never` and no asleep-cycle metric, the
-engine also jumps over ticks in which no agent can act, to the next wake-up or
-the halt time; `Halt::when` predicates see every tick, so they keep every tick.
+engine also jumps over ticks in which no agent can act, to the next wake-up,
+delayed arrival, or the halt time; `Halt::when` predicates see every tick, so
+they keep every tick.
 
 ## Poisson-distributed example w/ Plotting
 

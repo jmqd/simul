@@ -60,7 +60,7 @@ condition, whichever comes first.
 | Agent          | Mode      | Role                                                                                                                                                              |
 | -------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Door           | Proactive | Non-homogeneous Poisson arrivals by day-part and weekday, with lambda scaled by Market. Emits one message per party with size and wait tolerance in the payload. |
-| Host           | Reactive  | Holds the wait-list, implements balking and reneging with sleep timers, assigns parties to free tables, enforces reservation holds and the release policy.      |
+| Host           | Reactive  | Holds the wait-list, implements balking and reneging with delayed self-messages (`send_after`), assigns parties to free tables, enforces reservation holds and the release policy. |
 | Table x6       | Reactive  | Sleeps for the session duration, then reports the freed table to Host and the table revenue to Ledger.                                                           |
 | Bar and Kitchen| Reactive  | An M/M/c server for order messages from seated and waiting parties. `c` comes from the shift roster.                                                              |
 | Calendar       | Proactive | Broadcasts day-part changes, league nights, holidays, and seasonality to Door.                                                                                   |

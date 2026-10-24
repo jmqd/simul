@@ -1,5 +1,18 @@
 #+title: Changelog
 
+* DONE Send messages that arrive after a delay
+=AgentContext::send_after(delay, id, payload)= makes a message visible to
+its target from tick =time() + delay=; =send_after(1, ..)= is =send_to=. The
+message counts as sent at once and carries =queued_time= =time() + delay - 1=,
+so it queues, records, and reports its wait as if sent then. Messages arriving
+in one tick come in send order, so delayed ones precede that tick's ordinary
+sends. Quiet-tick skipping stops at the next arrival, and messages still in
+flight when a run halts stay in =Simulation::in_flight= for the next run. A
+responder that replies 50 ticks after each of 9,968 requests over 10 million
+ticks took 143 ms polling every tick and takes 2 ms with =send_after=, with the
+same replies. A zero delay panics. The engine laws now send a third of their
+chaos messages with delays.
+
 * DONE Read finished agents back as their own type
 =SimulationAgent::downcast_ref::<A>()= returns an agent's behavior as an =A=,
 or =None= for any other type, so results can stay in agent fields instead of
