@@ -1,5 +1,14 @@
 #+title: Changelog
 
+* DONE Seed simulations from experiment trials
+=SimulationBuilder::trial(&TrialContext)= seeds a simulation from the trial's
+common-random =TrialNoise= stream tagged =simul::Simulation=. Candidates
+evaluated in one common-random group share their agents' draws replication by
+replication, and each replication draws afresh, so paired comparisons under
+=run_serial= or =run_parallel= need no hand-built seed. No example or test
+previously connected a trial to a simulation seed; =simple_experiment= now
+does, with unchanged output.
+
 * DONE Send messages that arrive after a delay
 =AgentContext::send_after(delay, id, payload)= makes a message visible to
 its target from tick =time() + delay=; =send_after(1, ..)= is =send_to=. The

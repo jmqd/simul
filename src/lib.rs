@@ -30,7 +30,7 @@ use agent::{
     AgentMode, AgentState, MessageHistory, MessageProcessingStatus, QueueDepthChange,
     SimulationAgent,
 };
-use experiment::{AgentStreams, MasterSeed, SeedDeriver};
+use experiment::{AgentStreams, MasterSeed, SeedDeriver, TrialContext, TrialStream};
 use message::Message;
 
 use rustc_hash::FxHashMap;
@@ -232,6 +232,20 @@ impl<M> SimulationBuilder<M> {
     pub const fn seed(mut self, seed: MasterSeed) -> Self {
         self.seed = seed;
         self
+    }
+
+    /// Seeds the simulation from an experiment trial, for evaluators run by
+    /// [`run_serial`](experiment::run_serial) or `run_parallel`.
+    ///
+    /// The seed is the trial's common-random [`TrialStream::TrialNoise`]
+    /// stream tagged `simul::Simulation`. Candidates evaluated in one
+    /// common-random group therefore share their agents' draws replication
+    /// by replication, so paired comparisons see the same noise, while each
+    /// replication draws afresh. For independent draws per candidate, give
+    /// [`Self::seed`] a seed from [`TrialContext::independent_seed`].
+    pub fn trial(self, context: &TrialContext) -> Self {
+        let seed = context.common_seed(TrialStream::TrialNoise, "simul::Simulation");
+        self.seed(MasterSeed::new(seed.bytes()))
     }
 
     /// Records each agent's queue depth whenever it changes. Off by default.

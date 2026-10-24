@@ -75,8 +75,11 @@ fn run_experiment() -> Simulation {
         let mut records = run_serial(
             MASTER_SEED,
             schedule.trials(candidate_id, consumer_period),
-            |period, _context| {
+            |period, context| {
+                // Candidates in one common-random group share their agents'
+                // draws, so differences between them come from the policy.
                 let mut simulation = simulation_builder(*period)
+                    .trial(context)
                     .build()
                     .unwrap_or_else(|error| panic!("{error}"));
                 simulation.run();

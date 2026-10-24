@@ -67,6 +67,11 @@ available in this checkout; it has not been published as a new crates.io release
   `CrossEntropyOptimizer` and `simulated_annealing_search_with_rng` remain
   engine-independent optimizer alternatives; aggregate noisy trials inside their
   objective rather than ranking a lucky single run.
+- To evaluate a `Simulation` in a trial, build it with
+  `Simulation::builder(..).trial(context)`. Its seed comes from the trial's
+  common-random stream, so candidates in one common-random group share their
+  agents' draws replication by replication; agent streams are keyed by name,
+  so the pairing survives candidates that add or reorder agents.
 
 See `examples/simple_experiment.rs` for a complete typed experiment.
 

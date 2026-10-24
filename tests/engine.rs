@@ -1204,3 +1204,66 @@ fn skipping_quiet_ticks_stops_at_the_next_arrival() {
         assert_eq!(vec![(50, 9, 49)], inbox(&simulation), "{idle} idle agents");
     }
 }
+
+/// Keeps one draw per tick from its agent stream.
+#[derive(Clone, Debug, Default)]
+struct Sampler(Vec<u64>);
+
+impl Agent for Sampler {
+    fn on_tick(&mut self, ctx: &mut AgentContext) {
+        self.0.push(ctx.rng().next_u64());
+    }
+}
+
+/// The sampler's draws for two candidates, two replications each, in trial
+/// order: candidate 0 replications 0 and 1, then candidate 1.
+fn trial_draws(common_random_group: u64) -> Vec<Option<Vec<u64>>> {
+    use simul::experiment::{run_serial, CandidateId, FixedReplications, MasterSeed};
+    let schedule = FixedReplications::new(2, common_random_group);
+    let trials = schedule
+        .trials(CandidateId::new(0), ())
+        .chain(schedule.trials(CandidateId::new(1), ()));
+    let records = run_serial(MasterSeed::from_u64(5), trials, |(), context| {
+        let mut simulation = Simulation::builder(Halt::AtTime(3))
+            .agents(vec![proactive_agent("sampler", Sampler::default())])
+            .trial(context)
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
+        simulation.run();
+        let sampler = simulation.find_by_name("sampler");
+        Ok::<_, std::convert::Infallible>(
+            sampler
+                .and_then(|agent| agent.downcast_ref::<Sampler>())
+                .map(|sampler| sampler.0.clone()),
+        )
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+    records
+        .into_iter()
+        .map(|record| match record.result {
+            Ok(draws) => draws,
+            Err(never) => match never {},
+        })
+        .collect()
+}
+
+#[test]
+fn trial_seeds_pair_candidates_and_vary_by_replication() {
+    let draws = trial_draws(1);
+    assert_eq!(4, draws.len());
+    assert!(draws[0].as_ref().is_some_and(|draws| draws.len() == 3));
+    assert_eq!(
+        draws[0], draws[2],
+        "candidates in one group share replication 0"
+    );
+    assert_eq!(
+        draws[1], draws[3],
+        "candidates in one group share replication 1"
+    );
+    assert_ne!(draws[0], draws[1], "each replication draws afresh");
+    assert_ne!(
+        draws[0],
+        trial_draws(2)[0],
+        "another group draws differently"
+    );
+}
