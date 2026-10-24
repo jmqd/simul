@@ -337,7 +337,7 @@ fn main() {
 
 /// Runs a workload with message history on, so every workload keeps its
 /// pre-opt-in work and fingerprint.
-fn simulate<M: Clone + 'static>(builder: SimulationBuilder<M>) -> Simulation<M> {
+fn simulate<M: Clone>(builder: SimulationBuilder<M>) -> Simulation<M> {
     let mut simulation = builder
         .message_history(true)
         .build()

@@ -26,9 +26,10 @@ chaos messages with delays.
 =SimulationAgent::downcast_ref::<A>()= returns an agent's behavior as an =A=,
 or =None= for any other type, so results can stay in agent fields instead of
 in =Rc<Cell<_>>= or lock-guarded state shared with the agent. Agents get a
-sealed =Any= supertrait, implemented for every ='static= type, and
-=Simulation::run= now requires =M: 'static=. The nine-ball example reads each
-match's winner from the players instead of an =Rc<Cell<Option<usize>>>=.
+sealed supertrait that gives every ='static= type an =Any= view; it has no =Any=
+supertrait itself, so the message type need not be ='static=. The nine-ball
+example reads each match's winner from the players instead of an
+=Rc<Cell<Option<usize>>>=.
 
 * DONE Type messages by the simulation's message type (breaking)
 =Simulation<M>=, =Agent<M>=, =AgentContext<'_, M>=, and =Message<M>= carry one

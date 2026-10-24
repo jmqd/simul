@@ -113,7 +113,7 @@ impl Agent<u8> for ApaNineBallPlayer {
 }
 
 /// Returns the name of the player of type `P` that won the match.
-fn winner<P: Agent<u8>>(sim: &Simulation<u8>, has_won: fn(&P) -> bool) -> Option<String> {
+fn winner<P: Agent<u8> + 'static>(sim: &Simulation<u8>, has_won: fn(&P) -> bool) -> Option<String> {
     sim.agents()
         .iter()
         .find(|agent| agent.downcast_ref::<P>().is_some_and(has_won))

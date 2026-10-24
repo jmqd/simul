@@ -133,12 +133,12 @@ pub struct SimulationAgent<M = ()> {
     pub(crate) history: Option<MessageHistory<M>>,
 }
 
-impl<M: 'static> SimulationAgent<M> {
+impl<M> SimulationAgent<M> {
     /// Returns the agent's behavior as an `A`, or `None` if it is another
     /// type. Read a finished simulation's agents this way rather than sharing
     /// state with them through `Rc`, locks, or atomics.
     #[must_use]
-    pub fn downcast_ref<A: Agent<M>>(&self) -> Option<&A> {
+    pub fn downcast_ref<A: Agent<M> + 'static>(&self) -> Option<&A> {
         // Through the trait object: the box itself is `Any` too.
         sealed::AsAny::as_any(&*self.agent).downcast_ref()
     }
@@ -619,6 +619,8 @@ dyn_clone::clone_trait_object!(<M> Agent<M>);
 /// The `Any` view behind [`SimulationAgent::downcast_ref`]. Every `'static`
 /// type has it, so agents never implement it themselves; it is a supertrait
 /// because only supertrait methods are reachable through `dyn Agent<M>`.
+/// It deliberately lacks an `Any` supertrait, which would make every call
+/// through `dyn Agent<M>` require `M: 'static`.
 mod sealed {
     use std::any::Any;
 
@@ -627,7 +629,7 @@ mod sealed {
         unreachable_pub,
         reason = "sealed supertrait of the public Agent trait; the module is private"
     )]
-    pub trait AsAny: Any {
+    pub trait AsAny {
         /// Returns the agent as `Any`.
         fn as_any(&self) -> &dyn Any;
     }
