@@ -907,11 +907,14 @@ impl<M> Simulation<M> {
 
         // The halt check comes first, so a run that both halts and reaches
         // `until` at one tick completes.
+        // One compare per tick: an unset pause only matches at u64::MAX, where
+        // `until.is_some()` lets an unpaused run reach the overflow panic.
+        let pause_at = until.unwrap_or(DiscreteTime::MAX);
         let paused = loop {
             if self.mode != SimulationMode::Running || self.halt_reached() {
                 break false;
             }
-            if until.is_some_and(|until| self.time >= until) {
+            if self.time >= pause_at && until.is_some() {
                 break true;
             }
             let Some(next_time) = self.time.checked_add(1) else {
