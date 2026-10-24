@@ -17,7 +17,7 @@
 
 use crate::config::{Config, Durability};
 use crate::metrics::{RowGroup, SharedRecorder};
-use crate::net::{Endpoint, NetEvent, Peer};
+use crate::net::{send_tracked, Endpoint, NetEvent, Peer};
 use crate::rng::Rng;
 use crate::time::{per_tick, secs, ticks, to_u64, Tick};
 use crate::wire::{ConnId, ConnKind, HttpKind, Op, Unit, WalChunk};
@@ -547,7 +547,7 @@ impl EtlAgent {
         let Some(conn) = self.owner_conn(owner) else {
             panic!("{owner:?} sent {op:?} without a connection");
         };
-        self.net.send(conn, Unit::Query { id, op, a, b });
+        send_tracked(&mut self.net, conn, Unit::Query { id, op, a, b });
         self.query_owner.insert(id, owner);
         Wait::Reply(id)
     }
@@ -668,7 +668,14 @@ impl EtlAgent {
             LoopId::Apply => {
                 self.apply.state == ApplyState::Streaming && self.apply.blocked_by.is_none()
             }
-            LoopId::Catchup(_) => lp.conn.is_some(),
+            // The connection exists from the handshake on; the stream starts
+            // once the catch-up script's START_REPLICATION has returned.
+            LoopId::Catchup(worker) => {
+                lp.conn.is_some()
+                    && self.workers[worker]
+                        .as_ref()
+                        .is_some_and(|entry| entry.catchup_script.is_none())
+            }
         };
         let reading = streaming && lp.checkpoint.is_none() && !lp.paused && !lp.reached();
         if reading {
@@ -705,7 +712,9 @@ impl EtlAgent {
                                 batch.commit_lsn = batch.commit_lsn.max(chunk.end_lsn);
                             }
                             batch.rows_by_table.push(RowGroup {
-                                table: chunk.table,
+                                table: usize::try_from(chunk.table).unwrap_or_else(|_| {
+                                    panic!("table ids come from a usize table count")
+                                }),
                                 commit_tick: chunk.commit_tick,
                                 rows: chunk.rows,
                                 lsn: chunk.end_lsn,
@@ -757,7 +766,8 @@ impl EtlAgent {
             if unread >= CREDIT_STEP_BYTES
                 || (unread > 0.0 && now >= lp.last_credit_at + CREDIT_IDLE_TICKS)
             {
-                self.net.send(
+                send_tracked(
+                    &mut self.net,
                     conn,
                     Unit::Credit {
                         consumed: to_u64(lp.consumed),
@@ -795,7 +805,8 @@ impl EtlAgent {
         if !forced && flush == lp.last_status_flush && now < lp.last_status_at + debounce {
             return;
         }
-        self.net.send(
+        send_tracked(
+            &mut self.net,
             conn,
             Unit::Status {
                 write: lp.received_lsn,
@@ -1047,7 +1058,8 @@ impl EtlAgent {
             let conn = state.conn;
             let id = self.id();
             if let Some(conn) = conn {
-                self.net.send(
+                send_tracked(
+                    &mut self.net,
                     conn,
                     Unit::Query {
                         id,
@@ -1155,7 +1167,8 @@ impl EtlAgent {
             && state.writing.is_none()
             && write.is_none();
         if let (Some(conn), Some(consumed)) = (conn, credit) {
-            self.net.send(
+            send_tracked(
+                &mut self.net,
                 conn,
                 Unit::Credit {
                     consumed: to_u64(consumed),
@@ -1235,7 +1248,7 @@ impl EtlAgent {
             return;
         };
         if let Some(&(op, a, b)) = job.statements.front() {
-            self.net.send(entry.conn, Unit::Query { id, op, a, b });
+            send_tracked(&mut self.net, entry.conn, Unit::Query { id, op, a, b });
         }
     }
 
@@ -1366,7 +1379,8 @@ impl EtlAgent {
             };
             let entry = &mut self.dest_conns[index];
             entry.request = Some(request);
-            self.net.send(
+            send_tracked(
+                &mut self.net,
                 entry.conn,
                 Unit::HttpRequest {
                     id: request.id,

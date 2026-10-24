@@ -87,7 +87,7 @@ pub(crate) struct TableTimeline {
 /// Rows of one table carried by a write, with their commit time and LSN.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RowGroup {
-    pub(crate) table: u64,
+    pub(crate) table: usize,
     pub(crate) commit_tick: Tick,
     pub(crate) rows: u64,
     /// The commit LSN, or zero for a slice of a transaction committed later.
@@ -138,16 +138,47 @@ pub(crate) struct Recorder {
     /// as durable when the destination makes them so, even if the ETL loop
     /// that sent them has since failed.
     pending_writes: std::collections::BTreeMap<u64, PendingWrite>,
+    /// When auditing, every committed transaction group as `(table, commit
+    /// LSN)`, and those whose final slice reached the destination.
+    audit: Option<DeliveryAudit>,
+}
+
+/// Transaction groups committed on the source and made durable at the
+/// destination, compared after a drain to prove no commit was lost.
+#[derive(Clone, Debug, Default)]
+struct DeliveryAudit {
+    committed: std::collections::BTreeSet<(usize, u64)>,
+    durable: std::collections::BTreeSet<(usize, u64)>,
 }
 
 impl Recorder {
-    pub(crate) fn shared(warmup: Tick, tables: usize) -> SharedRecorder {
+    /// `audit` keeps a set entry per committed transaction group; off for
+    /// sweeps, where the sets would grow with run length.
+    pub(crate) fn shared(warmup: Tick, tables: usize, audit: bool) -> SharedRecorder {
         Rc::new(RefCell::new(Self {
             warmup,
             tables: vec![TableTimeline::default(); tables],
             highest_durable_lsn: vec![0; tables],
+            audit: audit.then(DeliveryAudit::default),
             ..Self::default()
         }))
+    }
+
+    pub(crate) fn committed(&mut self, table: usize, lsn: u64) {
+        if let Some(audit) = self.audit.as_mut() {
+            audit.committed.insert((table, lsn));
+        }
+    }
+
+    /// Committed transaction groups and how many of them never became
+    /// durable, or `None` when the run was not audited.
+    pub(crate) fn delivery(&self) -> Option<(usize, usize)> {
+        self.audit.as_ref().map(|audit| {
+            (
+                audit.committed.len(),
+                audit.committed.difference(&audit.durable).count(),
+            )
+        })
     }
 
     pub(crate) fn event(&mut self, at: Tick, text: impl Into<String>) {
@@ -184,8 +215,10 @@ impl Recorder {
     }
 
     fn durable(&mut self, group: RowGroup, durable_at: Tick) {
-        let table = usize::try_from(group.table).unwrap_or(0);
-        let highest = &mut self.highest_durable_lsn[table];
+        if let (Some(audit), true) = (self.audit.as_mut(), group.lsn != 0) {
+            audit.durable.insert((group.table, group.lsn));
+        }
+        let highest = &mut self.highest_durable_lsn[group.table];
         if group.lsn != 0 {
             if group.lsn <= *highest {
                 self.rows_replayed += group.rows;

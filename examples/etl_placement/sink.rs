@@ -9,7 +9,7 @@ use crate::time::{ticks, ticks_at_least_one, Tick};
 use crate::wire::{ConnId, HttpKind, Unit};
 use simul::agent::{Agent, AgentContext};
 use simul::message::Message;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
 pub(crate) const NAME: &str = "destination";
@@ -34,8 +34,13 @@ pub(crate) struct DestinationAgent {
     service_rng: Rng,
     waiting: VecDeque<Request>,
     running: Vec<(Tick, Request)>,
-    /// When each accepted insert becomes durable.
+    /// When each accepted insert becomes durable, for polls.
     durable_at: BTreeMap<u64, Tick>,
+    /// Accepted inserts not yet durable: when they land, and their write.
+    landing: Vec<(Tick, u64)>,
+    /// Connections the client reset. Work already running on them still
+    /// lands, but its response has no reader.
+    reset: BTreeSet<ConnId>,
 }
 
 impl DestinationAgent {
@@ -56,6 +61,8 @@ impl DestinationAgent {
             waiting: VecDeque::new(),
             running: Vec::new(),
             durable_at: BTreeMap::new(),
+            landing: Vec::new(),
+            reset: BTreeSet::new(),
         }
     }
 
@@ -93,6 +100,21 @@ impl DestinationAgent {
         }
     }
 
+    /// Reports accepted inserts once they are durable; each part is reported
+    /// exactly once, here or at completion for immediate durability.
+    fn land_due(&mut self, now: Tick) {
+        let mut index = 0;
+        while index < self.landing.len() {
+            let (at, write) = self.landing[index];
+            if at <= now {
+                self.landing.swap_remove(index);
+                self.recorder.borrow_mut().part_durable(write, at);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
     fn finish_due(&mut self, now: Tick) {
         let mut index = 0;
         while index < self.running.len() {
@@ -109,7 +131,7 @@ impl DestinationAgent {
                 }
                 (HttpKind::Insert, Durability::Polled { commit_delay_s, .. }) => {
                     let durable = now + ticks(commit_delay_s);
-                    self.recorder.borrow_mut().part_durable(request.of, durable);
+                    self.landing.push((durable, request.of));
                     self.durable_at.insert(request.id, durable);
                     0
                 }
@@ -122,12 +144,19 @@ impl DestinationAgent {
                     Some(_) | None => 0,
                 },
             };
-            self.net.send(
+            if self.reset.contains(&request.conn) {
+                continue;
+            }
+            let sent = self.net.send(
                 request.conn,
                 Unit::HttpResponse {
                     id: request.id,
                     durable_at,
                 },
+            );
+            assert!(
+                sent,
+                "a request's connection stays open until the client resets it"
             );
         }
     }
@@ -156,7 +185,10 @@ impl Agent for DestinationAgent {
                     kind,
                     of,
                 }),
-                NetEvent::Accepted(..) | NetEvent::Closed(_) => {}
+                NetEvent::Accepted(..) => {}
+                NetEvent::Closed(conn) => {
+                    self.reset.insert(conn);
+                }
                 NetEvent::Data(_, other) => panic!("destination got unexpected {other:?}"),
                 NetEvent::Connected(_) => panic!("destination opens no connections"),
             }
@@ -165,6 +197,7 @@ impl Agent for DestinationAgent {
 
     fn on_tick(&mut self, ctx: &mut AgentContext) {
         let now = ctx.time();
+        self.land_due(now);
         self.finish_due(now);
         self.start_waiting(now);
         self.recorder.borrow_mut().cross_region_bytes[2] = self.net.cross_region_bytes;

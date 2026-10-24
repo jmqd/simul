@@ -191,6 +191,10 @@ pub(crate) struct Config {
     /// Tables to copy before streaming; empty means every table starts ready.
     pub(crate) copy_tables: Vec<TableSpec>,
     pub(crate) faults: FaultPlan,
+    /// The workload stops committing at this tick, letting replication drain.
+    pub(crate) workload_until: Option<Tick>,
+    /// Track every transaction group to check that none is lost.
+    pub(crate) audit_delivery: bool,
     pub(crate) duration: Tick,
     pub(crate) warmup: Tick,
     /// $ per GB sent us-west-2 → us-east-1 (and the reverse) [pricing].
@@ -237,9 +241,9 @@ impl Config {
                 loss: 1e-7,
                 // Median persistence ~170 s; 1–5 ms shifts [reda].
                 path_change: Some(PathChange {
-                    mean_interval: 170.0,
-                    rtt_step_min: 0.001,
-                    rtt_step_max: 0.005,
+                    mean_interval_s: 170.0,
+                    rtt_step_min_s: 0.001,
+                    rtt_step_max_s: 0.005,
                 }),
             },
             intra_region: PathModel {
@@ -334,6 +338,8 @@ impl Config {
             },
             copy_tables: Vec::new(),
             faults: FaultPlan::default(),
+            workload_until: None,
+            audit_delivery: false,
             duration: ticks(300.0),
             warmup: ticks(60.0),
             cross_region_dollars_per_gb: 0.02,

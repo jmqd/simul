@@ -87,12 +87,22 @@ struct Outcome {
     copy_mb_per_s: f64,
     blocked_s: f64,
     recovery_s: f64,
+    /// Committed transaction groups and how many never became durable;
+    /// `None` unless the run was audited.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the delivery law test; sweeps skip the audit"
+        )
+    )]
+    delivery: Option<(usize, usize)>,
     events: Vec<(Tick, String)>,
 }
 
 fn run_trial(config: &Config, context: &TrialContext) -> Outcome {
     let config = Rc::new(config.clone());
-    let recorder = Recorder::shared(config.warmup, config.workload.tables);
+    let recorder = Recorder::shared(config.warmup, config.workload.tables, config.audit_delivery);
     let postgres = source::PostgresAgent::new(
         Rc::clone(&config),
         Rc::clone(&recorder),
@@ -140,23 +150,7 @@ fn summarize(config: &Config, recorder: &SharedRecorder, end: Tick) -> Outcome {
         .filter(|(at, _)| *at >= config.warmup)
         .map(|(_, bytes)| *bytes as f64 / MB)
         .fold(0.0, f64::max);
-    let fault_start = config
-        .faults
-        .loss_bursts
-        .iter()
-        .map(|(window, _)| window.start)
-        .chain(config.faults.outages.iter().map(|window| window.start))
-        .chain(config.faults.replication_resets.iter().copied())
-        .chain(config.faults.etl_crashes.iter().copied())
-        .chain(
-            config
-                .faults
-                .destination_brownouts
-                .iter()
-                .map(|(window, _)| window.start),
-        )
-        .min();
-    let recovery_s = fault_start.map_or(f64::NAN, |start| {
+    let recovery_s = config.faults.first_fault().map_or(f64::NAN, |start| {
         recovery_seconds(&recorder.replication_lag_s, config.warmup, start)
     });
     let copy_s = recorder.copy_done_at.map_or(f64::NAN, secs);
@@ -189,6 +183,7 @@ fn summarize(config: &Config, recorder: &SharedRecorder, end: Tick) -> Outcome {
         copy_mb_per_s: recorder.copy_bytes / MB / copy_s,
         blocked_s: secs(recorder.blocked_ticks),
         recovery_s,
+        delivery: recorder.delivery(),
         events: recorder.events.clone(),
     }
 }
@@ -553,8 +548,17 @@ fn print_copy(results: &[(String, Placement, Records)]) {
     println!();
 }
 
-fn print_faults(results: &[(String, Placement, Records)]) {
-    println!("## Faults (10k rows/s, max_fill 1 s, fault at t = 150 s)\n");
+fn print_faults(results: &[(String, Placement, Records)], scenarios: &[(String, Config)]) {
+    let Some((_, config)) = scenarios.first() else {
+        return;
+    };
+    let fault = config.faults.first_fault().unwrap_or(0);
+    println!(
+        "## Faults ({:.0} rows/s, max_fill {:.0} ms, fault at t = {:.0} s)\n",
+        config.workload.rows_per_s,
+        config.etl.max_fill_ms,
+        secs(fault)
+    );
     println!("Recovery runs from the fault until replication lag (age of the newest durable commit) is back within its pre-fault range for good.\n");
     println!("| fault | placement | recovery | peak replication lag | p99 latency | max slot lag MB | replayed rows |");
     println!("|---|---|---|---|---|---|---|");
@@ -578,7 +582,7 @@ fn print_faults(results: &[(String, Placement, Records)]) {
         let events: Vec<String> = first
             .events
             .iter()
-            .filter(|(at, _)| *at >= ticks(140.0))
+            .filter(|(at, _)| *at + ticks(10.0) >= fault)
             .take(6)
             .map(|(at, text)| format!("{:.1} s {text}", secs(*at)))
             .collect();
@@ -707,6 +711,77 @@ fn main() {
     if matches!(mode, "faults" | "all") {
         let scenarios = with_overrides(fault_scenarios(options.quick), &options);
         let results = run_scenarios(&scenarios, options.reps);
-        print_faults(&results);
+        print_faults(&results, &scenarios);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{run_scenarios, ticks, Config, FaultPlan, Placement, Window};
+
+    /// Each fault strikes at 20 s; the workload stops at 100 s and the run
+    /// continues until 240 s, long enough for the slowest recovery (a
+    /// partition past `wal_sender_timeout`, detected late through RTO
+    /// backoff, then a 10 s retry) to drain.
+    fn drained(name: &str, faults: FaultPlan) -> (String, Config) {
+        let mut config = Config::baseline(Placement::WithSource);
+        config.workload.rows_per_s = 2_000.0;
+        config.etl.max_fill_ms = 1_000.0;
+        config.warmup = ticks(5.0);
+        config.workload_until = Some(ticks(100.0));
+        config.duration = ticks(240.0);
+        config.audit_delivery = true;
+        config.faults = faults;
+        (name.to_owned(), config)
+    }
+
+    #[test]
+    fn faults_lose_no_committed_transaction_in_either_placement() {
+        let fault = ticks(20.0);
+        let scenarios = [
+            drained(
+                "ETL crash",
+                FaultPlan {
+                    etl_crashes: vec![fault],
+                    ..FaultPlan::default()
+                },
+            ),
+            drained(
+                "replication reset",
+                FaultPlan {
+                    replication_resets: vec![fault],
+                    ..FaultPlan::default()
+                },
+            ),
+            drained(
+                "70 s partition",
+                FaultPlan {
+                    outages: vec![Window {
+                        start: fault,
+                        end: fault + ticks(70.0),
+                    }],
+                    ..FaultPlan::default()
+                },
+            ),
+        ];
+        for (name, placement, records) in run_scenarios(&scenarios, 2) {
+            for record in records {
+                let Ok(outcome) = record.result;
+                let Some((committed, lost)) = outcome.delivery else {
+                    panic!("{name} ran without the delivery audit");
+                };
+                assert!(
+                    committed > 1_000,
+                    "{name}: only {committed} groups committed"
+                );
+                assert_eq!(
+                    lost,
+                    0,
+                    "{name} at {} lost {lost} of {committed} committed groups (replication {:?})",
+                    placement.label(),
+                    record.key.replication(),
+                );
+            }
+        }
     }
 }

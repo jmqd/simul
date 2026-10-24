@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::metrics::SharedRecorder;
-use crate::net::{Endpoint, NetEvent, Peer};
+use crate::net::{send_tracked, Endpoint, NetEvent, Peer};
 use crate::rng::Rng;
 use crate::time::{per_tick, ticks, to_u64, Tick, TICKS_PER_SECOND};
 use crate::wire::{ConnId, ConnKind, Op, Unit, WalChunk};
@@ -177,7 +177,12 @@ impl PostgresAgent {
         };
         let transactions_per_tick =
             per_tick(workload.rows_per_s / workload.mean_rows_per_transaction) * multiplier;
-        let count = self.workload_rng.poisson(transactions_per_tick);
+        let draining = self.config.workload_until.is_some_and(|until| now >= until);
+        let count = if draining {
+            0
+        } else {
+            self.workload_rng.poisson(transactions_per_tick)
+        };
         for _ in 0..count {
             let rows = self
                 .workload_rng
@@ -213,6 +218,14 @@ impl PostgresAgent {
             records.sort_by_key(|record| record.end_lsn);
             if let Some(newest) = records.iter().map(|record| record.commit_tick).max() {
                 self.newest_commit = self.newest_commit.max(newest);
+            }
+            {
+                let mut recorder = self.recorder.borrow_mut();
+                for record in &records {
+                    let table = usize::try_from(record.table)
+                        .unwrap_or_else(|_| panic!("table ids come from a usize table count"));
+                    recorder.committed(table, record.end_lsn);
+                }
             }
             self.history.extend(records);
         }
@@ -329,7 +342,7 @@ impl PostgresAgent {
                     Some((id, op, a, b, done_at)) if done_at <= now => {
                         backend.running = None;
                         let value = self.execute(conn, op, a, b, now);
-                        self.net.send(conn, Unit::Reply { id, value });
+                        send_tracked(&mut self.net, conn, Unit::Reply { id, value });
                     }
                     Some(_) => break,
                     None => {
@@ -393,7 +406,7 @@ impl PostgresAgent {
                             end_lsn: if completes { record.end_lsn } else { 0 },
                             commit_tick: record.commit_tick,
                         };
-                        self.net.send(conn, Unit::Wal(chunk));
+                        send_tracked(&mut self.net, conn, Unit::Wal(chunk));
                         budget -= take as f64;
                         if completes {
                             sender.cursor += 1;
@@ -417,7 +430,8 @@ impl PostgresAgent {
                             && sender.last_keepalive_lsn < sender.sent_lsn
                         {
                             sender.last_keepalive_lsn = sender.sent_lsn;
-                            self.net.send(
+                            send_tracked(
+                                &mut self.net,
                                 conn,
                                 Unit::Keepalive {
                                     wal_end: sender.sent_lsn,
@@ -430,7 +444,8 @@ impl PostgresAgent {
                         && now.saturating_sub(sender.last_client_message) >= timeout.div_euclid(2)
                     {
                         sender.ping_outstanding = true;
-                        self.net.send(
+                        send_tracked(
+                            &mut self.net,
                             conn,
                             Unit::Keepalive {
                                 wal_end: sender.sent_lsn,
@@ -452,7 +467,8 @@ impl PostgresAgent {
                     let done = copy.bytes_left <= 0.5;
                     let rows = if done { copy.rows_left } else { rows };
                     copy.rows_left -= rows;
-                    self.net.send(
+                    send_tracked(
+                        &mut self.net,
                         conn,
                         Unit::CopyData {
                             rows,

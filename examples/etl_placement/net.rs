@@ -32,13 +32,17 @@ pub(crate) struct PathModel {
     pub(crate) path_change: Option<PathChange>,
 }
 
-/// Path re-routes, in seconds: the mean time between changes and the range
-/// of the RTT step each change makes.
+/// Path re-routes: the mean time between changes and the range of the RTT
+/// step each change makes.
 #[derive(Clone, Copy, Debug)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "`_s` marks seconds, as on every duration in the model"
+)]
 pub(crate) struct PathChange {
-    pub(crate) mean_interval: f64,
-    pub(crate) rtt_step_min: f64,
-    pub(crate) rtt_step_max: f64,
+    pub(crate) mean_interval_s: f64,
+    pub(crate) rtt_step_min_s: f64,
+    pub(crate) rtt_step_max_s: f64,
 }
 
 /// Linux TCP stack parameters.
@@ -132,6 +136,22 @@ pub(crate) struct FaultPlan {
 }
 
 impl FaultPlan {
+    /// When the earliest injected fault begins.
+    pub(crate) fn first_fault(&self) -> Option<Tick> {
+        self.loss_bursts
+            .iter()
+            .map(|(window, _)| window.start)
+            .chain(self.outages.iter().map(|window| window.start))
+            .chain(self.replication_resets.iter().copied())
+            .chain(self.etl_crashes.iter().copied())
+            .chain(
+                self.destination_brownouts
+                    .iter()
+                    .map(|(window, _)| window.start),
+            )
+            .min()
+    }
+
     fn loss(&self, cross_region: bool, now: Tick) -> f64 {
         if !cross_region {
             return 0.0;
@@ -223,7 +243,7 @@ impl Flow {
         let next_path_change = path
             .path_change
             .filter(|_| path.cross_region)
-            .map(|change| now + ticks(rng.exponential(change.mean_interval)));
+            .map(|change| now + ticks(rng.exponential(change.mean_interval_s)));
         Self {
             one_way_s,
             path,
@@ -287,10 +307,10 @@ impl Flow {
         }
         if let (Some(at), Some(change)) = (self.next_path_change, self.path.path_change) {
             if now >= at {
-                let step = rng.uniform(change.rtt_step_min, change.rtt_step_max) / 2.0;
+                let step = rng.uniform(change.rtt_step_min_s, change.rtt_step_max_s) / 2.0;
                 let signed = if rng.bernoulli(0.5) { step } else { -step };
                 self.one_way_s = (self.one_way_s + signed).max(self.path.rtt_floor_s / 2.0);
-                self.next_path_change = Some(now + ticks(rng.exponential(change.mean_interval)));
+                self.next_path_change = Some(now + ticks(rng.exponential(change.mean_interval_s)));
             }
         }
     }
@@ -530,6 +550,21 @@ pub(crate) enum NetEvent {
     Closed(ConnId),
 }
 
+/// Sends on a connection the caller still tracks. Every agent drops a
+/// connection from its own state when its `Closed` event arrives, so a failed
+/// send here is a bookkeeping bug, not a network condition.
+///
+/// # Panics
+///
+/// Panics when `conn` is no longer open.
+pub(crate) fn send_tracked(net: &mut Endpoint, conn: ConnId, unit: Unit) {
+    let sent = net.send(conn, unit);
+    assert!(
+        sent,
+        "sent {unit:?} on connection {conn:#x} after it closed"
+    );
+}
+
 /// One agent's sockets.
 #[derive(Clone, Debug)]
 pub(crate) struct Endpoint {
@@ -620,7 +655,9 @@ impl Endpoint {
         id
     }
 
-    /// Queues a unit; returns false when the connection is gone.
+    /// Queues a unit; returns false when the connection is gone or not yet
+    /// open, in which case nothing is sent.
+    #[must_use]
     pub(crate) fn send(&mut self, conn: ConnId, unit: Unit) -> bool {
         match self.conns.get_mut(&conn) {
             Some(entry) if entry.state == ConnState::Open => {
