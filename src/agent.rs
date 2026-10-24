@@ -684,10 +684,10 @@ impl GeometricTicks {
 /// # Panics
 ///
 /// Panics unless `mean_service_ticks` is finite and at least one tick.
-pub fn geometric_consumer<T, M>(name: T, mean_service_ticks: f64) -> AgentInitializer<M>
-where
-    T: Into<String>,
-{
+pub fn geometric_consumer<M>(
+    name: impl Into<String>,
+    mean_service_ticks: f64,
+) -> AgentInitializer<M> {
     #[derive(Debug, Clone)]
     struct GeometricConsumer {
         /// Ticks spent on each message.
@@ -718,15 +718,11 @@ where
 /// # Panics
 ///
 /// Panics unless `mean_interarrival_ticks` is finite and at least one tick.
-pub fn geometric_producer<T, M>(
-    name: T,
+pub fn geometric_producer<M: Default>(
+    name: impl Into<String>,
     mean_interarrival_ticks: f64,
-    target: T,
-) -> AgentInitializer<M>
-where
-    T: Into<String>,
-    M: Default,
-{
+    target: impl Into<String>,
+) -> AgentInitializer<M> {
     #[derive(Clone, Debug)]
     struct GeometricProducer {
         /// Ticks between arrivals.
@@ -759,11 +755,11 @@ where
 }
 
 /// A simple agent that sends `M::default()` to `target` on a period.
-pub fn periodic_producer<T, M>(name: T, period: DiscreteTime, target: T) -> AgentInitializer<M>
-where
-    T: Into<String>,
-    M: Default,
-{
+pub fn periodic_producer<M: Default>(
+    name: impl Into<String>,
+    period: DiscreteTime,
+    target: impl Into<String>,
+) -> AgentInitializer<M> {
     #[derive(Clone, Debug)]
     struct PeriodicProducer {
         /// The time between producing messages.
@@ -796,10 +792,7 @@ where
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
-pub fn periodic_consumer<T, M>(name: T, period: DiscreteTime) -> AgentInitializer<M>
-where
-    T: Into<String>,
-{
+pub fn periodic_consumer<M>(name: impl Into<String>, period: DiscreteTime) -> AgentInitializer<M> {
     #[derive(Clone, Debug)]
     struct PeriodicConsumer {
         /// The amount of time between consuming.

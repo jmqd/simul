@@ -466,7 +466,7 @@ fn geometric_agents_with_a_one_tick_mean_act_every_tick() {
 #[test]
 #[should_panic(expected = "mean period must be finite and at least one tick")]
 fn geometric_agents_reject_means_below_one_tick() {
-    let _ = simul::agent::geometric_producer::<_, ()>("producer", 0.5, "consumer");
+    let _ = simul::agent::geometric_producer::<()>("producer", 0.5, "consumer");
 }
 
 #[test]

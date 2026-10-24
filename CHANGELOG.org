@@ -40,7 +40,9 @@ Handlers match on =message.payload=, so the software-team example drops its
 byte codec (149 lines) and every decode-failure arm; nine-ball passes the ball
 as a =u8=. Agents that ignore payloads implement =Agent<M>= for every =M=: the
 built-in consumers do, and the built-in producers send =M::default()=. Name
-the type where nothing else fixes it: =Simulation::<()>::builder(halt)=. A
+the type where nothing else fixes it, as =Simulation::<()>::builder(halt)= or
+=periodic_consumer::<Msg>(name, 1)=. Built-ins take each name as
+=impl Into<String>=, so a name and a target may be different string types. A
 payload moves into the receiver's queue; only =message_history(true)= needs
 =M: Clone=. Byte payloads remain available as =M = Option<Arc<[u8]>>=, which the
 ETL example and the engine laws use. =Message<()>= is 32 bytes.
