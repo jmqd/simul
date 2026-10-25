@@ -30,6 +30,10 @@ const AGENT_NAMESPACE: &[u8] = b"simul/v1/agent";
 /// (256 GiB) of the agent's tick stream; the first `2^32` requests of a tick
 /// get disjoint windows.
 const AGENT_CALL_WINDOW_BITS: u32 = 36;
+/// 32-bit words in one `ChaCha` block.
+const BLOCK_WORDS: usize = 16;
+/// The `ChaCha` "expand 32-byte k" constant words.
+const CHACHA_CONSTANTS: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
 /// Scale converting the high 53 bits of a `u64` to the unit interval.
 const U64_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 53) as f64);
 /// Longest derivation input hashed from a stack buffer; longer inputs use the
@@ -186,8 +190,12 @@ impl DerivedSeed {
 
     /// Constructs the pinned `ChaCha12` stream for this seed.
     #[must_use]
-    pub fn rng(self) -> TrialRng {
-        TrialRng(ChaCha12Rng::from_seed(self.0))
+    pub const fn rng(self) -> TrialRng {
+        TrialRng(Keystream::Start(BlockPosition {
+            key: self.0,
+            stream: 0,
+            block: 0,
+        }))
     }
 }
 
@@ -197,12 +205,195 @@ impl DerivedSeed {
 /// [`rand::Rng`], so `rand` and `rand_distr` samplers can draw from it. The
 /// raw stream is pinned; a sampler's output replays only while that sampler's
 /// algorithm is unchanged.
-pub struct TrialRng(ChaCha12Rng);
+pub struct TrialRng(Keystream);
+
+/// The words of a `ChaCha12` keystream, consumed exactly as
+/// [`ChaCha12Rng`] consumes them.
+///
+/// Most streams are dropped after a few draws, so their first blocks are
+/// computed one at a time instead of in `ChaCha12Rng`'s four-block batches.
+/// A stream that outlives them continues in `ChaCha12Rng` from the next block.
+enum Keystream {
+    /// Positioned at a block that has not been computed yet.
+    Start(BlockPosition),
+    /// Reading a block computed alone.
+    Single(SingleBlock),
+    /// Past the blocks computed alone.
+    Rest(ChaCha12Rng),
+}
+
+/// Blocks a stream computes one at a time before it switches to four-block
+/// batches. On Apple M2 one block alone takes about half the cycles of a
+/// batch, so two alone cost no more than the batch they replace.
+const SINGLE_BLOCKS: u8 = 2;
+
+/// A block of a `ChaCha12` keystream.
+#[derive(Clone, Copy)]
+struct BlockPosition {
+    /// The cipher key.
+    key: [u8; 32],
+    /// The 64-bit stream number.
+    stream: u64,
+    /// The 64-bit block counter.
+    block: u64,
+}
+
+/// A block computed alone, and how far it has been read.
+#[derive(Clone, Copy)]
+struct SingleBlock {
+    /// Where the block sits in the keystream.
+    position: BlockPosition,
+    /// The block's words.
+    words: [u32; BLOCK_WORDS],
+    /// The next unread word.
+    next: usize,
+    /// How many blocks the stream has computed alone, this one included.
+    computed: u8,
+}
+
+impl Keystream {
+    /// Returns the next word, computing or leaving a block as needed.
+    #[inline]
+    fn next_word(&mut self) -> u32 {
+        if let Self::Single(single) = self {
+            if let Some(&word) = single.words.get(single.next) {
+                single.next += 1;
+                return word;
+            }
+        }
+        self.next_word_slow()
+    }
+
+    /// Computes a block on the first draw, and moves past each block once
+    /// every word is read.
+    #[cold]
+    fn next_word_slow(&mut self) -> u32 {
+        if let Self::Rest(rng) = self {
+            return rand::Rng::next_u32(rng);
+        }
+        self.advance();
+        self.next_word()
+    }
+
+    /// Computes the first block, or moves past a block whose words are read.
+    fn advance(&mut self) {
+        let (position, computed) = match *self {
+            Self::Start(position) => (position, 0),
+            Self::Single(single) => (
+                BlockPosition {
+                    block: single.position.block.wrapping_add(1),
+                    ..single.position
+                },
+                single.computed,
+            ),
+            Self::Rest(_) => return,
+        };
+        *self = if computed < SINGLE_BLOCKS {
+            Self::Single(SingleBlock {
+                position,
+                words: chacha12_block(position),
+                next: 0,
+                computed: computed + 1,
+            })
+        } else {
+            let mut rng = ChaCha12Rng::from_seed(position.key);
+            rng.set_stream(position.stream);
+            rng.set_word_pos(u128::from(position.block) * BLOCK_WORDS as u128);
+            Self::Rest(rng)
+        };
+    }
+
+    /// Returns the next two words as a `u64`, low word first.
+    #[inline]
+    fn next_u64(&mut self) -> u64 {
+        if let Self::Rest(rng) = self {
+            return rand::Rng::next_u64(rng);
+        }
+        let low = self.next_word();
+        let high = self.next_word();
+        (u64::from(high) << 32) | u64::from(low)
+    }
+
+    /// Fills `destination` from whole words in order; a final partial word's
+    /// unused bytes are discarded.
+    fn fill_bytes(&mut self, destination: &mut [u8]) {
+        if destination.is_empty() {
+            return;
+        }
+        if let Self::Start(_) = self {
+            self.advance();
+        }
+        let mut filled = 0;
+        while let Self::Single(single) = self {
+            for word in &single.words[single.next..] {
+                let rest = &mut destination[filled..];
+                let take = rest.len().min(4);
+                if take == 0 {
+                    break;
+                }
+                rest[..take].copy_from_slice(&word.to_le_bytes()[..take]);
+                filled += take;
+                single.next += 1;
+            }
+            if filled == destination.len() {
+                return;
+            }
+            self.advance();
+        }
+        if let Self::Rest(rng) = self {
+            rand::Rng::fill_bytes(rng, &mut destination[filled..]);
+        }
+    }
+}
+
+/// Computes one `ChaCha12` block in the layout of `chacha20`'s RNG: a 64-bit
+/// block counter in words 12-13 and a 64-bit stream in words 14-15.
+fn chacha12_block(position: BlockPosition) -> [u32; BLOCK_WORDS] {
+    let BlockPosition { key, stream, block } = position;
+    let mut input = [0_u32; BLOCK_WORDS];
+    input[..4].copy_from_slice(&CHACHA_CONSTANTS);
+    for (word, bytes) in input[4..12].iter_mut().zip(key.chunks_exact(4)) {
+        *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    }
+    for (words, value) in input[12..].chunks_exact_mut(2).zip([block, stream]) {
+        let bytes = value.to_le_bytes();
+        words[0] = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        words[1] = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    }
+    let mut state = input;
+    for _ in 0..6 {
+        quarter_round(&mut state, 0, 4, 8, 12);
+        quarter_round(&mut state, 1, 5, 9, 13);
+        quarter_round(&mut state, 2, 6, 10, 14);
+        quarter_round(&mut state, 3, 7, 11, 15);
+        quarter_round(&mut state, 0, 5, 10, 15);
+        quarter_round(&mut state, 1, 6, 11, 12);
+        quarter_round(&mut state, 2, 7, 8, 13);
+        quarter_round(&mut state, 3, 4, 9, 14);
+    }
+    for (word, start) in state.iter_mut().zip(input) {
+        *word = word.wrapping_add(start);
+    }
+    state
+}
+
+/// One `ChaCha` quarter round over state words `a`, `b`, `c`, and `d`.
+#[inline]
+const fn quarter_round(state: &mut [u32; BLOCK_WORDS], a: usize, b: usize, c: usize, d: usize) {
+    state[a] = state[a].wrapping_add(state[b]);
+    state[d] = (state[d] ^ state[a]).rotate_left(16);
+    state[c] = state[c].wrapping_add(state[d]);
+    state[b] = (state[b] ^ state[c]).rotate_left(12);
+    state[a] = state[a].wrapping_add(state[b]);
+    state[d] = (state[d] ^ state[a]).rotate_left(8);
+    state[c] = state[c].wrapping_add(state[d]);
+    state[b] = (state[b] ^ state[c]).rotate_left(7);
+}
 
 impl TrialRng {
     /// Returns the next uniformly distributed `u64` from the stream.
     pub fn next_u64(&mut self) -> u64 {
-        rand::Rng::next_u64(&mut self.0)
+        self.0.next_u64()
     }
 
     /// Returns a uniform value in the half-open interval `[0, 1)`.
@@ -212,7 +403,7 @@ impl TrialRng {
 
     /// Fills bytes from the stream.
     pub fn fill_bytes(&mut self, destination: &mut [u8]) {
-        rand::Rng::fill_bytes(&mut self.0, destination);
+        self.0.fill_bytes(destination);
     }
 }
 
@@ -221,17 +412,17 @@ impl rand::TryRng for TrialRng {
 
     #[inline]
     fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        Ok(rand::Rng::next_u32(&mut self.0))
+        Ok(self.0.next_word())
     }
 
     #[inline]
     fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-        Ok(rand::Rng::next_u64(&mut self.0))
+        Ok(self.0.next_u64())
     }
 
     #[inline]
     fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
-        rand::Rng::fill_bytes(&mut self.0, destination);
+        self.0.fill_bytes(destination);
         Ok(())
     }
 }
@@ -248,11 +439,12 @@ impl AgentStreams {
     /// Returns the stream for the `call`th draw request of `tick`.
     #[must_use]
     #[inline]
-    pub fn rng(&self, tick: u64, call: u64) -> TrialRng {
-        let mut rng = ChaCha12Rng::from_seed(self.0);
-        rng.set_stream(tick);
-        rng.set_word_pos(u128::from(call) << AGENT_CALL_WINDOW_BITS);
-        TrialRng(rng)
+    pub const fn rng(&self, tick: u64, call: u64) -> TrialRng {
+        TrialRng(Keystream::Start(BlockPosition {
+            key: self.0,
+            stream: tick,
+            block: call << (AGENT_CALL_WINDOW_BITS - BLOCK_WORDS.trailing_zeros()),
+        }))
     }
 }
 
@@ -2067,6 +2259,46 @@ mod tests {
             ],
             mixed.each_ref().map(String::as_str)
         );
+    }
+
+    // `TrialRng` computes a stream's first block itself; every mix of draws
+    // must still read the words `ChaCha12Rng` would, across the first block's
+    // edge and the later four-block buffers.
+    #[test]
+    fn trial_streams_match_chacha12_for_every_draw_mix() {
+        let mut script = ChaCha12Rng::seed_from_u64(7);
+        for case in 0..300_usize {
+            let mut key = [0_u8; 32];
+            rand::Rng::fill_bytes(&mut script, &mut key);
+            let tick = [0, 1, u64::MAX, rand::Rng::next_u64(&mut script)][case % 4];
+            let call = [0, 1, 2, u64::from(u32::MAX)][(case >> 2) % 4];
+            let (mut ours, mut theirs) = if case % 5 == 0 {
+                (DerivedSeed(key).rng(), ChaCha12Rng::from_seed(key))
+            } else {
+                let mut theirs = ChaCha12Rng::from_seed(key);
+                theirs.set_stream(tick);
+                theirs.set_word_pos(u128::from(call) << AGENT_CALL_WINDOW_BITS);
+                (AgentStreams(key).rng(tick, call), theirs)
+            };
+            for _ in 0..48 {
+                let op = rand::Rng::next_u32(&mut script);
+                match op % 3 {
+                    0 => assert_eq!(
+                        rand::Rng::next_u32(&mut theirs),
+                        rand::Rng::next_u32(&mut ours)
+                    ),
+                    1 => assert_eq!(rand::Rng::next_u64(&mut theirs), ours.next_u64()),
+                    _ => {
+                        let length = (op >> 8) as usize % 38;
+                        let mut expected = vec![0_u8; length];
+                        let mut actual = vec![0_u8; length];
+                        rand::Rng::fill_bytes(&mut theirs, &mut expected);
+                        ours.fill_bytes(&mut actual);
+                        assert_eq!(expected, actual, "case {case}, fill of {length}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

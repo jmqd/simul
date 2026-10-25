@@ -362,7 +362,7 @@ impl<'a, M> AgentContext<'a, M> {
     /// clones, or how a run is split. Each call seeks a fresh `ChaCha12`
     /// stream, so keep it for several draws rather than calling this per draw.
     #[must_use]
-    pub fn rng(&mut self) -> TrialRng {
+    pub const fn rng(&mut self) -> TrialRng {
         let call = self.calls;
         self.calls += 1;
         self.stream_root.rng(self.time, call)

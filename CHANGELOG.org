@@ -1,5 +1,18 @@
 #+title: Changelog
 
+* Unreleased
+Newest entries first.
+
+** DONE Compute short random streams one block at a time
+=TrialRng= computes a stream's first two =ChaCha12= blocks one at a time
+instead of four at once, then continues in =ChaCha12Rng=. Most streams
+(=ctx.rng()=, trial, proposal, and dimension streams) are dropped after a
+few draws, so the other blocks were wasted. Every draw is unchanged. On an
+M2 Max, a stream drawing up to eight =u64=s costs 230 instead of 400 cycles;
+one drawing 17-32 costs twice as much as before, and longer streams the
+same. The nine-ball example runs in 32% fewer cycles, and the trial and
+search workloads in 17-20% fewer, with identical outputs.
+
 * 0.6.0 (2026-10-24)
 A breaking release; =README.md= describes the new API. Rust 1.85 is now the
 minimum (was 1.71), and the crate builds on rand 0.10 (was 0.9): =TrialRng=
