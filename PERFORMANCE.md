@@ -6,6 +6,11 @@
   the 10k-tick pair workloads), so the release profile keeps the default.
 - Compare builds with `tools/instruction_counts.py`: retired instructions are
   stable to about 0.3% on a busy host, while cycles vary by several percent.
+  Instructions can mislead when a change swaps SIMD for scalar code: the
+  scalar `ChaCha12` block that starts each `TrialRng` retires about as many
+  instructions as `chacha20`'s four-block NEON batch in half the cycles, so
+  `exp/sample_bounded_512x8` retires 32% more instructions in 20% fewer
+  cycles. Check cycles over several rounds for such changes.
 - Splitting the agent slice on every visit regressed large, mostly sleeping
   simulations by 11%; only simulations that scan names split it.
 - An out-of-line `AgentContext::agent_id` cost simulations with more than eight

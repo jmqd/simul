@@ -3,6 +3,20 @@
 * Unreleased
 Newest entries first.
 
+** DONE Evaluate each candidate period once in simple_experiment
+The search proposes 1,000 candidates from 11 consumer periods, and a run
+depends only on the period, so the example simulates each period once and
+reuses its statistics for repeats. Output is unchanged; the process retires
+17 M instead of 47 M instructions, most of it process startup.
+
+** DONE Skip idle per-tick work in the ETL placement example
+The network pump visits only connections with work due, the replication
+loop runs quiet ticks in place instead of moving its state out and back,
+and the source runs statements only when one is due. Workers claim single
+trials, longest first, instead of fixed chunks of scenarios. Output is
+byte-identical; cdc retires 888 G instead of 1,526 G instructions, faults
+487 G instead of 887 G, and copy 62 G instead of 81 G.
+
 ** DONE Compute short random streams one block at a time
 =TrialRng= computes a stream's first two =ChaCha12= blocks one at a time
 instead of four at once, then continues in =ChaCha12Rng=. Most streams
