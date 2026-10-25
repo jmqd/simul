@@ -99,6 +99,9 @@ pub(crate) struct PostgresAgent {
     table_slots: BTreeMap<u64, u64>,
     stored_checkpoint: u64,
     backends: BTreeMap<ConnId, Backend>,
+    /// The earliest tick at which `run_statements` has work: a running
+    /// statement finishes. A newly queued query resets it to 0.
+    next_statement_at: Tick,
     next_resets: usize,
     copy_bytes_per_row: Vec<f64>,
     /// Commit time of the newest record visible to decoding.
@@ -135,6 +138,7 @@ impl PostgresAgent {
             table_slots: BTreeMap::new(),
             stored_checkpoint: 0,
             backends: BTreeMap::new(),
+            next_statement_at: Tick::MAX,
             next_resets: 0,
             copy_bytes_per_row,
             newest_commit: 0,
@@ -335,6 +339,11 @@ impl PostgresAgent {
     }
 
     fn run_statements(&mut self, now: Tick) {
+        // Before then, every backend is waiting on a running statement or
+        // has none queued, so a pass would change nothing.
+        if now < self.next_statement_at {
+            return;
+        }
         let conns: Vec<ConnId> = self.backends.keys().copied().collect();
         for conn in conns {
             while let Some(backend) = self.backends.get_mut(&conn) {
@@ -357,6 +366,12 @@ impl PostgresAgent {
                 }
             }
         }
+        self.next_statement_at = self
+            .backends
+            .values()
+            .filter_map(|backend| backend.running.map(|(.., done_at)| done_at))
+            .min()
+            .unwrap_or(Tick::MAX);
     }
 
     fn stream(&mut self, now: Tick) {
@@ -585,6 +600,7 @@ impl Agent<Payload> for PostgresAgent {
                 NetEvent::Data(conn, Unit::Query { id, op, a, b }) => {
                     if let Some(backend) = self.backends.get_mut(&conn) {
                         backend.queue.push_back((id, op, a, b));
+                        self.next_statement_at = 0;
                     }
                 }
                 NetEvent::Data(conn, Unit::Status { write, flush }) => {

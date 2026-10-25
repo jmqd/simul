@@ -655,7 +655,73 @@ impl EtlAgent {
         }
     }
 
+    /// Runs `run_loop`'s tick in place when loop `id` has nothing to read,
+    /// flush, credit, or report, and returns whether it did. Such a tick
+    /// only pays down decode debt and counts apply pauses and blocks. Most
+    /// ticks are quiet, and running them here avoids moving the loop out of
+    /// the agent and back. The conditions mirror `run_loop`'s.
+    fn quiet_loop_tick(&mut self, id: LoopId, now: Tick) -> bool {
+        let rows_per_tick = per_tick(self.config.etl.decode_rows_per_s);
+        let deadline = ticks(self.config.etl.max_fill_ms / 1000.0);
+        let heartbeat = ticks(0.6 * self.config.source.wal_sender_timeout_s);
+        let (lp, streaming) = match id {
+            LoopId::Apply => {
+                let streaming =
+                    self.apply.state == ApplyState::Streaming && self.apply.blocked_by.is_none();
+                (&mut self.apply.lp, streaming)
+            }
+            LoopId::Catchup(worker) => {
+                let Some(entry) = self.workers[worker].as_mut() else {
+                    return false;
+                };
+                let streaming = entry.lp.conn.is_some() && entry.catchup_script.is_none();
+                (&mut entry.lp, streaming)
+            }
+        };
+        let reading = streaming && lp.checkpoint.is_none() && !lp.paused && !lp.reached();
+        let budget = lp.carry + rows_per_tick;
+        let decodes = reading && budget > 0.0 && !lp.unread.is_empty();
+        let flushes = lp.checkpoint.is_none()
+            && (lp
+                .filling
+                .first_at
+                .is_some_and(|first| now >= first + deadline)
+                || (lp.reached() && lp.filling.rows > 0));
+        let unread = lp.consumed - lp.credited;
+        let reports = lp.conn.is_some()
+            && (unread >= CREDIT_STEP_BYTES
+                || (unread > 0.0 && now >= lp.last_credit_at + CREDIT_IDLE_TICKS)
+                || (streaming && now >= lp.last_status_at + heartbeat));
+        if decodes || flushes || reports {
+            return false;
+        }
+        if reading {
+            lp.carry = if lp.unread.is_empty() {
+                budget.min(0.0)
+            } else {
+                budget.min(rows_per_tick)
+            };
+        }
+        let paused = lp.paused || lp.checkpoint.is_some();
+        if id == LoopId::Apply {
+            let mut recorder = self.recorder.borrow_mut();
+            if paused {
+                recorder.paused_ticks += 1;
+            }
+            if self.apply.blocked_by.is_some() {
+                recorder.blocked_ticks += 1;
+            }
+        }
+        true
+    }
+
     fn run_loop(&mut self, id: LoopId, now: Tick) {
+        if self.quiet_loop_tick(id, now) {
+            if let LoopId::Catchup(worker) = id {
+                self.check_catchup_done(worker, now);
+            }
+            return;
+        }
         let Some(mut lp) = self.take_loop(id) else {
             return;
         };
@@ -1276,10 +1342,10 @@ impl EtlAgent {
             self.store_conns[index].job = self.store_queue.pop_front();
             self.send_next_statement(index);
         }
-        let connecting = self.store_conns.iter().filter(|entry| !entry.open).count();
-        if self.store_queue.len() > connecting
-            && self.store_conns.len() < self.config.etl.store_connections
-        {
+        // With nothing queued there is nothing to connect for.
+        let wants_more = !self.store_queue.is_empty()
+            && self.store_queue.len() > self.store_conns.iter().filter(|entry| !entry.open).count();
+        if wants_more && self.store_conns.len() < self.config.etl.store_connections {
             let conn = self.net.connect(
                 self.postgres,
                 ConnKind::Sql,
@@ -1390,8 +1456,13 @@ impl EtlAgent {
                 },
             );
         }
-        let connecting = self.dest_conns.iter().filter(|entry| !entry.open).count();
-        let wanted = self.dest_queue.len().saturating_sub(connecting);
+        // With nothing queued there is nothing to connect for.
+        let wanted = if self.dest_queue.is_empty() {
+            0
+        } else {
+            let connecting = self.dest_conns.iter().filter(|entry| !entry.open).count();
+            self.dest_queue.len().saturating_sub(connecting)
+        };
         for _ in 0..wanted {
             if self.dest_conns.len() >= self.config.sink.connection_pool {
                 break;
