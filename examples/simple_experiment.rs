@@ -8,12 +8,11 @@
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::search::{SearchStrategy, SeededRandomSearch, Told};
 use simul::experiment::{
-    aggregate_scalar, run_serial, CandidateId, CandidateSummary, FailurePolicy, FixedReplications,
-    MasterSeed, NonFinitePolicy, ScalarSummary, SelectionPolicy,
+    aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
+    NonFinitePolicy, ScalarSummary, SelectionPolicy,
 };
 use simul::{Halt, Simulation, SimulationBuilder};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::convert::Infallible;
 
 const PRODUCER_PERIOD: u64 = 2;
@@ -69,55 +68,38 @@ fn run_experiment() -> Simulation {
     );
     let schedule = FixedReplications::new(1, 0);
     let mut best_simulation = None;
-    // A candidate's simulation depends only on its consumer period: every
-    // candidate draws from common-random group 0, and periodic agents draw
-    // nothing. So each of the 11 periods runs once, however often the search
-    // proposes it, and repeats reuse its summary and simulation.
-    let mut evaluated: BTreeMap<u64, (CandidateSummary<ScalarSummary>, Simulation)> =
-        BTreeMap::new();
 
     for proposal in search.ask(usize::MAX) {
         let candidate_id = CandidateId::new(proposal.token.value());
         let consumer_period = proposal.candidate;
-        let (first_summary, simulation) = evaluated.entry(consumer_period).or_insert_with(|| {
-            let mut records = run_serial(
-                MASTER_SEED,
-                schedule.trials(candidate_id, consumer_period),
-                |period, context| {
-                    // Candidates in one common-random group share their agents'
-                    // draws, so differences between them come from the policy.
-                    let mut simulation = simulation_builder(*period)
-                        .trial(context)
-                        .build()
-                        .unwrap_or_else(|error| panic!("{error}"));
-                    simulation.run();
-                    Ok::<_, Infallible>(simulation)
-                },
-            )
-            .expect("one unique trial");
-            let summary = aggregate_scalar(
-                &records,
-                |simulation| objective_score(simulation, consumer_period),
-                FailurePolicy::RejectCandidate,
-                NonFinitePolicy::RejectCandidate,
-            )
-            .expect("the simulation produces one finite score");
-            let simulation = records
-                .pop()
-                .expect("one trial record")
-                .result
-                .expect("the simulation evaluator is infallible");
-            (summary, simulation)
-        });
+        let mut records = run_serial(
+            MASTER_SEED,
+            schedule.trials(candidate_id, consumer_period),
+            |period, context| {
+                // Candidates in one common-random group share their agents'
+                // draws, so differences between them come from the policy.
+                let mut simulation = simulation_builder(*period)
+                    .trial(context)
+                    .build()
+                    .unwrap_or_else(|error| panic!("{error}"));
+                simulation.run();
+                Ok::<_, Infallible>(simulation)
+            },
+        )
+        .expect("one unique trial");
+        let summary = aggregate_scalar(
+            &records,
+            |simulation| objective_score(simulation, consumer_period),
+            FailurePolicy::RejectCandidate,
+            NonFinitePolicy::RejectCandidate,
+        )
+        .expect("the simulation produces one finite score");
 
         search
             .tell(&[Told {
                 token: proposal.token,
                 candidate: candidate_id,
-                summary: CandidateSummary {
-                    candidate: candidate_id,
-                    ..first_summary.clone()
-                },
+                summary,
             }])
             .expect("the proposal token is outstanding");
 
@@ -125,7 +107,12 @@ fn run_experiment() -> Simulation {
             .best()
             .is_some_and(|best| best.candidate_id == candidate_id)
         {
-            best_simulation = Some(simulation.clone());
+            let selecting_record = records.pop().expect("one trial record");
+            best_simulation = Some(
+                selecting_record
+                    .result
+                    .expect("the simulation evaluator is infallible"),
+            );
         }
     }
 

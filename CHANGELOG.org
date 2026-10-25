@@ -3,12 +3,6 @@
 * Unreleased
 Newest entries first.
 
-** DONE Evaluate each candidate period once in simple_experiment
-The search proposes 1,000 candidates from 11 consumer periods, and a run
-depends only on the period, so the example simulates each period once and
-reuses its statistics for repeats. Output is unchanged; the process retires
-17 M instead of 47 M instructions, most of it process startup.
-
 ** DONE Skip idle per-tick work in the ETL placement example
 The network pump visits only connections with work due, the replication
 loop runs quiet ticks in place instead of moving its state out and back,
