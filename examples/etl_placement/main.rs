@@ -232,53 +232,85 @@ type Records = Vec<TrialRecord<Outcome, Infallible>>;
 /// Runs every placement of every scenario. Both placements of a scenario
 /// share one common-random group, so they face identical workload and fault
 /// draws.
+///
+/// A trial depends only on its replay key, so workers claim one trial at a
+/// time, longest first, instead of whole scenarios in fixed chunks: the
+/// slow high-rate scenarios no longer run back to back on a few workers
+/// while the rest sit idle. Records are regrouped in canonical order.
 fn run_scenarios(scenarios: &[(String, Config)], reps: u32) -> Vec<(String, Placement, Records)> {
-    let jobs: Vec<(usize, Placement)> = (0..scenarios.len())
-        .flat_map(|index| Placement::ALL.map(|placement| (index, placement)))
-        .collect();
-    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    let chunk = jobs.len().div_ceil(workers).max(1);
-    let mut results: Vec<(usize, Placement, Records)> = std::thread::scope(|scope| {
-        // Spawn every worker before joining any, or the runs would serialize.
-        #[allow(clippy::needless_collect)]
-        let handles: Vec<_> = jobs
-            .chunks(chunk)
-            .map(|batch| {
-                scope.spawn(move || {
-                    batch
-                        .iter()
-                        .map(|&(index, placement)| {
-                            let mut config = scenarios[index].1.clone();
-                            config.placement = placement;
-                            let candidate = CandidateId::new(
-                                index as u64 * 2
-                                    + u64::from(placement == Placement::WithDestination),
+    let mut jobs: Vec<(f64, usize, Placement, TrialSpec<Config>)> = Vec::new();
+    for (index, (_, scenario)) in scenarios.iter().enumerate() {
+        for placement in Placement::ALL {
+            let mut config = scenario.clone();
+            config.placement = placement;
+            // Tick cost grows with the commit rate; measured from about
+            // 13 G instructions per 300 s at 100 rows/s to 24 G at 150 k.
+            let cost = config.duration as f64 * (1.0 + config.workload.rows_per_s / 180_000.0);
+            let candidate = CandidateId::new(
+                index as u64 * 2 + u64::from(placement == Placement::WithDestination),
+            );
+            jobs.extend(
+                FixedReplications::new(reps, index as u64)
+                    .trials(candidate, config)
+                    .map(|trial| (cost, index, placement, trial)),
+            );
+        }
+    }
+    jobs.sort_by(|left, right| right.0.total_cmp(&left.0));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(jobs.len());
+    let mut finished: Vec<(usize, Placement, TrialRecord<Outcome, Infallible>)> =
+        std::thread::scope(|scope| {
+            // Spawn every worker before joining any, or the runs would serialize.
+            #[allow(clippy::needless_collect)]
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        while let Some((_, index, placement, trial)) =
+                            jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                        {
+                            let records =
+                                run_serial(MASTER_SEED, [trial.clone()], |config, context| {
+                                    Ok::<_, Infallible>(run_trial(config, context))
+                                })
+                                .unwrap_or_else(|error| {
+                                    panic!("trial identities are unique: {error:?}")
+                                });
+                            done.extend(
+                                records
+                                    .into_iter()
+                                    .map(|record| (*index, *placement, record)),
                             );
-                            let schedule = FixedReplications::new(reps, index as u64);
-                            let trials: Vec<TrialSpec<Config>> =
-                                schedule.trials(candidate, config).collect();
-                            let records = run_serial(MASTER_SEED, trials, |config, context| {
-                                Ok::<_, Infallible>(run_trial(config, context))
-                            })
-                            .unwrap_or_else(|error| {
-                                panic!("trial identities are unique: {error:?}")
-                            });
-                            (index, placement, records)
-                        })
-                        .collect::<Vec<_>>()
+                        }
+                        done
+                    })
                 })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| panic!("a simulation thread panicked"))
-            })
-            .collect()
-    });
-    results.sort_by_key(|(index, placement, _)| (*index, *placement == Placement::WithDestination));
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| panic!("a simulation thread panicked"))
+                })
+                .collect()
+        });
+    // Candidate identities order scenarios, then placements.
+    finished.sort_by_key(|(_, _, record)| record.key);
+    let mut results: Vec<(usize, Placement, Records)> = Vec::new();
+    for (index, placement, record) in finished {
+        match results.last_mut() {
+            Some((last, last_placement, records))
+                if *last == index && *last_placement == placement =>
+            {
+                records.push(record);
+            }
+            _ => results.push((index, placement, vec![record])),
+        }
+    }
     results
         .into_iter()
         .map(|(index, placement, records)| (scenarios[index].0.clone(), placement, records))
