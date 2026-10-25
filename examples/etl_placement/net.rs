@@ -519,6 +519,34 @@ struct Conn {
     flow: Flow,
     /// Deliveries are batched to this many ticks to bound message counts.
     quantum: Tick,
+    /// The earliest tick at which `Endpoint::pump` has work for this
+    /// connection. Every change made outside `pump` resets it to 0.
+    due: Tick,
+}
+
+impl Conn {
+    /// The earliest tick after `now` at which `pump` has work here if
+    /// nothing else changes the connection: an acknowledgement or path
+    /// change falls due, queued bytes may leave, or a delivery reaches a
+    /// multiple of the quantum. Before then a visit changes nothing.
+    fn next_due(&self, now: Tick) -> Tick {
+        let flow = &self.flow;
+        let mut due = Tick::MAX;
+        if let Some(&(at, _)) = flow.inflight.front() {
+            due = due.min(at);
+        }
+        if let (Some(at), Some(_)) = (flow.next_path_change, flow.path.path_change) {
+            due = due.min(at);
+        }
+        if !flow.queue.is_empty() {
+            due = due.min(flow.blocked_until);
+        }
+        if let Some(&(at, _)) = flow.deliveries.front() {
+            // `pump` at tick `t` delivers up to `t + 1`, on quantum multiples.
+            due = due.min(at.max(now + 2).next_multiple_of(self.quantum) - 1);
+        }
+        due.max(now + 1)
+    }
 }
 
 /// A peer agent and the network path to it.
@@ -574,6 +602,8 @@ pub(crate) struct Endpoint {
     nic: Nic,
     peers: Vec<Peer>,
     conns: BTreeMap<ConnId, Conn>,
+    /// The earliest `Conn::due`; `pump` skips its connection scans before it.
+    next_due: Tick,
     control: Vec<(Tick, usize, ConnId, Unit)>,
     writers: Vec<FrameWriter>,
     /// Bytes sent across regions, for transfer cost.
@@ -590,6 +620,7 @@ impl Endpoint {
             nic: Nic::new(nic),
             peers,
             conns: BTreeMap::new(),
+            next_due: Tick::MAX,
             control: Vec::new(),
             writers,
             cross_region_bytes: 0.0,
@@ -650,8 +681,10 @@ impl Endpoint {
                 },
                 flow,
                 quantum: 1,
+                due: 0,
             },
         );
+        self.next_due = 0;
         id
     }
 
@@ -662,6 +695,8 @@ impl Endpoint {
         match self.conns.get_mut(&conn) {
             Some(entry) if entry.state == ConnState::Open => {
                 entry.flow.push(unit);
+                entry.due = 0;
+                self.next_due = 0;
                 true
             }
             Some(_) | None => false,
@@ -684,12 +719,16 @@ impl Endpoint {
     pub(crate) fn use_receiver_credit(&mut self, conn: ConnId) {
         if let Some(entry) = self.conns.get_mut(&conn) {
             entry.flow.credit = Some(entry.flow.sent_total);
+            entry.due = 0;
+            self.next_due = 0;
         }
     }
 
     pub(crate) fn set_quantum(&mut self, conn: ConnId, quantum: Tick) {
         if let Some(entry) = self.conns.get_mut(&conn) {
             entry.quantum = quantum.max(1);
+            entry.due = 0;
+            self.next_due = 0;
         }
     }
 
@@ -700,6 +739,8 @@ impl Endpoint {
                 entry.flow.push(Unit::Close);
             }
             entry.state = ConnState::Closing;
+            entry.due = 0;
+            self.next_due = 0;
         }
     }
 
@@ -760,8 +801,10 @@ impl Endpoint {
                             state: ConnState::Open,
                             flow,
                             quantum: 1,
+                            due: 0,
                         },
                     );
+                    self.next_due = 0;
                     events.push(NetEvent::Accepted(conn, kind));
                 }
                 Unit::Reset | Unit::Close => {
@@ -785,7 +828,11 @@ impl Endpoint {
                         self.notify_peer(peer, conn, one_way, now, faults);
                     }
                     Some(entry) => match (other, entry.state) {
-                        (Unit::Ping, _) => entry.flow.push(Unit::Pong),
+                        (Unit::Ping, _) => {
+                            entry.flow.push(Unit::Pong);
+                            entry.due = 0;
+                            self.next_due = 0;
+                        }
                         (Unit::Pong, ConnState::Handshaking { round_trips_left }) => {
                             if round_trips_left <= 1 {
                                 entry.state = ConnState::Open;
@@ -796,11 +843,15 @@ impl Endpoint {
                                 };
                                 entry.flow.push(Unit::Ping);
                             }
+                            entry.due = 0;
+                            self.next_due = 0;
                         }
                         (Unit::Credit { consumed }, _) => {
                             if let Some(known) = entry.flow.credit.as_mut() {
                                 *known = known.max(consumed as f64);
                             }
+                            entry.due = 0;
+                            self.next_due = 0;
                         }
                         (Unit::Pong, ConnState::Open | ConnState::Closing) => {}
                         (data, _) => events.push(NetEvent::Data(conn, data)),
@@ -812,6 +863,10 @@ impl Endpoint {
     }
 
     /// Moves bytes on every connection and sends this tick's deliveries.
+    ///
+    /// Only connections with work due are visited. A visit to any other
+    /// changes nothing, so every byte, draw, and delivery is as if every
+    /// connection were visited every tick.
     pub(crate) fn pump(
         &mut self,
         ctx: &mut AgentContext<'_, Payload>,
@@ -819,10 +874,46 @@ impl Endpoint {
         faults: &FaultPlan,
         rng: &mut Rng,
     ) {
+        let used = if self.next_due <= now {
+            self.move_due_connections(now, faults, rng)
+        } else {
+            0.0
+        };
+        self.nic.spend(used);
+
+        // A message sent now is seen next tick.
+        let horizon = now + 1;
+        let mut index = 0;
+        while index < self.control.len() {
+            let (at, peer, conn, unit) = self.control[index];
+            if at <= horizon {
+                self.writers[peer].push(conn, unit);
+                self.control.swap_remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        // Resolve every peer, not only those sent to: a peer may open a
+        // connection to this agent before this agent ever sends to it.
+        for peer in 0..self.peers.len() {
+            let id = self.peer_id(peer, ctx);
+            if !self.writers[peer].is_empty() {
+                ctx.send_to(id, self.writers[peer].take_payload());
+            }
+        }
+    }
+
+    /// Advances, sends on, and delivers from every connection with work due
+    /// by `now`, in connection order, and records when each is next due.
+    /// Returns the bytes sent.
+    fn move_due_connections(&mut self, now: Tick, faults: &FaultPlan, rng: &mut Rng) -> f64 {
         let tcp = &self.tcp;
         let mut wants = Vec::new();
         let mut total = 0.0;
         for (conn, entry) in &mut self.conns {
+            if entry.due > now {
+                continue;
+            }
             entry.flow.advance(now, tcp, rng);
             let want = entry.flow.want(now, tcp);
             if want > 0.0 {
@@ -842,45 +933,33 @@ impl Endpoint {
                 }
             }
         }
-        self.nic.spend(used);
 
-        // A message sent now is seen next tick.
         let horizon = now + 1;
         let mut finished = Vec::new();
+        let mut next_due = Tick::MAX;
         for (conn, entry) in &mut self.conns {
-            if horizon % entry.quantum == 0 {
-                while let Some(&(at, unit)) = entry.flow.deliveries.front() {
-                    if at > horizon {
-                        break;
+            if entry.due <= now {
+                if horizon % entry.quantum == 0 {
+                    while let Some(&(at, unit)) = entry.flow.deliveries.front() {
+                        if at > horizon {
+                            break;
+                        }
+                        entry.flow.deliveries.pop_front();
+                        self.writers[entry.peer].push(*conn, unit);
                     }
-                    entry.flow.deliveries.pop_front();
-                    self.writers[entry.peer].push(*conn, unit);
                 }
+                if entry.state == ConnState::Closing && entry.flow.idle() {
+                    finished.push(*conn);
+                    continue;
+                }
+                entry.due = entry.next_due(now);
             }
-            if entry.state == ConnState::Closing && entry.flow.idle() {
-                finished.push(*conn);
-            }
+            next_due = next_due.min(entry.due);
         }
         for conn in finished {
             self.conns.remove(&conn);
         }
-        let mut index = 0;
-        while index < self.control.len() {
-            let (at, peer, conn, unit) = self.control[index];
-            if at <= horizon {
-                self.writers[peer].push(conn, unit);
-                self.control.swap_remove(index);
-            } else {
-                index += 1;
-            }
-        }
-        // Resolve every peer, not only those sent to: a peer may open a
-        // connection to this agent before this agent ever sends to it.
-        for peer in 0..self.peers.len() {
-            let id = self.peer_id(peer, ctx);
-            if !self.writers[peer].is_empty() {
-                ctx.send_to(id, self.writers[peer].take_payload());
-            }
-        }
+        self.next_due = next_due;
+        used
     }
 }
