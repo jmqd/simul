@@ -312,8 +312,12 @@ pub(crate) struct AgentCommand<M> {
 
 /// Actions an agent can request from a callback.
 pub(crate) enum AgentCommandType<M> {
-    /// Record the message as produced and deliver it to its destination.
+    /// Record the message as produced and deliver it to its destination at
+    /// the end of the tick.
     SendMessage(Message<M>),
+    /// Record the message as produced and hold it until it arrives, at the
+    /// tick after its `queued_time`, which is later than the next tick.
+    SendDelayed(Message<M>),
     /// Stop the simulation after this tick; the payload is the reason.
     HaltSimulation(String),
 }
@@ -474,13 +478,15 @@ impl<'a, M> AgentContext<'a, M> {
             panic!("message arrival exceeds u64::MAX");
         };
         let destination = (target.index() < self.agent_count).then_some(target);
+        let message = Message::sent(arrival - 1, self.id, destination, payload);
+        // A one-tick delay arrives with this tick's ordinary sends.
+        let ty = if delay == 1 {
+            AgentCommandType::SendMessage(message)
+        } else {
+            AgentCommandType::SendDelayed(message)
+        };
         self.commands.push(AgentCommand {
-            ty: AgentCommandType::SendMessage(Message::sent(
-                arrival - 1,
-                self.id,
-                destination,
-                payload,
-            )),
+            ty,
             agent_handle: self.id.index(),
         });
     }

@@ -1427,3 +1427,39 @@ fn sleeping_agents_wake_into_the_mode_they_slept_from() {
         simulation.find_by_name("consumer").map(|a| a.state.mode)
     );
 }
+
+/// Sends one delayed and one next-tick message to an identity outside the
+/// simulation at tick 0.
+#[derive(Clone, Debug)]
+struct SendToNobody;
+
+impl Agent<u8> for SendToNobody {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, u8>) {
+        if ctx.time() == 0 {
+            ctx.send_after(5, AgentId::new(7), 1);
+            ctx.send_after(1, AgentId::new(7), 2);
+        }
+    }
+}
+
+#[test]
+fn delayed_messages_to_unknown_identities_count_as_sent_but_never_fly() {
+    let mut simulation = Simulation::builder(Halt::AtTime(10))
+        .agents(vec![AgentInitializer::proactive("sender", SendToNobody)])
+        .message_history(true)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    simulation.run_until(1);
+    assert_eq!(0, simulation.in_flight().count());
+    simulation.run();
+    let Some(produced) = simulation.produced_for_agent("sender") else {
+        panic!("sender must exist");
+    };
+    assert_eq!(
+        vec![(1, 4, None), (2, 0, None)],
+        produced
+            .iter()
+            .map(|message| (message.payload, message.queued_time, message.destination))
+            .collect::<Vec<_>>()
+    );
+}

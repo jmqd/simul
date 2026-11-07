@@ -209,8 +209,9 @@ pub struct Simulation<M = ()> {
     /// The reason given by the interrupt that ended the latest run, if any.
     halt_reason: Option<String>,
 
-    /// Messages sent with a delay, by arrival tick and then send order.
-    in_flight: BTreeMap<(DiscreteTime, u64), Message<M>>,
+    /// Messages sent with a delay and their receivers, by arrival tick and
+    /// then send order.
+    in_flight: BTreeMap<(DiscreteTime, u64), (AgentId, Message<M>)>,
 
     /// Send-order number of the next delayed message.
     next_in_flight: u64,
@@ -896,7 +897,7 @@ impl<M> Simulation<M> {
     /// arrived yet, in arrival order. A run that halts leaves them in flight,
     /// and the next run delivers them.
     pub fn in_flight(&self) -> impl Iterator<Item = &Message<M>> {
-        self.in_flight.values()
+        self.in_flight.values().map(|(_, message)| message)
     }
 
     /// Runs the simulation until its halt condition holds or an agent sends a
@@ -1204,25 +1205,14 @@ impl<M> Simulation<M> {
         for command in command_buffer.drain(..) {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
-                    let sender = &mut self.agents[command.agent_handle];
-                    sender.metadata.produced_count += 1;
-                    if let Some(history) = &mut sender.history {
-                        history.produced.push((history.copy)(&message));
+                    self.record_produced(command.agent_handle, &message);
+                    if let Some(destination) = message.destination {
+                        self.deliver(destination, message, schedule.as_deref_mut(), next_time);
                     }
+                }
 
-                    match message.destination {
-                        // A delayed send carries the tick before its arrival.
-                        Some(_) if message.queued_time >= next_time => {
-                            let arrival = message.queued_time.saturating_add(1);
-                            self.in_flight
-                                .insert((arrival, self.next_in_flight), message);
-                            self.next_in_flight += 1;
-                        }
-                        Some(destination) => {
-                            self.deliver(destination, message, schedule.as_deref_mut(), next_time);
-                        }
-                        None => {}
-                    }
+                AgentCommandType::SendDelayed(message) => {
+                    self.hold_delayed(command.agent_handle, message, next_time);
                 }
 
                 AgentCommandType::HaltSimulation(reason) => {
@@ -1232,6 +1222,35 @@ impl<M> Simulation<M> {
             }
         }
         interrupt
+    }
+
+    /// Counts a delayed message as sent by the agent at `handle` and holds it
+    /// until it arrives. Kept out of line so that it does not crowd the tick
+    /// loop, which most simulations run without delayed sends.
+    #[inline(never)]
+    fn hold_delayed(&mut self, handle: usize, message: Message<M>, next_time: DiscreteTime) {
+        self.record_produced(handle, &message);
+        if let Some(destination) = message.destination {
+            debug_assert!(
+                message.queued_time >= next_time,
+                "a delayed message arrives after the next tick"
+            );
+            let arrival = message.queued_time + 1;
+            self.in_flight
+                .insert((arrival, self.next_in_flight), (destination, message));
+            self.next_in_flight += 1;
+        }
+    }
+
+    /// Counts a message as sent by the agent at `handle`, and records it when
+    /// history is on.
+    #[inline]
+    fn record_produced(&mut self, handle: usize, message: &Message<M>) {
+        let sender = &mut self.agents[handle];
+        sender.metadata.produced_count += 1;
+        if let Some(history) = &mut sender.history {
+            history.produced.push((history.copy)(message));
+        }
     }
 
     /// Appends a message to its receiver's queue, visible from `visible_at`.
@@ -1262,10 +1281,8 @@ impl<M> Simulation<M> {
             if entry.key().0 > now {
                 break;
             }
-            let message = entry.remove();
-            if let Some(destination) = message.destination {
-                self.deliver(destination, message, schedule.as_deref_mut(), now);
-            }
+            let (destination, message) = entry.remove();
+            self.deliver(destination, message, schedule.as_deref_mut(), now);
         }
     }
 
