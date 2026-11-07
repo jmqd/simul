@@ -513,6 +513,104 @@ impl SparseSchedule {
     }
 }
 
+/// How a run chooses which agents to visit each tick.
+enum Scheduler {
+    /// Visits every agent every tick: the simulation is small, or the asleep
+    /// metric must count every sleeping agent every tick.
+    DenseOnly,
+    /// Visits every agent until activity falls below the low watermark.
+    Dense,
+    /// Visits only runnable agents until activity rises above the high
+    /// watermark.
+    Sparse(SparseSchedule),
+}
+
+impl Scheduler {
+    /// Starts sparse when the simulation may use a schedule at all.
+    fn new<M>(agents: &[SimulationAgent<M>], asleep_cycles_metric: bool) -> Self {
+        // Small scans are cheaper than maintaining the schedule, and the asleep
+        // metric needs every agent visited every tick, so either keeps dense scans.
+        if agents.len() > SPARSE_SCHEDULE_MIN_AGENTS && !asleep_cycles_metric {
+            Self::Sparse(SparseSchedule::new(agents))
+        } else {
+            Self::DenseOnly
+        }
+    }
+
+    /// Returns the schedule while visits are sparse.
+    const fn sparse_mut(&mut self) -> Option<&mut SparseSchedule> {
+        match self {
+            Self::Sparse(active) => Some(active),
+            Self::Dense | Self::DenseOnly => None,
+        }
+    }
+
+    /// Marks agents due at `time` ready, and switches to dense visits once a
+    /// quarter of the agents are ready.
+    fn before_tick<M>(&mut self, time: DiscreteTime, agents: &[SimulationAgent<M>]) {
+        if let Self::Sparse(active) = self {
+            active.wake(time, agents);
+            if active.ready_count >= agents.len().div_ceil(4) {
+                *self = Self::Dense;
+            }
+        }
+    }
+
+    /// Switches back to sparse visits once fewer than an eighth of the agents
+    /// ran a callback. Separate low and high watermarks amortize rebuilding
+    /// across busy and quiet phases instead of switching around one threshold.
+    fn after_tick<M>(&mut self, callbacks: usize, agents: &[SimulationAgent<M>]) {
+        if matches!(self, Self::Dense) && callbacks < agents.len().div_ceil(8) {
+            *self = Self::Sparse(SparseSchedule::new(agents));
+        }
+    }
+}
+
+/// Whether a run may jump over ticks in which no agent can act.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuietTicks {
+    /// Every tick is observed, by a `Halt::When` predicate or the asleep
+    /// metric, so none may be skipped.
+    Observed,
+    /// Quiet ticks may be skipped, but not past the halt or pause time.
+    SkipUpTo(DiscreteTime),
+    /// Quiet ticks may be skipped with no halt or pause time to stop at.
+    SkipUnbounded,
+}
+
+impl QuietTicks {
+    /// Decides for a run that halts by `halt` and pauses at `until`.
+    fn new<M>(halt: &Halt<M>, asleep_cycles_metric: bool, until: Option<DiscreteTime>) -> Self {
+        match (halt, asleep_cycles_metric) {
+            (Halt::When(_), _) | (_, true) => Self::Observed,
+            (Halt::AtTime(time), false) => {
+                Self::SkipUpTo(until.map_or(*time, |until| until.min(*time)))
+            }
+            (Halt::Never, false) => until.map_or(Self::SkipUnbounded, Self::SkipUpTo),
+        }
+    }
+
+    /// Returns the tick to jump to after a quiet tick, given the next tick at
+    /// which anything happens, or `None` to step one tick as usual.
+    fn skip_to(self, next_event: Option<DiscreteTime>) -> Option<DiscreteTime> {
+        match self {
+            Self::Observed => None,
+            Self::SkipUpTo(bound) => Some(next_event.map_or(bound, |event| event.min(bound))),
+            Self::SkipUnbounded => next_event,
+        }
+    }
+}
+
+/// Why a run stopped.
+enum Stop {
+    /// The halt condition held.
+    Halted,
+    /// An agent sent a halt interrupt with this reason.
+    Interrupted(String),
+    /// The run reached the time given to [`Simulation::run_until`].
+    Paused,
+}
+
 /// Visits one agent in handle order: wakes it when due, runs its callback, and
 /// applies the sleep it requested. Returns whether a callback ran and the
 /// requested wake time.
@@ -888,88 +986,70 @@ impl<M> Simulation<M> {
                 agent.record_queue_depth(time);
             }
         }
-        // Small scans are cheaper than maintaining the schedule, and the asleep
-        // metric needs every agent visited every tick, so either keeps dense scans.
-        let sparse_eligible = self.agents.len() > SPARSE_SCHEDULE_MIN_AGENTS
-            && !self.enable_agent_asleep_cycles_metric;
-        let mut schedule = sparse_eligible.then(|| SparseSchedule::new(&self.agents));
-        // Quiet ticks can be skipped only when nothing observes them: a
-        // `Halt::When` predicate sees every tick, and the asleep metric counts
-        // every tick. The bound is the halt or pause time, if any.
-        let skip_bound = match (&self.halt, self.enable_agent_asleep_cycles_metric) {
-            (Halt::AtTime(time), false) => {
-                Some(Some(until.map_or(*time, |until| until.min(*time))))
-            }
-            (Halt::Never, false) => Some(until),
-            (Halt::AtTime(_) | Halt::Never, true) | (Halt::When(_), _) => None,
-        };
+        let mut scheduler = Scheduler::new(&self.agents, self.enable_agent_asleep_cycles_metric);
+        let quiet_ticks =
+            QuietTicks::new(&self.halt, self.enable_agent_asleep_cycles_metric, until);
 
         // The halt check comes first, so a run that both halts and reaches
         // `until` at one tick completes.
         // One compare per tick: an unset pause only matches at u64::MAX, where
         // `until.is_some()` lets an unpaused run reach the overflow panic.
         let pause_at = until.unwrap_or(DiscreteTime::MAX);
-        let paused = loop {
-            if self.mode != SimulationMode::Running || self.halt_reached() {
-                break false;
+        let stop = loop {
+            if self.halt_reached() {
+                break Stop::Halted;
             }
             if self.time >= pause_at && until.is_some() {
-                break true;
+                break Stop::Paused;
             }
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
             };
-            if let Some(active) = &mut schedule {
-                active.wake(self.time, &self.agents);
-                if active.ready_count >= self.agents.len().div_ceil(4) {
-                    schedule = None;
-                }
-            }
-            let callbacks = match schedule.as_mut() {
+            scheduler.before_tick(self.time, &self.agents);
+            let callbacks = match scheduler.sparse_mut() {
                 Some(active) => self.run_sparse_tick(&mut command_buffer, active),
                 None => self.run_dense_tick(&mut command_buffer),
             };
 
-            self.process_command_buffer(&mut command_buffer, schedule.as_mut(), next_time);
+            let interrupt =
+                self.process_command_buffer(&mut command_buffer, scheduler.sparse_mut(), next_time);
 
             self.time = next_time;
-            // Separate low and high watermarks amortize rebuilding across busy and
-            // quiet phases instead of switching around one threshold.
-            if sparse_eligible
-                && schedule.is_none()
-                && callbacks < self.agents.len().div_ceil(8)
-                && self.mode == SimulationMode::Running
-            {
-                schedule = Some(SparseSchedule::new(&self.agents));
+            if let Some(reason) = interrupt {
+                break Stop::Interrupted(reason);
             }
+            scheduler.after_tick(callbacks, &self.agents);
             // A tick without callbacks issued no commands, so state can change
             // again only when an agent becomes runnable or a delayed message
-            // arrives; jump to that tick and deliver what arrives then.
-            if let Some(bound) = skip_bound {
-                if callbacks == 0 && self.mode == SimulationMode::Running {
-                    let next_agent = match &schedule {
-                        Some(active) => active.next_event(self.time),
-                        None => self.next_event_dense(self.time),
-                    };
-                    let next_arrival = self.in_flight.first_key_value().map(|(key, _)| key.0);
-                    let next_event = next_agent.into_iter().chain(next_arrival).min();
-                    let target = match (next_event, bound) {
-                        (Some(event), Some(halt)) => event.min(halt),
-                        (None, Some(halt)) => halt,
-                        (Some(event), None) => event,
-                        (None, None) => self.time,
-                    };
-                    self.time = self.time.max(target);
-                    self.deliver_due(self.time, schedule.as_mut());
-                }
+            // arrives.
+            if callbacks == 0 && quiet_ticks != QuietTicks::Observed {
+                self.skip_quiet_ticks(&mut scheduler, quiet_ticks);
             }
         };
 
-        self.mode = if paused {
-            SimulationMode::Paused
-        } else {
-            SimulationMode::Completed
+        (self.mode, self.halt_reason) = match stop {
+            Stop::Halted => (SimulationMode::Completed, None),
+            Stop::Interrupted(reason) => (SimulationMode::Completed, Some(reason)),
+            Stop::Paused => (SimulationMode::Paused, None),
         };
+    }
+
+    /// Jumps from a tick without callbacks to the next tick at which an agent
+    /// can act or a delayed message arrives, within the halt or pause time,
+    /// and delivers what arrives then. Kept out of line, since busy runs
+    /// never take it.
+    #[inline(never)]
+    fn skip_quiet_ticks(&mut self, scheduler: &mut Scheduler, quiet_ticks: QuietTicks) {
+        let next_agent = match scheduler {
+            Scheduler::Sparse(active) => active.next_event(self.time),
+            Scheduler::Dense | Scheduler::DenseOnly => self.next_event_dense(self.time),
+        };
+        let next_arrival = self.in_flight.first_key_value().map(|(key, _)| key.0);
+        let next_event = next_agent.into_iter().chain(next_arrival).min();
+        if let Some(target) = quiet_ticks.skip_to(next_event) {
+            self.time = self.time.max(target);
+            self.deliver_due(self.time, scheduler.sparse_mut());
+        }
     }
 
     /// Borrows the agents mutably beside the inputs every visit shares.
@@ -1108,14 +1188,16 @@ impl<M> Simulation<M> {
         }
     }
 
-    /// Applies buffered Agent commands in the order they were issued.
+    /// Applies buffered Agent commands in the order they were issued, and
+    /// returns the reason of the first halt interrupt among them, if any.
     #[inline]
     fn process_command_buffer(
         &mut self,
         command_buffer: &mut Vec<AgentCommand<M>>,
         mut schedule: Option<&mut SparseSchedule>,
         next_time: DiscreteTime,
-    ) {
+    ) -> Option<String> {
+        let mut interrupt = None;
         // Delayed messages arriving next tick were sent in earlier ticks, so
         // they arrive ahead of this tick's sends.
         self.deliver_due(next_time, schedule.as_deref_mut());
@@ -1145,13 +1227,11 @@ impl<M> Simulation<M> {
 
                 AgentCommandType::HaltSimulation(reason) => {
                     // The first interrupt in issue order ends the run.
-                    if self.mode == SimulationMode::Running {
-                        self.halt_reason = Some(reason);
-                    }
-                    self.mode = SimulationMode::Completed;
+                    interrupt.get_or_insert(reason);
                 }
             }
         }
+        interrupt
     }
 
     /// Appends a message to its receiver's queue, visible from `visible_at`.
@@ -1270,6 +1350,39 @@ mod tests {
             simulation.calc_queue_len_statistics().get("consumer"),
             Some(&3)
         );
+    }
+
+    #[test]
+    fn quiet_ticks_skip_only_unobserved_ticks_and_stop_at_the_bound() {
+        let when = Halt::<()>::when(|_| false);
+        assert_eq!(QuietTicks::Observed, QuietTicks::new(&when, false, Some(3)));
+        assert_eq!(
+            QuietTicks::Observed,
+            QuietTicks::new(&Halt::<()>::Never, true, None)
+        );
+        assert_eq!(
+            QuietTicks::SkipUpTo(3),
+            QuietTicks::new(&Halt::<()>::AtTime(5), false, Some(3))
+        );
+        assert_eq!(
+            QuietTicks::SkipUpTo(5),
+            QuietTicks::new(&Halt::<()>::AtTime(5), false, Some(8))
+        );
+        assert_eq!(
+            QuietTicks::SkipUpTo(8),
+            QuietTicks::new(&Halt::<()>::Never, false, Some(8))
+        );
+        assert_eq!(
+            QuietTicks::SkipUnbounded,
+            QuietTicks::new(&Halt::<()>::Never, false, None)
+        );
+
+        assert_eq!(None, QuietTicks::Observed.skip_to(Some(2)));
+        assert_eq!(Some(2), QuietTicks::SkipUpTo(5).skip_to(Some(2)));
+        assert_eq!(Some(5), QuietTicks::SkipUpTo(5).skip_to(Some(9)));
+        assert_eq!(Some(5), QuietTicks::SkipUpTo(5).skip_to(None));
+        assert_eq!(Some(9), QuietTicks::SkipUnbounded.skip_to(Some(9)));
+        assert_eq!(None, QuietTicks::SkipUnbounded.skip_to(None));
     }
 
     #[test]
