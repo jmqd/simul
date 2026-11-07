@@ -8,7 +8,7 @@ use chacha20::ChaCha8Rng;
 use rand::{RngExt as _, SeedableRng as _};
 use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
-    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent,
+    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent, WakeMode,
 };
 use simul::experiment::MasterSeed;
 use simul::message::Message;
@@ -203,7 +203,18 @@ fn random_mode(rng: &mut ChaCha8Rng, start: DiscreteTime) -> AgentMode {
         0..25 => AgentMode::Proactive,
         25..75 => AgentMode::Reactive,
         75..85 => AgentMode::Dead,
-        _ => AgentMode::AsleepUntil(deadline(rng, start, 150)),
+        _ => AgentMode::AsleepUntil {
+            until: deadline(rng, start, 150),
+            then: random_wake(rng),
+        },
+    }
+}
+
+fn random_wake(rng: &mut ChaCha8Rng) -> WakeMode {
+    if rng.random_bool(0.5) {
+        WakeMode::Proactive
+    } else {
+        WakeMode::Reactive
     }
 }
 
@@ -220,7 +231,10 @@ fn chaos_agent(
     } else {
         match rng.random_range(0..100) {
             0..45 => AgentMode::Reactive,
-            45..80 => AgentMode::AsleepUntil(deadline(rng, start, 100)),
+            45..80 => AgentMode::AsleepUntil {
+                until: deadline(rng, start, 100),
+                then: random_wake(rng),
+            },
             _ => AgentMode::Dead,
         }
     };
@@ -238,7 +252,6 @@ fn chaos_agent(
         }),
         options: AgentOptions {
             initial_mode,
-            wake_mode: random_mode(rng, start),
             name,
             ..Default::default()
         },
@@ -1090,7 +1103,12 @@ fn mutate_between_runs(simulation: &mut Simulation<Payload>, seed: u64, round: u
             .unwrap_or_else(|| panic!("seed {seed}: agent {name:?} exists"));
         match rng.random_range(0..6) {
             0 => state.mode = random_mode(&mut rng, now),
-            1 => state.wake_mode = random_mode(&mut rng, now),
+            1 => {
+                let wake = random_wake(&mut rng);
+                if let AgentMode::AsleepUntil { then, .. } = &mut state.mode {
+                    *then = wake;
+                }
+            }
             2 => state.queue.push_back(Message::new(now, None)),
             3 => state.queue.clear(),
             4 => {
@@ -1100,12 +1118,9 @@ fn mutate_between_runs(simulation: &mut Simulation<Payload>, seed: u64, round: u
                 state.mode = AgentMode::Proactive;
             }
             _ => {
-                let mode = AgentMode::AsleepUntil(now + rng.random_range(0..5));
-                state.mode = mode;
-                state.wake_mode = if rng.random_bool(0.5) {
-                    mode
-                } else {
-                    AgentMode::Reactive
+                state.mode = AgentMode::AsleepUntil {
+                    until: now + rng.random_range(0..5),
+                    then: random_wake(&mut rng),
                 };
             }
         }

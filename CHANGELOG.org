@@ -3,6 +3,18 @@
 * Unreleased
 Newest entries first.
 
+** DONE Keep a sleeping agent's wake mode in its sleep (breaking)
+=AgentMode::AsleepUntil(t)= becomes =AgentMode::AsleepUntil { until, then }=,
+where =then= is a new =WakeMode= (=Proactive= or =Reactive=), and
+=AgentState::wake_mode= and =AgentOptions::wake_mode= are gone. A separate
+wake mode allowed states with no meaning, such as waking into another sleep
+or into =Dead=, which the engine had to tolerate. An agent now wakes back
+into the mode it slept from, so an agent switched between =Reactive= and
+=Proactive= between runs keeps its new mode after its next sleep instead of
+reverting. =AgentMode::asleep_until(t)= builds the sleep for a mode, and
+=AgentInitializer::asleep_until= uses it. Results of simulations that never
+set =wake_mode= apart from the initial mode are unchanged.
+
 ** DONE Skip idle per-tick work in the ETL placement example
 The network pump visits only connections with work due, the replication
 loop runs quiet ticks in place instead of moving its state out and back,

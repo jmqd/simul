@@ -108,7 +108,7 @@ struct ReadmeDoctests;
 use agent::{
     Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
     AgentMode, AgentState, MessageHistory, MessageProcessingStatus, QueueDepthChange,
-    SimulationAgent,
+    SimulationAgent, WakeMode,
 };
 use experiment::{AgentStreams, MasterSeed, SeedDeriver, TrialContext, TrialStream};
 use message::Message;
@@ -436,10 +436,8 @@ impl SparseSchedule {
         };
         let mut sleeping = Vec::new();
         for (handle, agent) in agents.iter().enumerate() {
-            if let AgentMode::AsleepUntil(deadline) = agent.state.mode {
-                if agent.state.mode != agent.state.wake_mode {
-                    sleeping.push(Reverse((deadline, handle)));
-                }
+            if let AgentMode::AsleepUntil { until, .. } = agent.state.mode {
+                sleeping.push(Reverse((until, handle)));
             } else {
                 schedule.set_ready(handle, Self::runnable(&agent.state));
             }
@@ -505,7 +503,10 @@ impl SparseSchedule {
                 break;
             }
             self.sleeping.pop();
-            if agents[handle].state.mode == AgentMode::AsleepUntil(deadline) {
+            if matches!(
+                agents[handle].state.mode,
+                AgentMode::AsleepUntil { until, .. } if until == deadline
+            ) {
                 self.set_ready(handle, true);
             }
         }
@@ -538,28 +539,24 @@ fn visit_agent<M>(
     } else {
         (&mut agents[handle], None)
     };
-    if let AgentMode::AsleepUntil(wakeup_at) = agent.state.mode {
-        if tick.time < wakeup_at {
-            // A sleeping agent pops no message, runs no callback, and requests
-            // no sleep; only the optional asleep count changes.
-            if tick.asleep_cycles_metric {
-                agent.metadata.asleep_cycle_count += 1;
+    let wake_mode = match agent.state.mode {
+        AgentMode::Proactive => WakeMode::Proactive,
+        AgentMode::Reactive => WakeMode::Reactive,
+        AgentMode::AsleepUntil { until, then } => {
+            if tick.time < until {
+                // A sleeping agent pops no message, runs no callback, and
+                // requests no sleep; only the optional asleep count changes.
+                if tick.asleep_cycles_metric {
+                    agent.metadata.asleep_cycle_count += 1;
+                }
+                return (false, None);
             }
-            return (false, None);
-        }
-        agent.state.mode = agent.state.wake_mode;
-    }
-    let proactive = match agent.state.mode {
-        AgentMode::Proactive => true,
-        AgentMode::Reactive => false,
-        AgentMode::AsleepUntil(_) => {
-            if tick.asleep_cycles_metric {
-                agent.metadata.asleep_cycle_count += 1;
-            }
-            return (false, None);
+            agent.state.mode = then.into();
+            then
         }
         AgentMode::Dead => return (false, None),
     };
+    let proactive = wake_mode == WakeMode::Proactive;
     let message = agent.state.queue.pop_front();
     if tick.queue_depth_metric && message.is_some() {
         agent.record_queue_depth(tick.time);
@@ -609,7 +606,10 @@ fn visit_agent<M>(
         }
     }
     if let Some(sleep_until) = requested_sleep_until {
-        agent.state.mode = AgentMode::AsleepUntil(sleep_until);
+        agent.state.mode = AgentMode::AsleepUntil {
+            until: sleep_until,
+            then: wake_mode,
+        };
     }
     (true, requested_sleep_until)
 }
@@ -693,7 +693,6 @@ impl<M> Simulation<M> {
                     metadata: AgentMetadata::default(),
                     state: AgentState {
                         mode: agent_initializer.options.initial_mode,
-                        wake_mode: agent_initializer.options.wake_mode,
                         queue,
                     },
                     history: message_history.map(|copy| MessageHistory {
@@ -1093,7 +1092,7 @@ impl<M> Simulation<M> {
             .filter_map(|agent| match agent.state.mode {
                 AgentMode::Proactive => Some(now),
                 AgentMode::Reactive => (!agent.state.queue.is_empty()).then_some(now),
-                AgentMode::AsleepUntil(deadline) => Some(deadline.max(now)),
+                AgentMode::AsleepUntil { until, .. } => Some(until.max(now)),
                 AgentMode::Dead => None,
             })
             .min()

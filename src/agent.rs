@@ -16,11 +16,57 @@ pub enum AgentMode {
     #[default]
     Reactive,
 
-    /// The Agent is sleeping (or on cooldown) until a scheduled wakeup.
-    AsleepUntil(DiscreteTime),
+    /// The Agent is sleeping (or on cooldown) until tick `until`, and then
+    /// returns to `then`.
+    AsleepUntil {
+        /// The tick at which the agent wakes.
+        until: DiscreteTime,
+        /// The awake mode the agent returns to.
+        then: WakeMode,
+    },
 
     /// The Agent is dead (inactive) and does nothing in this state.
     Dead,
+}
+
+impl AgentMode {
+    /// Returns this mode asleep until `until`. An awake agent wakes back into
+    /// its current mode, a sleeping one into the mode it was going to wake
+    /// into, and a dead agent stays dead.
+    #[must_use]
+    pub const fn asleep_until(self, until: DiscreteTime) -> Self {
+        match self {
+            Self::Proactive => Self::AsleepUntil {
+                until,
+                then: WakeMode::Proactive,
+            },
+            Self::Reactive => Self::AsleepUntil {
+                until,
+                then: WakeMode::Reactive,
+            },
+            Self::AsleepUntil { then, .. } => Self::AsleepUntil { until, then },
+            Self::Dead => Self::Dead,
+        }
+    }
+}
+
+/// The awake modes a sleeping agent can return to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
+pub enum WakeMode {
+    /// Wake into [`AgentMode::Proactive`].
+    Proactive,
+    /// Wake into [`AgentMode::Reactive`].
+    #[default]
+    Reactive,
+}
+
+impl From<WakeMode> for AgentMode {
+    fn from(mode: WakeMode) -> Self {
+        match mode {
+            WakeMode::Proactive => Self::Proactive,
+            WakeMode::Reactive => Self::Reactive,
+        }
+    }
 }
 
 /// A dense agent identity: the agent's position in the order agents were
@@ -235,15 +281,13 @@ impl<M> SimulationAgent<M> {
     }
 }
 
-/// The engine-managed part of an agent: its current mode, the mode it wakes
-/// into, and its queue of messages not yet handled.
+/// The engine-managed part of an agent: its current mode and its queue of
+/// messages not yet handled.
 #[derive(Debug, Clone)]
 pub struct AgentState<M = ()> {
-    /// The mode that the agent is in.
+    /// The mode that the agent is in; a sleeping agent's mode also holds the
+    /// mode it wakes into.
     pub mode: AgentMode,
-
-    /// The mode that the agent wakes up into.
-    pub wake_mode: AgentMode,
 
     /// The queue of incoming Messages for the Agent.
     pub queue: VecDeque<Message<M>>,
@@ -253,7 +297,6 @@ impl<M> Default for AgentState<M> {
     fn default() -> Self {
         Self {
             mode: AgentMode::Dead,
-            wake_mode: AgentMode::Dead,
             queue: VecDeque::new(),
         }
     }
@@ -508,7 +551,8 @@ impl<'a, M> AgentContext<'a, M> {
         });
     }
 
-    /// Sleeps the Agent for a relative amount of time.
+    /// Sleeps the Agent for a relative amount of time; it then wakes back into
+    /// its current mode.
     ///
     /// # Panics
     ///
@@ -561,16 +605,15 @@ impl CachedTarget {
     }
 }
 
-/// How an agent starts a simulation: its name, modes, and initial queue.
+/// How an agent starts a simulation: its name, mode, and initial queue.
 ///
 /// [`AgentInitializer::reactive`] and [`AgentInitializer::proactive`] fill
-/// these in; set the fields directly only for unusual mode combinations.
+/// these in.
 #[derive(Debug, Clone)]
 pub struct AgentOptions<M = ()> {
-    /// The mode the agent starts in.
+    /// The mode the agent starts in; a sleeping mode also says which mode
+    /// the agent wakes into.
     pub initial_mode: AgentMode,
-    /// The mode the agent returns to when a sleep ends.
-    pub wake_mode: AgentMode,
     /// Messages queued before the first tick, oldest first. The engine sets
     /// each one's `destination` to this agent.
     pub initial_queue: VecDeque<Message<M>>,
@@ -583,7 +626,6 @@ impl<M> Default for AgentOptions<M> {
     fn default() -> Self {
         Self {
             initial_mode: AgentMode::default(),
-            wake_mode: AgentMode::default(),
             initial_queue: VecDeque::new(),
             name: String::new(),
         }
@@ -614,7 +656,7 @@ impl<M> Default for AgentOptions<M> {
 pub struct AgentInitializer<M = ()> {
     /// The agent's behavior and state.
     pub agent: Box<dyn Agent<M>>,
-    /// The agent's name, modes, and initial queue.
+    /// The agent's name, mode, and initial queue.
     pub options: AgentOptions<M>,
 }
 
@@ -632,13 +674,12 @@ impl<M> AgentInitializer<M> {
         Self::with_mode(name.into(), Box::new(agent), AgentMode::Proactive)
     }
 
-    /// Builds an initializer that starts in and wakes into `mode`.
+    /// Builds an initializer that starts in `mode`.
     fn with_mode(name: String, agent: Box<dyn Agent<M>>, mode: AgentMode) -> Self {
         Self {
             agent,
             options: AgentOptions {
                 initial_mode: mode,
-                wake_mode: mode,
                 initial_queue: VecDeque::new(),
                 name,
             },
@@ -649,7 +690,7 @@ impl<M> AgentInitializer<M> {
     /// it was constructed with.
     #[must_use]
     pub const fn asleep_until(mut self, time: DiscreteTime) -> Self {
-        self.options.initial_mode = AgentMode::AsleepUntil(time);
+        self.options.initial_mode = self.options.initial_mode.asleep_until(time);
         self
     }
 

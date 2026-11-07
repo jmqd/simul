@@ -2,7 +2,7 @@
 
 use simul::agent::{
     periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
-    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent,
+    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent, WakeMode,
 };
 use simul::message::Message;
 use simul::{Halt, Simulation, SimulationMode};
@@ -13,7 +13,6 @@ fn proactive_agent_boxed<M>(name: &str, agent: Box<dyn Agent<M>>) -> AgentInitia
         agent,
         options: AgentOptions {
             initial_mode: AgentMode::Proactive,
-            wake_mode: AgentMode::Proactive,
             name: name.to_string(),
             ..Default::default()
         },
@@ -677,7 +676,10 @@ fn final_representable_tick_and_wake_time_are_allowed() {
         simulation
             .find_by_name("sender")
             .map(|agent| agent.state.mode),
-        Some(AgentMode::AsleepUntil(u64::MAX))
+        Some(AgentMode::AsleepUntil {
+            until: u64::MAX,
+            then: WakeMode::Proactive
+        })
     );
     assert_eq!(
         simulation
@@ -795,19 +797,18 @@ fn scheduling_scenario(metrics: bool) -> (Simulation<Stamp>, CallbackTrace) {
     let trace = CallbackTrace::default();
     let agents: Vec<_> = (0..130)
         .map(|index| {
-            let (initial_mode, wake_mode) = match index {
-                0 => (AgentMode::Proactive, AgentMode::Proactive),
-                65 => (AgentMode::AsleepUntil(1), AgentMode::Reactive),
-                128 => (AgentMode::AsleepUntil(0), AgentMode::Dead),
-                129 => (AgentMode::AsleepUntil(0), AgentMode::AsleepUntil(2)),
-                _ => (AgentMode::AsleepUntil(4), AgentMode::Proactive),
+            let initial_mode = match index {
+                0 => AgentMode::Proactive,
+                65 => AgentMode::Reactive.asleep_until(1),
+                128 => AgentMode::Dead,
+                129 => AgentMode::Reactive.asleep_until(100),
+                _ => AgentMode::Proactive.asleep_until(4),
             };
             AgentInitializer {
                 agent: Box::new(ScheduledAgent(trace.clone())),
                 options: AgentOptions {
                     name: format!("agent-{index}"),
                     initial_mode,
-                    wake_mode,
                     ..Default::default()
                 },
             }
@@ -847,7 +848,6 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
     assert_eq!(Some(0), dense.asleep_cycle_count("agent-128"));
     for (left, right) in sparse.agents().iter().zip(dense.agents()) {
         assert_eq!(right.state.mode, left.state.mode);
-        assert_eq!(right.state.wake_mode, left.state.wake_mode);
         assert_eq!(right.state.queue.len(), left.state.queue.len());
         assert_eq!(right.produced().len(), left.produced().len());
         assert_eq!(right.consumed().len(), left.consumed().len());
@@ -938,14 +938,14 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
             },
         })
         .collect();
-    agents[65].options.initial_mode = AgentMode::AsleepUntil(5);
+    agents[65].options.initial_mode = AgentMode::Reactive.asleep_until(5);
     agents[65]
         .options
         .initial_queue
         .push_back(Message::new(0, (0, 65)));
     let mut simulation = Simulation::builder(Halt::when(|simulation: &Simulation<Stamp>| {
         simulation.find_by_name("agent-65").is_some_and(|agent| {
-            (simulation.time() == 5 && agent.state.mode == AgentMode::AsleepUntil(5))
+            (simulation.time() == 5 && agent.state.mode == AgentMode::Reactive.asleep_until(5))
                 || agent.consumed_count() > 0
         })
     }))
@@ -962,8 +962,8 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
     let (_, state) = simulation
         .find_by_name_mut("agent-65")
         .unwrap_or_else(|| panic!("missing agent"));
-    assert_eq!(AgentMode::AsleepUntil(5), state.mode);
-    state.mode = AgentMode::AsleepUntil(3);
+    assert_eq!(AgentMode::Reactive.asleep_until(5), state.mode);
+    state.mode = AgentMode::Reactive.asleep_until(3);
     simulation.run();
     // Tick 5 retries the original message; tick 7 completes it.
     assert_eq!(8, simulation.time());
@@ -1026,7 +1026,7 @@ fn callback_panic_fails_the_simulation_without_waking_later_agents() {
     assert!(result.is_err());
     assert_eq!(SimulationMode::Failed, simulation.mode());
     assert_eq!(
-        Some(AgentMode::AsleepUntil(0)),
+        Some(AgentMode::Reactive.asleep_until(0)),
         simulation
             .find_by_name("agent-65")
             .map(|agent| agent.state.mode)
@@ -1375,5 +1375,55 @@ fn trial_seeds_pair_candidates_and_vary_by_replication() {
         draws[0],
         trial_draws(2)[0],
         "another group draws differently"
+    );
+}
+
+#[test]
+fn sleeping_agents_wake_into_the_mode_they_slept_from() {
+    assert_eq!(
+        AgentMode::AsleepUntil {
+            until: 5,
+            then: WakeMode::Reactive
+        },
+        periodic_consumer::<()>("consumer", 1)
+            .asleep_until(5)
+            .options
+            .initial_mode
+    );
+    assert_eq!(
+        AgentMode::AsleepUntil {
+            until: 5,
+            then: WakeMode::Proactive
+        },
+        periodic_producer::<()>("producer", 1, "consumer")
+            .asleep_until(5)
+            .options
+            .initial_mode
+    );
+    assert_eq!(AgentMode::Dead, AgentMode::Dead.asleep_until(5));
+
+    // A reactive consumer switched to proactive between runs sleeps from, and
+    // so wakes back into, proactive.
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(10))
+        .agents(vec![periodic_consumer("consumer", 2)])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let (_, state) = simulation
+        .find_by_name_mut("consumer")
+        .unwrap_or_else(|| panic!("missing agent"));
+    state.mode = AgentMode::Proactive;
+    state.queue.push_back(Message::new(0, ()));
+    simulation.run_until(1);
+    assert_eq!(
+        Some(AgentMode::AsleepUntil {
+            until: 2,
+            then: WakeMode::Proactive
+        }),
+        simulation.find_by_name("consumer").map(|a| a.state.mode)
+    );
+    simulation.run_until(3);
+    assert_eq!(
+        Some(AgentMode::Proactive),
+        simulation.find_by_name("consumer").map(|a| a.state.mode)
     );
 }
