@@ -3,6 +3,10 @@
 * Unreleased
 Newest entries first.
 
+** DONE Version the Nix package from Cargo.toml
+The flake hard-coded the stale version 0.5.1; it now reads =package.version=
+from =Cargo.toml=.
+
 ** DONE Build with the Rust 2024 edition
 The MSRV of 1.85 already supports the 2024 edition. Extern blocks are marked
 =unsafe=, and rustfmt applies the 2024 style edition: version-sorted imports,

@@ -128,7 +128,7 @@
 
         simul = rustPlatform.buildRustPackage {
           pname = "simul";
-          version = "0.5.1";
+          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = ./.;
           cargoLock = {
             lockFile = ./Cargo.lock;
