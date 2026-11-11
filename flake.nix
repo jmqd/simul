@@ -50,7 +50,11 @@
           src = dylintSource;
           cargoHash = dylintCargoHash;
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ];
+          # nixpkgs sets LIBGIT2_NO_VENDOR, so libgit2-sys needs the system library.
+          buildInputs = [
+            pkgs.openssl
+            pkgs.libgit2
+          ];
           buildAndTestSubdir = "cargo-dylint";
           # Use the exact published driver, not the temporary Nix build source path.
           buildFeatures = [ "dylint/__driver_from_crates_io" ];
