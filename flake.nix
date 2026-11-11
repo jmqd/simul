@@ -35,14 +35,14 @@
           rustc = rustToolchain;
         };
 
-        dylintVersion = "6.2.0";
+        dylintVersion = "6.4.0";
         dylintSource = pkgs.fetchFromGitHub {
           owner = "trailofbits";
           repo = "dylint";
           rev = "v${dylintVersion}";
-          hash = "sha256-UAYzmjRNzc19ztXIGDzresbWoVH7CYgq9b1/fp4bjZs=";
+          hash = "sha256-RLalWaoObvaAKleawusmTb+3O/ZHEll2az7NZao2sDE=";
         };
-        dylintCargoHash = "sha256-3Yv4mdpuvNga34L12a3k7N8twJ/WAbvF0uhK+/hVWPU=";
+        dylintCargoHash = "sha256-zEfi1H/AX0dnoZByHUQtsiGiWse8TOnjeifToCtQtNo=";
 
         cargoDylint = rustPlatform.buildRustPackage {
           pname = "cargo-dylint";

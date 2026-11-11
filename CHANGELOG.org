@@ -12,7 +12,7 @@ lints, and every example prints the same output as under 2021.
 ** DONE Refresh dependencies and tooling (November 2026)
 Update compatible Cargo lockfile dependencies; once_cell drops out of the
 dependency graph. Rust 1.99.1 and every direct dependency are already the
-latest releases.
+latest releases. Update Dylint to 6.4.0, which keeps nightly-2026-08-20.
 
 ** DONE Keep a sleeping agent's wake mode in its sleep (breaking)
 =AgentMode::AsleepUntil(t)= becomes =AgentMode::AsleepUntil { until, then }=,
