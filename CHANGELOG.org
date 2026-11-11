@@ -3,6 +3,11 @@
 * Unreleased
 Newest entries first.
 
+** DONE Refresh dependencies and tooling (November 2026)
+Update compatible Cargo lockfile dependencies; once_cell drops out of the
+dependency graph. Rust 1.99.1 and every direct dependency are already the
+latest releases.
+
 ** DONE Keep a sleeping agent's wake mode in its sleep (breaking)
 =AgentMode::AsleepUntil(t)= becomes =AgentMode::AsleepUntil { until, then }=,
 where =then= is a new =WakeMode= (=Proactive= or =Reactive=), and
