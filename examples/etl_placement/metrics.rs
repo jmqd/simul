@@ -3,7 +3,7 @@
 //! Agents are type-erased once inside the engine, so they report into one
 //! `Rc<RefCell<Recorder>>` instead of being read back after the run.
 
-use crate::time::{secs, Tick};
+use crate::time::{Tick, secs};
 use std::cell::RefCell;
 use std::rc::Rc;
 

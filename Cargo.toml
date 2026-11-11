@@ -2,7 +2,7 @@
 name = "simul"
 version = "0.6.0"
 rust-version = "1.85"
-edition = "2021"
+edition = "2024"
 authors = ["Jordan McQueen <j@jm.dev>"]
 license = "MIT"
 

@@ -24,7 +24,7 @@
 //! - [pricing] AWS Price List API, USW2-USE1-AWS-Out-Bytes, effective 2026-06-01
 
 use crate::net::{FaultPlan, NicModel, PathChange, PathModel, TcpModel};
-use crate::time::{ticks, Tick};
+use crate::time::{Tick, ticks};
 
 /// Where the ETL binary runs. The source is in us-west-2, the destination in
 /// us-east-1, and the state store inside the source database.

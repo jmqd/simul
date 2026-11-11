@@ -115,9 +115,9 @@ use message::Message;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
-use std::collections::{hash_map::Entry, BTreeMap, BinaryHeap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{BTreeMap, BinaryHeap, hash_map::Entry};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Source of agent layout tokens; each constructed simulation takes the next.
 static NEXT_LAYOUT: AtomicU64 = AtomicU64::new(0);

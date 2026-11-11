@@ -1,8 +1,9 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use simul::agent::{
-    periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
-    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent, WakeMode,
+    Agent, AgentContext, AgentId, AgentInitializer, AgentMode, AgentOptions,
+    MessageProcessingStatus, QueueDepthChange, SimulationAgent, WakeMode, periodic_consumer,
+    periodic_producer,
 };
 use simul::message::Message;
 use simul::{Halt, Simulation, SimulationMode};
@@ -288,7 +289,7 @@ fn in_progress_message_stays_queued_until_completed() {
             .is_some_and(|consumer| consumer.consumed_count() == 1)
     }))
     .agents(vec![
-        AgentInitializer::reactive("consumer", SlowConsumer).initial_queue([Message::new(0, ())])
+        AgentInitializer::reactive("consumer", SlowConsumer).initial_queue([Message::new(0, ())]),
     ])
     .message_history(true)
     .build()
@@ -955,10 +956,12 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
     .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     assert_eq!(5, simulation.time());
-    assert!(trace
-        .lock()
-        .unwrap_or_else(|error| panic!("{error}"))
-        .is_empty());
+    assert!(
+        trace
+            .lock()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .is_empty()
+    );
     let (_, state) = simulation
         .find_by_name_mut("agent-65")
         .unwrap_or_else(|| panic!("missing agent"));
@@ -994,10 +997,12 @@ fn all_sleeping_agents_still_check_halt_between_wakeups() {
         .unwrap_or_else(|error| panic!("{error}"));
     simulation.run();
     assert_eq!(3, simulation.time());
-    assert!(trace
-        .lock()
-        .unwrap_or_else(|error| panic!("{error}"))
-        .is_empty());
+    assert!(
+        trace
+            .lock()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1112,7 +1117,9 @@ fn run_until_pauses_at_its_tick_unless_the_run_ends_first() {
 
     // Skipping quiet ticks toward a far wake-up stops at the pause instead.
     let mut sleeping = Simulation::<()>::builder(Halt::Never)
-        .agents(vec![periodic_consumer("sleeper", 1).asleep_until(1_000_000)])
+        .agents(vec![
+            periodic_consumer("sleeper", 1).asleep_until(1_000_000),
+        ])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     sleeping.run_until(999_000);
@@ -1325,7 +1332,7 @@ impl Agent for Sampler {
 /// The sampler's draws for two candidates, two replications each, in trial
 /// order: candidate 0 replications 0 and 1, then candidate 1.
 fn trial_draws(common_random_group: u64) -> Vec<Option<Vec<u64>>> {
-    use simul::experiment::{run_serial, CandidateId, FixedReplications, MasterSeed};
+    use simul::experiment::{CandidateId, FixedReplications, MasterSeed, run_serial};
     let schedule = FixedReplications::new(2, common_random_group);
     let trials = schedule
         .trials(CandidateId::new(0), ())

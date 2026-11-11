@@ -2556,10 +2556,12 @@ mod tests {
 
     #[test]
     fn fixed_schedule_and_default_retention_are_bounded() {
-        assert!(FixedReplications::new(0, 7)
-            .trials(CandidateId::new(4), 12_i32)
-            .next()
-            .is_none());
+        assert!(
+            FixedReplications::new(0, 7)
+                .trials(CandidateId::new(4), 12_i32)
+                .next()
+                .is_none()
+        );
 
         let records = run_serial(
             MasterSeed::from_u64(2),

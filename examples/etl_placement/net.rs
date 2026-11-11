@@ -8,8 +8,8 @@
 //! defaults (`tcp_cubic.c`, `tcp_output.c`); see `config.rs` for sources.
 
 use crate::rng::Rng;
-use crate::time::{secs, ticks, ticks_at_least_one, Tick};
-use crate::wire::{decode, ConnId, ConnKind, FrameWriter, Payload, Unit};
+use crate::time::{Tick, secs, ticks, ticks_at_least_one};
+use crate::wire::{ConnId, ConnKind, FrameWriter, Payload, Unit, decode};
 use simul::agent::{AgentContext, AgentId};
 use simul::message::Message;
 use std::collections::{BTreeMap, VecDeque};

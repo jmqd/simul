@@ -17,9 +17,9 @@
 
 use crate::config::{Config, Durability};
 use crate::metrics::{RowGroup, SharedRecorder};
-use crate::net::{send_tracked, Endpoint, NetEvent, Peer};
+use crate::net::{Endpoint, NetEvent, Peer, send_tracked};
 use crate::rng::Rng;
-use crate::time::{per_tick, secs, ticks, to_u64, Tick};
+use crate::time::{Tick, per_tick, secs, ticks, to_u64};
 use crate::wire::{ConnId, ConnKind, HttpKind, Op, Payload, Unit, WalChunk};
 use crate::{sink, source};
 use simul::agent::{Agent, AgentContext};

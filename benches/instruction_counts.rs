@@ -20,16 +20,16 @@
 
 use rand::{RngExt as _, SeedableRng as _};
 use simul::agent::{
-    periodic_consumer, periodic_producer, Agent, AgentContext, AgentInitializer,
-    MessageProcessingStatus,
+    Agent, AgentContext, AgentInitializer, MessageProcessingStatus, periodic_consumer,
+    periodic_producer,
 };
-use simul::experiment::search::{sample_bounded, SearchStrategy, SeededRandomSearch, Told};
+use simul::experiment::search::{SearchStrategy, SeededRandomSearch, Told, sample_bounded};
 use simul::experiment::{
-    aggregate_bernoulli, aggregate_scalar, run_serial, simulated_annealing_search_with_rng,
     CandidateId, CandidateSummary, CrossEntropyConfig, CrossEntropyDimension,
     CrossEntropyOptimizer, CrossEntropySample, FailurePolicy, FixedReplications, MasterSeed,
     NonFinitePolicy, ScalarReducer, ScalarSummary, SelectionPolicy, TrialContext, TrialRecord,
-    TrialStream,
+    TrialStream, aggregate_bernoulli, aggregate_scalar, run_serial,
+    simulated_annealing_search_with_rng,
 };
 use simul::message::Message;
 use simul::{Halt, Simulation, SimulationBuilder};
@@ -162,7 +162,7 @@ struct RusageInfo {
 }
 
 #[cfg(target_os = "macos")]
-extern "C" {
+unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut RusageInfo) -> i32;
 }
 
@@ -597,7 +597,7 @@ fn exp_run_serial() -> Fingerprint {
 /// The serial trial workload on a dedicated four-worker pool.
 #[cfg(feature = "parallel")]
 fn exp_run_parallel() -> Fingerprint {
-    use simul::experiment::{run_parallel, ParallelConfig};
+    use simul::experiment::{ParallelConfig, run_parallel};
     use std::num::NonZeroUsize;
     let config = ParallelConfig::new(
         NonZeroUsize::new(4).expect("nonzero workers"),

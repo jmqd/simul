@@ -5,7 +5,7 @@ use crate::config::{Config, Durability};
 use crate::metrics::SharedRecorder;
 use crate::net::{Endpoint, NetEvent, Peer};
 use crate::rng::Rng;
-use crate::time::{ticks, ticks_at_least_one, Tick};
+use crate::time::{Tick, ticks, ticks_at_least_one};
 use crate::wire::{ConnId, HttpKind, Payload, Unit};
 use simul::agent::{Agent, AgentContext};
 use simul::message::Message;

@@ -5,9 +5,9 @@
 
 use crate::config::Config;
 use crate::metrics::SharedRecorder;
-use crate::net::{send_tracked, Endpoint, NetEvent, Peer};
+use crate::net::{Endpoint, NetEvent, Peer, send_tracked};
 use crate::rng::Rng;
-use crate::time::{per_tick, ticks, to_u64, Tick, TICKS_PER_SECOND};
+use crate::time::{TICKS_PER_SECOND, Tick, per_tick, ticks, to_u64};
 use crate::wire::{ConnId, ConnKind, Op, Payload, Unit, WalChunk};
 use simul::agent::{Agent, AgentContext};
 use simul::message::Message;

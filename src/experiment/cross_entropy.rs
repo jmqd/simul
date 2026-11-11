@@ -668,11 +668,7 @@ fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
         CrossEntropyDimension::Circular => {
             let wrapped = value.rem_euclid(1.0);
             // A tiny negative remainder can round up to the excluded endpoint.
-            if wrapped >= 1.0 {
-                0.0
-            } else {
-                wrapped
-            }
+            if wrapped >= 1.0 { 0.0 } else { wrapped }
         }
     }
 }
@@ -811,11 +807,7 @@ mod tests {
         assert_eq!(
             Err(CrossEntropyError::InvalidStandardNormal { dimension: 1 }),
             overflowing_search.ask_with_standard_normal(|dimension| {
-                if dimension == 1 {
-                    f64::NAN
-                } else {
-                    f64::MAX
-                }
+                if dimension == 1 { f64::NAN } else { f64::MAX }
             })
         );
     }

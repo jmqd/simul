@@ -3,6 +3,12 @@
 * Unreleased
 Newest entries first.
 
+** DONE Build with the Rust 2024 edition
+The MSRV of 1.85 already supports the 2024 edition. Extern blocks are marked
+=unsafe=, and rustfmt applies the 2024 style edition: version-sorted imports,
+single-line =if= expressions, and wrapped long lines. Clippy reports no new
+lints, and every example prints the same output as under 2021.
+
 ** DONE Refresh dependencies and tooling (November 2026)
 Update compatible Cargo lockfile dependencies; once_cell drops out of the
 dependency graph. Rust 1.99.1 and every direct dependency are already the

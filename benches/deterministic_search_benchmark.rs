@@ -4,12 +4,12 @@
     clippy::cast_precision_loss
 )]
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::search::{SearchResult, SearchStrategy, SeededRandomSearch, Told};
 use simul::experiment::{
-    aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
-    NonFinitePolicy, ScalarSummary, SelectionPolicy,
+    CandidateId, FailurePolicy, FixedReplications, MasterSeed, NonFinitePolicy, ScalarSummary,
+    SelectionPolicy, aggregate_scalar, run_serial,
 };
 use simul::{Halt, Simulation, SimulationBuilder};
 use std::cmp::Ordering;

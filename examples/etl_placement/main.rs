@@ -40,13 +40,13 @@ use net::{FaultPlan, Peer, Window};
 use rng::Rng;
 use simul::agent::AgentInitializer;
 use simul::experiment::{
-    aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
-    NonFinitePolicy, TrialContext, TrialRecord, TrialSpec,
+    CandidateId, FailurePolicy, FixedReplications, MasterSeed, NonFinitePolicy, TrialContext,
+    TrialRecord, TrialSpec, aggregate_scalar, run_serial,
 };
 use simul::{Halt, Simulation};
 use std::convert::Infallible;
 use std::rc::Rc;
-use time::{secs, ticks, Tick};
+use time::{Tick, secs, ticks};
 
 const MASTER_SEED: MasterSeed = MasterSeed::from_u64(0x00E7_1A2C_E3E7);
 const MB: f64 = 1e6;
@@ -497,23 +497,143 @@ fn print_assumptions() {
     println!("| input | value | source |");
     println!("|---|---|---|");
     let rows = [
-        ("cross-region RTT", format!("LogNormal(median {:.0} ms, σ {}) per connection, floor {:.0} ms, re-routes every ~{:.0} s", config.cross_region.rtt_median_s * 1e3, config.cross_region.rtt_sigma, config.cross_region.rtt_floor_s * 1e3, 170.0), "AWS NMIP, CloudPing, Reda 2020"),
-        ("intra-region RTT", format!("LogNormal(median {:.1} ms, σ {})", config.intra_region.rtt_median_s * 1e3, config.intra_region.rtt_sigma), "cross-AZ pings"),
-        ("baseline loss", format!("{:e}", config.cross_region.loss), "Reda 2020 upper bound"),
-        ("TCP", format!("CUBIC, IW 10, rwnd {:.0} MiB, sndbuf {:.0} MiB, RTO ≥ {:.0} ms, slow start after idle", config.tcp.receive_window_bytes / 1_048_576.0, config.tcp.send_buffer_bytes / 1_048_576.0, config.tcp.rto_min_s * 1e3), "Linux ≤ 6.15 defaults"),
-        ("Postgres login", format!("{} RTT (TCP, SSLRequest, TLS 1.3, SCRAM ×3)", config.postgres_handshake_round_trips), "Postgres protocol docs"),
-        ("walsender decode", format!("{:.0}k rows/s", config.source.decode_rows_per_s / 1e3), "PeerDB benchmark"),
-        ("COPY backend", format!("{:.1} MB/s per connection", config.source.copy_bytes_per_s / MB), "galaxy-io benchmark"),
-        ("WAL per row / pgoutput row", format!("{:.0} B / {:.0} B", config.source.wal_bytes_per_row, config.row_wire_bytes(config.workload.data_bytes_per_row)), "galaxy-io counters; pgoutput format"),
-        ("ETL batching", format!("max_fill_ms swept; target min(32 MiB, 0.2 × {:.0} GiB ÷ slots)", config.etl.memory_bytes / 1_073_741_824.0), "supabase/etl BatchConfig"),
-        ("ETL decode / copy parse", format!("{:.0}k rows/s / {:.0} MB/s", config.etl.decode_rows_per_s / 1e3, config.etl.copy_parse_bytes_per_s / MB), "ASSUMPTION"),
-        ("decoded size", format!("{}× pgoutput size", config.etl.decoded_size_factor), "ASSUMPTION"),
-        ("store checkpoint", "BEGIN, advisory lock, UPSERT, COMMIT per durable batch; 2-conn pool, 30 s idle".to_owned(), "supabase/etl PostgresStore"),
-        ("store statement / COMMIT", format!("{:.1} ms / {:.1} ms", config.source.statement_s * 1e3, config.source.commit_s * 1e3), "ASSUMPTION"),
-        ("sink", format!("LogNormal(median {:.0} ms, σ {}) + {:.0} MB/s per request, ≤ {} concurrent, 1 request per table per batch (≤ {})", config.sink.latency_median_s * 1e3, config.sink.latency_sigma, config.sink.ingest_bytes_per_s / MB, config.sink.max_concurrent_requests, config.sink.max_parallel_requests), "ASSUMPTION"),
-        ("sink payload / keep-alive", format!("{}× row data / {:.0} s", config.sink.encoding_ratio, config.sink.keepalive_timeout_s), "ASSUMPTION"),
-        ("workload", format!("Poisson transactions, {:.0} rows each on average, {} tables, {:.0} B rows, 3× bursts 10% of the time", config.workload.mean_rows_per_transaction, config.workload.tables, config.workload.data_bytes_per_row), "ASSUMPTION"),
-        ("cross-region transfer", format!("${}/GB", config.cross_region_dollars_per_gb), "AWS Price List API"),
+        (
+            "cross-region RTT",
+            format!(
+                "LogNormal(median {:.0} ms, σ {}) per connection, floor {:.0} ms, re-routes every ~{:.0} s",
+                config.cross_region.rtt_median_s * 1e3,
+                config.cross_region.rtt_sigma,
+                config.cross_region.rtt_floor_s * 1e3,
+                170.0
+            ),
+            "AWS NMIP, CloudPing, Reda 2020",
+        ),
+        (
+            "intra-region RTT",
+            format!(
+                "LogNormal(median {:.1} ms, σ {})",
+                config.intra_region.rtt_median_s * 1e3,
+                config.intra_region.rtt_sigma
+            ),
+            "cross-AZ pings",
+        ),
+        (
+            "baseline loss",
+            format!("{:e}", config.cross_region.loss),
+            "Reda 2020 upper bound",
+        ),
+        (
+            "TCP",
+            format!(
+                "CUBIC, IW 10, rwnd {:.0} MiB, sndbuf {:.0} MiB, RTO ≥ {:.0} ms, slow start after idle",
+                config.tcp.receive_window_bytes / 1_048_576.0,
+                config.tcp.send_buffer_bytes / 1_048_576.0,
+                config.tcp.rto_min_s * 1e3
+            ),
+            "Linux ≤ 6.15 defaults",
+        ),
+        (
+            "Postgres login",
+            format!(
+                "{} RTT (TCP, SSLRequest, TLS 1.3, SCRAM ×3)",
+                config.postgres_handshake_round_trips
+            ),
+            "Postgres protocol docs",
+        ),
+        (
+            "walsender decode",
+            format!("{:.0}k rows/s", config.source.decode_rows_per_s / 1e3),
+            "PeerDB benchmark",
+        ),
+        (
+            "COPY backend",
+            format!(
+                "{:.1} MB/s per connection",
+                config.source.copy_bytes_per_s / MB
+            ),
+            "galaxy-io benchmark",
+        ),
+        (
+            "WAL per row / pgoutput row",
+            format!(
+                "{:.0} B / {:.0} B",
+                config.source.wal_bytes_per_row,
+                config.row_wire_bytes(config.workload.data_bytes_per_row)
+            ),
+            "galaxy-io counters; pgoutput format",
+        ),
+        (
+            "ETL batching",
+            format!(
+                "max_fill_ms swept; target min(32 MiB, 0.2 × {:.0} GiB ÷ slots)",
+                config.etl.memory_bytes / 1_073_741_824.0
+            ),
+            "supabase/etl BatchConfig",
+        ),
+        (
+            "ETL decode / copy parse",
+            format!(
+                "{:.0}k rows/s / {:.0} MB/s",
+                config.etl.decode_rows_per_s / 1e3,
+                config.etl.copy_parse_bytes_per_s / MB
+            ),
+            "ASSUMPTION",
+        ),
+        (
+            "decoded size",
+            format!("{}× pgoutput size", config.etl.decoded_size_factor),
+            "ASSUMPTION",
+        ),
+        (
+            "store checkpoint",
+            "BEGIN, advisory lock, UPSERT, COMMIT per durable batch; 2-conn pool, 30 s idle"
+                .to_owned(),
+            "supabase/etl PostgresStore",
+        ),
+        (
+            "store statement / COMMIT",
+            format!(
+                "{:.1} ms / {:.1} ms",
+                config.source.statement_s * 1e3,
+                config.source.commit_s * 1e3
+            ),
+            "ASSUMPTION",
+        ),
+        (
+            "sink",
+            format!(
+                "LogNormal(median {:.0} ms, σ {}) + {:.0} MB/s per request, ≤ {} concurrent, 1 request per table per batch (≤ {})",
+                config.sink.latency_median_s * 1e3,
+                config.sink.latency_sigma,
+                config.sink.ingest_bytes_per_s / MB,
+                config.sink.max_concurrent_requests,
+                config.sink.max_parallel_requests
+            ),
+            "ASSUMPTION",
+        ),
+        (
+            "sink payload / keep-alive",
+            format!(
+                "{}× row data / {:.0} s",
+                config.sink.encoding_ratio, config.sink.keepalive_timeout_s
+            ),
+            "ASSUMPTION",
+        ),
+        (
+            "workload",
+            format!(
+                "Poisson transactions, {:.0} rows each on average, {} tables, {:.0} B rows, 3× bursts 10% of the time",
+                config.workload.mean_rows_per_transaction,
+                config.workload.tables,
+                config.workload.data_bytes_per_row
+            ),
+            "ASSUMPTION",
+        ),
+        (
+            "cross-region transfer",
+            format!("${}/GB", config.cross_region_dollars_per_gb),
+            "AWS Price List API",
+        ),
     ];
     for (input, value, source) in rows {
         println!("| {input} | {value} | {source} |");
@@ -523,8 +643,12 @@ fn print_assumptions() {
 
 fn print_cdc(results: &[(String, Placement, Records)], scenarios: &[(String, Config)]) {
     println!("## Steady-state CDC\n");
-    println!("Latency is commit on the source to durable at the destination. Lag growth is the slope of replication lag (age of the newest durable commit); a value that stays positive means the pipeline cannot keep up. Slot lag is WAL retained on the source, which follows keepalive-driven feedback.\n");
-    println!("| workload | placement | p50 | p99 | max | lag growth s/min | max slot lag MB | batch MB | write p50 | checkpoint p50 | paused | cross-region $/month |");
+    println!(
+        "Latency is commit on the source to durable at the destination. Lag growth is the slope of replication lag (age of the newest durable commit); a value that stays positive means the pipeline cannot keep up. Slot lag is WAL retained on the source, which follows keepalive-driven feedback.\n"
+    );
+    println!(
+        "| workload | placement | p50 | p99 | max | lag growth s/min | max slot lag MB | batch MB | write p50 | checkpoint p50 | paused | cross-region $/month |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
     for (name, placement, outcomes) in results {
         let config = &scenarios
@@ -552,7 +676,9 @@ fn print_cdc(results: &[(String, Placement, Records)], scenarios: &[(String, Con
 
 fn print_copy(results: &[(String, Placement, Records)]) {
     println!("## Initial table copy\n");
-    println!("| scenario | placement | all tables ready | copy MB/s | apply blocked by catch-up | CDC p99 during copy | cross-region GB |");
+    println!(
+        "| scenario | placement | all tables ready | copy MB/s | apply blocked by catch-up | CDC p99 during copy | cross-region GB |"
+    );
     println!("|---|---|---|---|---|---|---|");
     for (name, placement, outcomes) in results {
         println!(
@@ -579,8 +705,12 @@ fn print_faults(results: &[(String, Placement, Records)], scenarios: &[(String, 
         config.etl.max_fill_ms,
         secs(fault)
     );
-    println!("Recovery runs from the fault until replication lag (age of the newest durable commit) is back within its pre-fault range for good.\n");
-    println!("| fault | placement | recovery | peak replication lag | p99 latency | max slot lag MB | replayed rows |");
+    println!(
+        "Recovery runs from the fault until replication lag (age of the newest durable commit) is back within its pre-fault range for good.\n"
+    );
+    println!(
+        "| fault | placement | recovery | peak replication lag | p99 latency | max slot lag MB | replayed rows |"
+    );
     println!("|---|---|---|---|---|---|---|");
     for (name, placement, outcomes) in results {
         println!(
@@ -594,7 +724,9 @@ fn print_faults(results: &[(String, Placement, Records)], scenarios: &[(String, 
         );
     }
     println!();
-    println!("Replicator events in the first replication (faults that only slow the network log none):\n");
+    println!(
+        "Replicator events in the first replication (faults that only slow the network log none):\n"
+    );
     for (name, placement, outcomes) in results {
         let Some(Ok(first)) = outcomes.first().map(|record| &record.result) else {
             continue;
@@ -737,7 +869,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_scenarios, ticks, Config, FaultPlan, Placement, Window};
+    use super::{Config, FaultPlan, Placement, Window, run_scenarios, ticks};
 
     /// Each fault strikes at 20 s; the workload stops at 100 s and the run
     /// continues until 240 s, long enough for the slowest recovery (a

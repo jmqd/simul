@@ -8,16 +8,17 @@ use chacha20::ChaCha8Rng;
 use rand::{RngExt, SeedableRng};
 use rustc_hash::FxHashSet;
 use simul::experiment::search::{
-    sample_bounded, BoundsError, ProposalToken, SearchStrategy, SeededRandomSearch, TellError, Told,
+    BoundsError, ProposalToken, SearchStrategy, SeededRandomSearch, TellError, Told, sample_bounded,
 };
 use simul::experiment::{
-    aggregate_bernoulli, aggregate_scalar, retain_records, run_serial, run_serial_bounded,
-    select_best, simulated_annealing_search_with_rng, AggregateError, BernoulliReducer,
-    CandidateId, CandidateSummary, CrossEntropyConfig, CrossEntropyDimension, CrossEntropyError,
-    CrossEntropyOptimizer, CrossEntropySample, FailurePolicy, Feasible, FeasibleFirst, FiniteValue,
-    MasterSeed, MaximizeBernoulliRate, MaximizeFinite, MaximizeWilsonLowerBound, NonFinitePolicy,
-    ReduceError, ReplicationId, RetentionPolicy, RunError, ScalarReducer, ScalarSummary,
-    SelectionPolicy, TrialContext, TrialId, TrialRecord, TrialRng, TrialSpec, TrialStream,
+    AggregateError, BernoulliReducer, CandidateId, CandidateSummary, CrossEntropyConfig,
+    CrossEntropyDimension, CrossEntropyError, CrossEntropyOptimizer, CrossEntropySample,
+    FailurePolicy, Feasible, FeasibleFirst, FiniteValue, MasterSeed, MaximizeBernoulliRate,
+    MaximizeFinite, MaximizeWilsonLowerBound, NonFinitePolicy, ReduceError, ReplicationId,
+    RetentionPolicy, RunError, ScalarReducer, ScalarSummary, SelectionPolicy, TrialContext,
+    TrialId, TrialRecord, TrialRng, TrialSpec, TrialStream, aggregate_bernoulli, aggregate_scalar,
+    retain_records, run_serial, run_serial_bounded, select_best,
+    simulated_annealing_search_with_rng,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -866,11 +867,7 @@ fn sample_bounded_is_deterministic_prefix_stable_and_within_bounds() {
                 } else {
                     bound_value(&mut r)
                 };
-                if a <= b {
-                    (a, b)
-                } else {
-                    (b, a)
-                }
+                if a <= b { (a, b) } else { (b, a) }
             })
             .collect();
         let budget = r.random_range(0..40);
@@ -1278,7 +1275,7 @@ fn annealing_returns_a_best_evaluated_state_after_exactly_limit_proposals() {
 #[cfg(feature = "parallel")]
 mod parallel {
     use super::*;
-    use simul::experiment::{run_parallel, ParallelConfig, ParallelExecutor};
+    use simul::experiment::{ParallelConfig, ParallelExecutor, run_parallel};
     use std::convert::Infallible;
 
     fn nonzero(value: usize) -> NonZeroUsize {

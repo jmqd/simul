@@ -8,8 +8,8 @@
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::search::{SearchStrategy, SeededRandomSearch, Told};
 use simul::experiment::{
-    aggregate_scalar, run_serial, CandidateId, FailurePolicy, FixedReplications, MasterSeed,
-    NonFinitePolicy, ScalarSummary, SelectionPolicy,
+    CandidateId, FailurePolicy, FixedReplications, MasterSeed, NonFinitePolicy, ScalarSummary,
+    SelectionPolicy, aggregate_scalar, run_serial,
 };
 use simul::{Halt, Simulation, SimulationBuilder};
 use std::cmp::Ordering;

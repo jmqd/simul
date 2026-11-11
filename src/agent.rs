@@ -1,5 +1,5 @@
 use crate::experiment::{AgentStreams, TrialRng};
-use crate::{message::Message, DiscreteTime};
+use crate::{DiscreteTime, message::Message};
 use dyn_clone::DynClone;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;

@@ -350,11 +350,7 @@ mod tests {
             |_| NonClone(0),
             |_, _| NonClone(1),
             |state| {
-                if state.0 == 0 {
-                    0.0
-                } else {
-                    f64::NAN
-                }
+                if state.0 == 0 { 0.0 } else { f64::NAN }
             },
             |_| 1.0,
             1,
@@ -366,11 +362,7 @@ mod tests {
             |_| NonClone(0),
             |_, _| NonClone(1),
             |state| {
-                if state.0 == 0 {
-                    f64::NAN
-                } else {
-                    1.0
-                }
+                if state.0 == 0 { f64::NAN } else { 1.0 }
             },
             |_| f64::NAN,
             1,

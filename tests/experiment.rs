@@ -1,6 +1,6 @@
 use simul::experiment::{
-    run_serial, run_serial_bounded, CandidateId, MasterSeed, ReplicationId, RunError, TrialContext,
-    TrialId, TrialSpec, TrialStream,
+    CandidateId, MasterSeed, ReplicationId, RunError, TrialContext, TrialId, TrialSpec,
+    TrialStream, run_serial, run_serial_bounded,
 };
 use std::convert::Infallible;
 use std::num::NonZeroUsize;
@@ -163,7 +163,7 @@ fn serial_panic_with_panicking_payload_returns_workload_panic() {
 #[cfg(feature = "parallel")]
 mod parallel {
     use super::*;
-    use simul::experiment::{run_parallel, ParallelConfig, ParallelExecutor, ParallelRunError};
+    use simul::experiment::{ParallelConfig, ParallelExecutor, ParallelRunError, run_parallel};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

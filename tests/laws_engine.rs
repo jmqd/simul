@@ -7,8 +7,9 @@
 use chacha20::ChaCha8Rng;
 use rand::{RngExt as _, SeedableRng as _};
 use simul::agent::{
-    periodic_consumer, periodic_producer, Agent, AgentContext, AgentId, AgentInitializer,
-    AgentMode, AgentOptions, MessageProcessingStatus, QueueDepthChange, SimulationAgent, WakeMode,
+    Agent, AgentContext, AgentId, AgentInitializer, AgentMode, AgentOptions,
+    MessageProcessingStatus, QueueDepthChange, SimulationAgent, WakeMode, periodic_consumer,
+    periodic_producer,
 };
 use simul::experiment::MasterSeed;
 use simul::message::Message;

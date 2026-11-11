@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate criterion;
 
-use criterion::{criterion_group, Criterion};
+use criterion::{Criterion, criterion_group};
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::{Halt, Simulation};
 use std::hint::black_box;
