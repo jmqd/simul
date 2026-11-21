@@ -10,6 +10,14 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add paired-difference CRN statistics and Student-t confidence intervals
+Add =compare_paired_scalar=, =compare_paired_candidates=, =PairedScalarSummary=,
+and =PairedCompareError= to compute per-replication paired differences
+(=challenger - baseline=) across matched replications, preserving Common Random
+Numbers variance reduction (=variance_reduction_ratio()=) alongside win/tie/loss
+counts and two-sided 95% Student-t confidence intervals (=ci_95()= and
+=confidence_interval()= on both =PairedScalarSummary= and =ScalarSummary=).
+
 ** DONE Add quantile, tail-percentile, and CVaR experiment reducers
 Add =Probability=, =InvalidProbability=, =QuantileReducer=, =QuantileSummary=,
 =aggregate_quantiles=, and tail-risk selection policies (=MinimizeScalarMean=,

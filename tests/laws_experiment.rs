@@ -1615,3 +1615,87 @@ fn quantile_and_cvar_are_order_independent_monotonic_and_bracketed() {
         }
     }
 }
+
+// Law: paired scalar comparison is permutation-invariant, anti-symmetric when
+// swapping baseline and challenger, and tracks wins + ties == usable_pairs.
+#[test]
+fn paired_comparison_is_order_independent_and_antisymmetric() {
+    use simul::experiment::{TrialSpec, compare_paired_scalar};
+
+    for case in 0..300_u64 {
+        let mut r = rng(150_000 + case);
+        let seed = master(&mut r);
+        let count = r.random_range(1..30_u32);
+        let group = r.random::<u64>();
+        let base_specs: Vec<TrialSpec<i32>> = (0..count)
+            .map(|rep| TrialSpec::new(CandidateId::new(10), ReplicationId::new(rep), group, 0))
+            .collect();
+        let chal_specs: Vec<TrialSpec<i32>> = (0..count)
+            .map(|rep| TrialSpec::new(CandidateId::new(20), ReplicationId::new(rep), group, 1))
+            .collect();
+        let eval_fn = |&kind: &i32, ctx: &TrialContext| {
+            let base = ctx
+                .common_rng(TrialStream::TrialNoise, "base")
+                .uniform_f64()
+                * 10.0;
+            let shift = if kind == 1 {
+                (ctx.independent_rng(TrialStream::ExecutionNoise, "delta")
+                    .uniform_f64()
+                    - 0.5)
+                    * 2.0
+            } else {
+                0.0
+            };
+            Ok::<f64, ()>(base + shift)
+        };
+        let mut base_records = serial(case, seed, base_specs, eval_fn);
+        let mut chal_records = serial(case, seed, chal_specs, eval_fn);
+        let forward = compare_paired_scalar(
+            &base_records,
+            &chal_records,
+            |&v| v,
+            FailurePolicy::RejectCandidate,
+            NonFinitePolicy::RejectCandidate,
+        )
+        .unwrap_or_else(|e| panic!("case {case}: forward: {e}"));
+
+        shuffle(&mut r, &mut base_records);
+        shuffle(&mut r, &mut chal_records);
+        let shuffled = compare_paired_scalar(
+            &base_records,
+            &chal_records,
+            |&v| v,
+            FailurePolicy::RejectCandidate,
+            NonFinitePolicy::RejectCandidate,
+        )
+        .unwrap_or_else(|e| panic!("case {case}: shuffled: {e}"));
+        assert_eq!(
+            forward, shuffled,
+            "case {case}: order changed paired summary"
+        );
+
+        let reversed = compare_paired_scalar(
+            &chal_records,
+            &base_records,
+            |&v| v,
+            FailurePolicy::RejectCandidate,
+            NonFinitePolicy::RejectCandidate,
+        )
+        .unwrap_or_else(|e| panic!("case {case}: reversed: {e}"));
+        assert_eq!(
+            forward.challenger_wins() + forward.baseline_wins() + forward.ties(),
+            forward.usable_pairs(),
+            "case {case}"
+        );
+        assert_eq!(forward.challenger_wins(), reversed.baseline_wins());
+        assert_eq!(forward.baseline_wins(), reversed.challenger_wins());
+        assert_eq!(forward.ties(), reversed.ties());
+        assert!(
+            (forward.difference().mean() + reversed.difference().mean()).abs() <= 1e-12,
+            "case {case}: mean not antisymmetric"
+        );
+        if let (Some((lo, hi)), Some((rlo, rhi))) = (forward.ci_95(), reversed.ci_95()) {
+            assert!((lo + rhi).abs() <= 1e-12 && (hi + rlo).abs() <= 1e-12);
+        }
+    }
+}

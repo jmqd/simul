@@ -1966,6 +1966,46 @@ impl ScalarSummary {
     pub const fn max(&self) -> f64 {
         self.max
     }
+
+    /// Returns a symmetric confidence interval `(lower, upper)` around
+    /// [`Self::mean`] using `critical_value * standard_error`, or `None` when
+    /// fewer than two observations were recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReduceError::InvalidWilsonZ`] when `critical_value` is not
+    /// finite and positive, or [`ReduceError::ArithmeticOverflow`] when the
+    /// interval bounds overflow finite `f64`.
+    pub fn confidence_interval(
+        &self,
+        critical_value: f64,
+    ) -> Result<Option<(f64, f64)>, ReduceError> {
+        if !critical_value.is_finite() || critical_value <= 0.0 {
+            return Err(ReduceError::InvalidWilsonZ(critical_value));
+        }
+        let Some(se) = self.standard_error else {
+            return Ok(None);
+        };
+        let half_width = critical_value * se;
+        let lower = self.mean - half_width;
+        let upper = self.mean + half_width;
+        if !half_width.is_finite() || !lower.is_finite() || !upper.is_finite() {
+            return Err(ReduceError::ArithmeticOverflow);
+        }
+        Ok(Some((lower, upper)))
+    }
+
+    /// Returns a two-sided 95% Student-t confidence interval `(lower, upper)`
+    /// for [`Self::mean`] with `count - 1` degrees of freedom, or `None` when
+    /// `count < 2` or the interval bounds overflow.
+    #[must_use]
+    pub fn ci_95(&self) -> Option<(f64, f64)> {
+        if self.count < 2 {
+            return None;
+        }
+        let critical = super::stats::student_t_95_critical(self.count - 1)?;
+        self.confidence_interval(critical).ok().flatten()
+    }
 }
 
 /// Explicit treatment of typed evaluator failures during aggregation.
