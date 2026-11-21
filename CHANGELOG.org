@@ -10,6 +10,15 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add structured simulation tracing with JSONL and Perfetto Chrome Trace export
+Add =simul::trace= (=SimulationTrace=, =TraceEvent=, =TraceEventKind=),
+=SimulationBuilder::trace=, =SimulationBuilder::trace_with_payloads=,
+=Simulation::enable_trace=, =Simulation::enable_trace_with_payloads=,
+=Simulation::disable_trace=, =Simulation::trace=, and =Simulation::take_trace=.
+Export traces with zero extra crate dependencies via =to_jsonl= / =write_jsonl=
+and =to_perfetto_json= / =write_perfetto_json= (with per-agent swimlanes, sleep
+slices, and queue-depth counter tracks).
+
 ** DONE Add multi-objective Pareto frontier archive
 Add =ObjectiveDirection=, =ParetoArchive=, =ParetoEntry=, =ParetoError=,
 =dominates=, and =select_pareto_frontier= to =simul::experiment=, maintaining

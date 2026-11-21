@@ -1870,3 +1870,100 @@ fn multi_message_drain_stops_on_sleep_or_in_progress_and_matches_sparse_mode() {
         .collect();
     assert_eq!(controlled_times, sparse_times);
 }
+
+#[test]
+fn structured_trace_records_events_exports_jsonl_and_perfetto_without_perturbing_run() {
+    use simul::trace::TraceEventKind;
+
+    let mut plain = Simulation::<()>::builder(Halt::AtTime(10))
+        .agents([
+            periodic_producer("producer", 2, "consumer"),
+            periodic_consumer("consumer", 3),
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    plain.run();
+
+    let mut traced = Simulation::<()>::builder(Halt::AtTime(10))
+        .agents([
+            periodic_producer("producer", 2, "consumer"),
+            periodic_consumer("consumer", 3),
+        ])
+        .trace_with_payloads(true)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    traced.run();
+
+    // Tracing never alters simulation counts or final tick.
+    assert_eq!(plain.time(), traced.time());
+    assert_eq!(
+        plain.calc_produced_len_statistics(),
+        traced.calc_produced_len_statistics()
+    );
+    assert_eq!(
+        plain.calc_consumed_len_statistics(),
+        traced.calc_consumed_len_statistics()
+    );
+    assert_eq!(
+        plain.calc_queue_len_statistics(),
+        traced.calc_queue_len_statistics()
+    );
+
+    let trace = traced.trace().unwrap_or_else(|| panic!("expected trace"));
+    assert!(
+        trace
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::MessageSent { .. }))
+    );
+    assert!(
+        trace
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::MessageDelivered { .. }))
+    );
+    assert!(
+        trace
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::MessageConsumed { .. }))
+    );
+    assert!(
+        trace
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::AgentSlept { .. }))
+    );
+    assert!(
+        trace
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::AgentWoke))
+    );
+
+    let jsonl = trace.to_jsonl();
+    assert_eq!(trace.len(), jsonl.lines().count());
+    let perfetto = trace.to_perfetto_json();
+    assert!(perfetto.contains(r#""name":"producer""#));
+    assert!(perfetto.contains(r#""name":"consumer""#));
+    assert!(perfetto.contains(r#""name":"queue_depth""#));
+
+    // Dynamic tracing after run_until captures only events in the enabled window.
+    let mut windowed = Simulation::<()>::builder(Halt::AtTime(10))
+        .agents([
+            periodic_producer("producer", 2, "consumer"),
+            periodic_consumer("consumer", 3),
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    windowed.run_until(6);
+    assert!(windowed.trace().is_none());
+    windowed.enable_trace();
+    windowed.run();
+    let window_trace = windowed
+        .take_trace()
+        .unwrap_or_else(|| panic!("expected dynamic trace"));
+    assert!(!window_trace.is_empty());
+    assert!(window_trace.events().iter().all(|e| e.time >= 6));
+    assert!(windowed.trace().is_none());
+}

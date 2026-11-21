@@ -98,6 +98,8 @@ pub mod agent;
 pub mod experiment;
 /// Messages that agents send each other.
 pub mod message;
+/// Structured simulation tracing and JSONL / Perfetto Chrome Trace export.
+pub mod trace;
 
 // Runs the README's Rust examples as doctests so they keep compiling against
 // the current API.
@@ -112,6 +114,7 @@ use agent::{
 };
 use experiment::{MasterSeed, TrialContext, TrialStream};
 use message::Message;
+use trace::{SimulationTrace, TraceEventKind, TraceRecorder, debug_format_payload};
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
@@ -229,6 +232,9 @@ pub struct Simulation<M = ()> {
     /// Number of messages addressed to an unknown agent name or out-of-range
     /// [`AgentId`].
     unknown_destination_count: u64,
+
+    /// Optional structured lifecycle trace recorder.
+    trace: Option<TraceRecorder<M>>,
 }
 
 /// How a simulation handles a message addressed to an unknown agent name or
@@ -320,6 +326,10 @@ pub struct SimulationBuilder<M = ()> {
     seed: MasterSeed,
     /// How sends to unknown or out-of-range destinations are handled.
     unknown_destination_policy: UnknownDestinationPolicy,
+    /// Whether structured tracing starts enabled.
+    trace_enabled: bool,
+    /// Optional debug formatter for sent payloads in traces.
+    trace_payload_formatter: Option<fn(&M) -> String>,
 }
 
 /// Copies a message; recording a history is the only reason the engine
@@ -386,6 +396,16 @@ impl<M> SimulationBuilder<M> {
         self
     }
 
+    /// Records structured lifecycle events into a [`SimulationTrace`],
+    /// exportable to JSONL or Perfetto Chrome Trace JSON. Off by default.
+    ///
+    /// Tracing may also be toggled dynamically between runs with
+    /// [`Simulation::enable_trace`] and [`Simulation::disable_trace`].
+    pub const fn trace(mut self, enabled: bool) -> Self {
+        self.trace_enabled = enabled;
+        self
+    }
+
     /// Validates the configuration and builds the simulation.
     ///
     /// # Errors
@@ -405,6 +425,16 @@ impl<M: Clone> SimulationBuilder<M> {
     /// either way.
     pub fn message_history(mut self, enabled: bool) -> Self {
         self.message_history = enabled.then_some(Message::clone as CloneMessage<M>);
+        self
+    }
+}
+
+impl<M: std::fmt::Debug> SimulationBuilder<M> {
+    /// Like [`Self::trace`], and also records a `Debug` summary of each sent
+    /// message payload.
+    pub fn trace_with_payloads(mut self, enabled: bool) -> Self {
+        self.trace_enabled = enabled;
+        self.trace_payload_formatter = enabled.then_some(debug_format_payload::<M>);
         self
     }
 }
@@ -460,6 +490,8 @@ struct Tick<'a, M> {
     next_in_flight: &'a mut u64,
     /// Set when any callback in this tick cancels a timer.
     has_cancellations: &'a mut bool,
+    /// Active structured trace sink, if tracing is enabled.
+    trace: Option<&'a mut SimulationTrace>,
 }
 
 /// Tracks runnable handles in callback order and sleeping agents by wake time.
@@ -657,6 +689,40 @@ enum Stop {
     Paused,
 }
 
+/// Records a consumed message to an active trace out of line.
+#[cold]
+#[inline(never)]
+fn push_trace_consumed<M>(
+    trace: &mut SimulationTrace,
+    time: DiscreteTime,
+    handle: usize,
+    msg: &Message<M>,
+    queue_depth: usize,
+) {
+    trace.push(
+        time,
+        AgentId::from_handle(handle),
+        TraceEventKind::MessageConsumed {
+            source: msg.source,
+            queued_time: msg.queued_time,
+            queue_depth,
+        },
+    );
+}
+
+/// Appends an event to an active trace out of line so untraced ticks stay
+/// compact.
+#[cold]
+#[inline(never)]
+fn push_trace_event(
+    trace: &mut SimulationTrace,
+    time: DiscreteTime,
+    handle: usize,
+    kind: TraceEventKind,
+) {
+    trace.push(time, AgentId::from_handle(handle), kind);
+}
+
 /// Visits one agent in handle order: wakes it when due, runs its callback, and
 /// applies the sleep it requested. Returns whether a callback ran and the
 /// requested wake time.
@@ -696,6 +762,9 @@ fn visit_agent<M>(
                 return (false, None);
             }
             agent.state.mode = then.into();
+            if let Some(trace) = tick.trace.as_deref_mut() {
+                push_trace_event(trace, tick.time, handle, TraceEventKind::AgentWoke);
+            }
             then
         }
         AgentMode::Dead => return (false, None),
@@ -751,10 +820,19 @@ fn visit_agent<M>(
                     agent.record_queue_depth(tick.time.saturating_add(1));
                 }
             }
-            MessageProcessingStatus::Done => agent.record_consumed(msg, tick.time),
+            MessageProcessingStatus::Done => {
+                if let Some(trace) = tick.trace.as_deref_mut() {
+                    push_trace_consumed(trace, tick.time, handle, &msg, agent.state.queue.len());
+                }
+                agent.record_consumed(msg, tick.time);
+            }
         }
     }
     if let Some(sleep_until) = requested_sleep_until {
+        if let Some(trace) = tick.trace.as_deref_mut() {
+            let kind = TraceEventKind::AgentSlept { until: sleep_until };
+            push_trace_event(trace, tick.time, handle, kind);
+        }
         agent.state.mode = AgentMode::AsleepUntil {
             until: sleep_until,
             then: wake_mode,
@@ -821,6 +899,17 @@ fn visit_agent_multi_drain<M>(
                 break;
             }
             MessageProcessingStatus::Done => {
+                if let Some(trace) = tick.trace.as_deref_mut() {
+                    trace.push(
+                        tick.time,
+                        AgentId::from_handle(handle),
+                        TraceEventKind::MessageConsumed {
+                            source: msg.source,
+                            queued_time: msg.queued_time,
+                            queue_depth: agent.state.queue.len(),
+                        },
+                    );
+                }
                 agent.record_consumed(msg, tick.time);
                 handled += 1;
             }
@@ -847,6 +936,13 @@ fn visit_agent_multi_drain<M>(
         agent.agent.on_tick(&mut ctx);
     }
     if let Some(sleep_until) = requested_sleep_until {
+        if let Some(trace) = tick.trace.as_deref_mut() {
+            trace.push(
+                tick.time,
+                AgentId::from_handle(handle),
+                TraceEventKind::AgentSlept { until: sleep_until },
+            );
+        }
         agent.state.mode = AgentMode::AsleepUntil {
             until: sleep_until,
             then: wake_mode,
@@ -870,6 +966,8 @@ impl<M> Simulation<M> {
             message_history: None,
             seed: MasterSeed::from_u64(0),
             unknown_destination_policy: UnknownDestinationPolicy::Drop,
+            trace_enabled: false,
+            trace_payload_formatter: None,
         }
     }
 
@@ -944,6 +1042,11 @@ impl<M> Simulation<M> {
             })
             .collect();
 
+        let trace = parameters.trace_enabled.then(|| {
+            let names = agents.iter().map(|a| a.name.clone()).collect();
+            TraceRecorder::new(names, parameters.trace_payload_formatter)
+        });
+
         Ok(Self {
             mode: SimulationMode::Constructed,
             agents,
@@ -960,6 +1063,7 @@ impl<M> Simulation<M> {
             next_in_flight: 0,
             unknown_destination_policy: parameters.unknown_destination_policy,
             unknown_destination_count: 0,
+            trace,
         })
     }
 
@@ -1103,6 +1207,44 @@ impl<M> Simulation<M> {
     #[must_use]
     pub const fn unknown_destination_count(&self) -> u64 {
         self.unknown_destination_count
+    }
+
+    /// Enables structured lifecycle tracing from the current tick onward.
+    ///
+    /// Existing recorded events (if tracing was previously enabled and
+    /// disabled) are preserved.
+    pub fn enable_trace(&mut self) {
+        if let Some(recorder) = &mut self.trace {
+            recorder.enabled = true;
+        } else {
+            let names = self.agents.iter().map(|a| a.name.clone()).collect();
+            self.trace = Some(TraceRecorder::new(names, None));
+        }
+    }
+
+    /// Stops recording new trace events while keeping events recorded so far
+    /// readable through [`Self::trace`] or [`Self::take_trace`].
+    pub const fn disable_trace(&mut self) {
+        if let Some(recorder) = &mut self.trace {
+            recorder.enabled = false;
+        }
+    }
+
+    /// Returns the recorded structured trace, or `None` if tracing was never
+    /// enabled (or after [`Self::take_trace`]).
+    #[must_use]
+    pub const fn trace(&self) -> Option<&SimulationTrace> {
+        match &self.trace {
+            Some(recorder) => Some(&recorder.trace),
+            None => None,
+        }
+    }
+
+    /// Removes and returns the recorded structured trace, disabling further
+    /// tracing until re-enabled.
+    #[must_use]
+    pub fn take_trace(&mut self) -> Option<SimulationTrace> {
+        self.trace.take().map(|recorder| recorder.trace)
     }
 
     /// Runs the simulation until its halt condition holds or an agent sends a
@@ -1315,6 +1457,11 @@ impl<M> Simulation<M> {
         has_cancellations: &'a mut bool,
     ) -> (&'a mut [SimulationAgent<M>], Tick<'a, M>) {
         let agent_count = self.agents.len();
+        let trace = self
+            .trace
+            .as_mut()
+            .filter(|recorder| recorder.enabled)
+            .map(|recorder| &mut recorder.trace);
         let tick = Tick {
             time: self.time,
             layout: self.layout,
@@ -1327,6 +1474,7 @@ impl<M> Simulation<M> {
             commands,
             next_in_flight: &mut self.next_in_flight,
             has_cancellations,
+            trace,
         };
         (&mut self.agents, tick)
     }
@@ -1472,6 +1620,9 @@ impl<M> Simulation<M> {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
                     self.record_produced(command.agent_handle, &message);
+                    if self.trace_active() {
+                        self.record_trace_sent(command.agent_handle, &message, next_time);
+                    }
                     if let Some(destination) = message.destination {
                         self.deliver(destination, message, schedule.as_deref_mut(), next_time);
                     } else if let Some(reason) =
@@ -1484,6 +1635,9 @@ impl<M> Simulation<M> {
                 AgentCommandType::SendDelayed { timer, message } => {
                     if timer.arrival == next_time {
                         self.record_produced(command.agent_handle, &message);
+                        if self.trace_active() {
+                            self.record_trace_sent(command.agent_handle, &message, next_time);
+                        }
                         if !cancelled_next_tick.contains(&timer) {
                             if let Some(destination) = message.destination {
                                 self.deliver(
@@ -1506,18 +1660,74 @@ impl<M> Simulation<M> {
                 }
 
                 AgentCommandType::CancelTimer(timer) => {
-                    if timer.arrival > next_time {
-                        self.cancel_timer(timer);
+                    if timer.arrival > next_time && self.cancel_timer(timer) && self.trace_active()
+                    {
+                        self.record_trace_cancelled(command.agent_handle, timer);
                     }
                 }
 
                 AgentCommandType::HaltSimulation(reason) => {
+                    if self.trace_active() {
+                        self.record_trace_halt(command.agent_handle, &reason);
+                    }
                     // The first interrupt in issue order ends the run.
                     interrupt.get_or_insert(reason);
                 }
             }
         }
         interrupt
+    }
+
+    /// Returns whether structured tracing is currently recording events.
+    #[inline]
+    fn trace_active(&self) -> bool {
+        self.trace.as_ref().is_some_and(|recorder| recorder.enabled)
+    }
+
+    /// Appends a [`TraceEventKind::MessageSent`] event when tracing is active.
+    #[cold]
+    #[inline(never)]
+    fn record_trace_sent(&mut self, handle: usize, message: &Message<M>, arrival: DiscreteTime) {
+        if let Some(recorder) = self.trace.as_mut().filter(|r| r.enabled) {
+            let payload = recorder.format(&message.payload);
+            recorder.trace.push(
+                self.time,
+                AgentId::from_handle(handle),
+                TraceEventKind::MessageSent {
+                    destination: message.destination,
+                    arrival,
+                    payload,
+                },
+            );
+        }
+    }
+
+    /// Appends a [`TraceEventKind::TimerCancelled`] event when tracing is active.
+    #[cold]
+    #[inline(never)]
+    fn record_trace_cancelled(&mut self, handle: usize, timer: TimerId) {
+        if let Some(recorder) = self.trace.as_mut().filter(|r| r.enabled) {
+            recorder.trace.push(
+                self.time,
+                AgentId::from_handle(handle),
+                TraceEventKind::TimerCancelled { timer },
+            );
+        }
+    }
+
+    /// Appends a [`TraceEventKind::HaltInterrupt`] event when tracing is active.
+    #[cold]
+    #[inline(never)]
+    fn record_trace_halt(&mut self, handle: usize, reason: &str) {
+        if let Some(recorder) = self.trace.as_mut().filter(|r| r.enabled) {
+            recorder.trace.push(
+                self.time,
+                AgentId::from_handle(handle),
+                TraceEventKind::HaltInterrupt {
+                    reason: reason.to_string(),
+                },
+            );
+        }
     }
 
     /// Records an unknown-destination send and applies the configured policy.
@@ -1531,10 +1741,16 @@ impl<M> Simulation<M> {
         self.unknown_destination_count += 1;
         match self.unknown_destination_policy {
             UnknownDestinationPolicy::Drop => None,
-            UnknownDestinationPolicy::Halt => Some(format!(
-                "unknown destination sent by '{}' at tick {tick}",
-                self.agents[sender_handle].name
-            )),
+            UnknownDestinationPolicy::Halt => {
+                let reason = format!(
+                    "unknown destination sent by '{}' at tick {tick}",
+                    self.agents[sender_handle].name
+                );
+                if self.trace_active() {
+                    self.record_trace_halt(sender_handle, &reason);
+                }
+                Some(reason)
+            }
             UnknownDestinationPolicy::Panic => panic!(
                 "unknown destination sent by '{}' at tick {tick}",
                 self.agents[sender_handle].name
@@ -1555,7 +1771,9 @@ impl<M> Simulation<M> {
         for command in command_buffer {
             if let AgentCommandType::CancelTimer(timer) = command.ty {
                 if timer.arrival <= next_time {
-                    self.cancel_timer(timer);
+                    if self.cancel_timer(timer) && self.trace_active() {
+                        self.record_trace_cancelled(command.agent_handle, timer);
+                    }
                     if timer.arrival == next_time {
                         cancelled_next_tick.push(timer);
                     }
@@ -1577,6 +1795,9 @@ impl<M> Simulation<M> {
         next_time: DiscreteTime,
     ) -> Option<String> {
         self.record_produced(handle, &message);
+        if self.trace_active() {
+            self.record_trace_sent(handle, &message, timer.arrival);
+        }
         if let Some(destination) = message.destination {
             debug_assert!(
                 message.queued_time >= next_time,
@@ -1612,8 +1833,10 @@ impl<M> Simulation<M> {
         schedule: Option<&mut SparseSchedule>,
         visible_at: DiscreteTime,
     ) {
+        let source = message.source;
         let receiver = &mut self.agents[destination.index()];
         receiver.state.queue.push_back(message);
+        let depth = receiver.state.queue.len();
         if self.enable_queue_depth_metric {
             receiver.record_queue_depth(visible_at);
         }
@@ -1621,6 +1844,16 @@ impl<M> Simulation<M> {
             if receiver.state.mode == AgentMode::Reactive {
                 active.set_ready(destination.index(), true);
             }
+        }
+        if let Some(recorder) = self.trace.as_mut().filter(|r| r.enabled) {
+            recorder.trace.push(
+                visible_at,
+                destination,
+                TraceEventKind::MessageDelivered {
+                    source,
+                    queue_depth: depth,
+                },
+            );
         }
     }
 
@@ -1676,6 +1909,20 @@ impl<M> Simulation<M> {
     #[must_use]
     pub const fn time(&self) -> DiscreteTime {
         self.time
+    }
+}
+
+impl<M: std::fmt::Debug> Simulation<M> {
+    /// Enables structured lifecycle tracing from the current tick onward,
+    /// recording a `Debug` summary of each sent message payload.
+    pub fn enable_trace_with_payloads(&mut self) {
+        if let Some(recorder) = &mut self.trace {
+            recorder.enabled = true;
+            recorder.format_payload = Some(debug_format_payload::<M>);
+        } else {
+            let names = self.agents.iter().map(|a| a.name.clone()).collect();
+            self.trace = Some(TraceRecorder::new(names, Some(debug_format_payload::<M>)));
+        }
     }
 }
 
