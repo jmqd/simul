@@ -1135,7 +1135,7 @@ impl<M> Simulation<M> {
     /// Mostly useful for checking which agents still have queues of work after halting.
     #[must_use]
     pub fn calc_queue_len_statistics(&self) -> NameStatistics<usize> {
-        let mut data = NameStatistics::new();
+        let mut data = NameStatistics::with_capacity(self.agents.len());
 
         for agent in &self.agents {
             data.insert(agent.name.clone(), agent.state.queue.len());
@@ -1147,7 +1147,7 @@ impl<M> Simulation<M> {
     /// Counts the messages each agent consumed.
     #[must_use]
     pub fn calc_consumed_len_statistics(&self) -> NameStatistics<u64> {
-        let mut data = NameStatistics::new();
+        let mut data = NameStatistics::with_capacity(self.agents.len());
 
         for agent in &self.agents {
             data.insert(agent.name.clone(), agent.consumed_count());
@@ -1159,7 +1159,7 @@ impl<M> Simulation<M> {
     /// Counts the messages each agent sent, delivered or not.
     #[must_use]
     pub fn calc_produced_len_statistics(&self) -> NameStatistics<u64> {
-        let mut data = NameStatistics::new();
+        let mut data = NameStatistics::with_capacity(self.agents.len());
 
         for agent in &self.agents {
             data.insert(agent.name.clone(), agent.produced_count());
@@ -1317,7 +1317,7 @@ impl<M> Simulation<M> {
     /// Returns a slice of the Agents in the Simulation.
     #[must_use]
     pub fn agents(&self) -> &[SimulationAgent<M>] {
-        self.agents.iter().as_slice()
+        &self.agents
     }
 
     /// Returns the current `DiscreteTime` tick for the Simulation.
