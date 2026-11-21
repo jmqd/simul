@@ -1294,7 +1294,7 @@ mod parallel {
             let workers = nonzero(r.random_range(1..=9));
             let limit = nonzero(batch.len().max(1) + r.random_range(0..3));
             let config = ParallelConfig::new(workers, limit);
-            let mut shuffled = batch.clone();
+            let mut shuffled = batch;
             shuffle(&mut r, &mut shuffled);
             let parallel = run_parallel(
                 seed,

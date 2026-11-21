@@ -3,6 +3,13 @@
 * Unreleased
 Newest entries first.
 
+** DONE Update Rust toolchain to 1.100.0 and refresh lockfile
+Update =rust-toolchain.toml= to Rust 1.100.0 and =rust-overlay= in =flake.lock=
+to 2026-11-20, update compatible lockfile dependencies (including =rand=
+0.10.4), remove the redundant =package.homepage= manifest key warned by Cargo
+1.100, and drop a redundant clone flagged by Clippy 1.100 in
+=tests/laws_experiment.rs=.
+
 ** DONE Disable unused default features on =rand= and =rand_distr=
 Disable default features on =rand= and =rand_distr= in =[dependencies]= (moving
 =rand/std_rng= and =rand_distr/alloc= to =[dev-dependencies]= for tests,

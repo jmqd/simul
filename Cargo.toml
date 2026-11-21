@@ -17,7 +17,6 @@ problems, running experiments to determine optimal parameters, simulating
 queueing systems, distributed systems, performance engineering, and so on.
 """
 
-homepage = "https://github.com/jmqd/simul"
 repository = "https://github.com/jmqd/simul"
 readme = "README.md"
 # Ship sources, tests, examples, benches, and user docs; development tooling
