@@ -244,6 +244,7 @@ type HaltPredicate<M> = dyn Fn(&Simulation<M>) -> bool + Send + Sync;
 
 impl<M> Halt<M> {
     /// Stops when `predicate` returns `true`.
+    #[must_use]
     pub fn when(predicate: impl Fn(&Simulation<M>) -> bool + Send + Sync + 'static) -> Self {
         Self::When(Arc::new(predicate))
     }
@@ -907,9 +908,9 @@ impl<M> Simulation<M> {
     }
 
     /// Returns messages sent with [`AgentContext::send_after`] that have not
-    /// arrived yet, in arrival order. A run that halts leaves them in flight,
-    /// and the next run delivers them.
-    pub fn in_flight(&self) -> impl Iterator<Item = &Message<M>> {
+    /// arrived yet, in arrival order (then send order). A run that halts leaves
+    /// them in flight, and the next run delivers them.
+    pub fn in_flight(&self) -> impl ExactSizeIterator<Item = &Message<M>> + DoubleEndedIterator {
         self.in_flight.values().map(|(_, message)| message)
     }
 
@@ -1305,15 +1306,19 @@ impl<M> Simulation<M> {
             .map_or(DiscreteTime::MAX, |(key, _)| key.0);
     }
 
-    /// Searches for an agent in the Simulation matching the given predicate.
-    pub fn find_agent<P>(&self, predicate: P) -> Option<&SimulationAgent<M>>
+    /// Returns the first agent in construction order matching `predicate`, or
+    /// `None` if no agent matches.
+    #[must_use]
+    pub fn find_agent<P>(&self, mut predicate: P) -> Option<&SimulationAgent<M>>
     where
-        P: FnMut(&&SimulationAgent<M>) -> bool,
+        P: FnMut(&SimulationAgent<M>) -> bool,
     {
-        self.agents.iter().find(predicate)
+        self.agents.iter().find(|agent| predicate(agent))
     }
 
-    /// Checks whether all agents match the given predicate.
+    /// Returns `true` if every agent matches `predicate` (vacuously `true` when
+    /// there are no agents).
+    #[must_use]
     pub fn all_agents<P>(&self, predicate: P) -> bool
     where
         P: FnMut(&SimulationAgent<M>) -> bool,

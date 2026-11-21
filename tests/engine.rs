@@ -1490,7 +1490,7 @@ fn delayed_messages_to_unknown_identities_count_as_sent_but_never_fly() {
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
     simulation.run_until(1);
-    assert_eq!(0, simulation.in_flight().count());
+    assert_eq!(0, simulation.in_flight().len());
     simulation.run();
     let Some(produced) = simulation.produced_for_agent("sender") else {
         panic!("sender must exist");
@@ -1502,4 +1502,30 @@ fn delayed_messages_to_unknown_identities_count_as_sent_but_never_fly() {
             .map(|message| (message.payload, message.queued_time, message.destination))
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn find_agent_and_all_agents_inspect_agents_by_reference() {
+    let mut simulation = Simulation::<()>::builder(Halt::AtTime(3))
+        .agents([
+            periodic_producer("producer", 1, "consumer"),
+            periodic_consumer("consumer", 1),
+        ])
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    simulation.run();
+
+    assert_eq!(
+        Some("consumer"),
+        simulation
+            .find_agent(|agent| agent.consumed_count() > 0)
+            .map(SimulationAgent::name)
+    );
+    assert!(
+        simulation
+            .find_agent(|agent| agent.name() == "missing")
+            .is_none()
+    );
+    assert!(simulation.all_agents(|agent| agent.state.mode != AgentMode::Dead));
+    assert!(!simulation.all_agents(|agent| agent.consumed_count() > 0));
 }

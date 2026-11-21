@@ -3,6 +3,14 @@
 * Unreleased
 Newest entries first.
 
+** DONE Clean up =find_agent=, =in_flight=, and =#[must_use]= annotations (breaking)
+=Simulation::find_agent= now takes =FnMut(&SimulationAgent<M>) -> bool= instead
+of leaking =Iterator::find='s double reference =&&SimulationAgent<M>=, matching
+=Simulation::all_agents=. =Simulation::in_flight= returns an
+=ExactSizeIterator + DoubleEndedIterator= so callers can check =.len()= in O(1).
+=find_agent=, =all_agents=, =Halt::when=, =AgentInitializer::reactive/proactive=,
+and the built-in agent constructors now carry =#[must_use]=.
+
 ** DONE Return =&mut SimulationAgent= from =find_by_name_mut= and expose per-agent accessors (breaking)
 =SimulationAgent::name= is now read-only through =SimulationAgent::name(&self)=
 so callers cannot break name routing by renaming an agent in place. With that

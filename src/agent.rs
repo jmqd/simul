@@ -767,6 +767,7 @@ pub struct AgentInitializer<M = ()> {
 impl<M> AgentInitializer<M> {
     /// An agent that acts only on messages: it starts `Reactive` and returns
     /// to `Reactive` after every sleep.
+    #[must_use]
     pub fn reactive(name: impl Into<String>, agent: impl Agent<M> + 'static) -> Self {
         Self::with_mode(name.into(), Box::new(agent), AgentMode::Reactive)
     }
@@ -774,6 +775,7 @@ impl<M> AgentInitializer<M> {
     /// An agent that also acts on its own: it starts `Proactive`, gets
     /// [`Agent::on_tick`] every tick it is awake, and returns to `Proactive`
     /// after every sleep.
+    #[must_use]
     pub fn proactive(name: impl Into<String>, agent: impl Agent<M> + 'static) -> Self {
         Self::with_mode(name.into(), Box::new(agent), AgentMode::Proactive)
     }
@@ -932,6 +934,7 @@ impl GeometricTicks {
 /// # Panics
 ///
 /// Panics unless `mean_service_ticks` is finite and at least one tick.
+#[must_use]
 pub fn geometric_consumer<M>(
     name: impl Into<String>,
     mean_service_ticks: f64,
@@ -966,6 +969,7 @@ pub fn geometric_consumer<M>(
 /// # Panics
 ///
 /// Panics unless `mean_interarrival_ticks` is finite and at least one tick.
+#[must_use]
 pub fn geometric_producer<M: Default>(
     name: impl Into<String>,
     mean_interarrival_ticks: f64,
@@ -998,6 +1002,7 @@ pub fn geometric_producer<M: Default>(
 }
 
 /// A simple agent that sends `M::default()` to `target` on a period.
+#[must_use]
 pub fn periodic_producer<M: Default>(
     name: impl Into<String>,
     period: DiscreteTime,
@@ -1030,6 +1035,7 @@ pub fn periodic_producer<M: Default>(
 
 /// A simple agent that consumes messages on a period with no side effects.
 /// Period can be thought of the time to consume 1 message.
+#[must_use]
 pub fn periodic_consumer<M>(name: impl Into<String>, period: DiscreteTime) -> AgentInitializer<M> {
     #[derive(Clone, Debug)]
     struct PeriodicConsumer {
