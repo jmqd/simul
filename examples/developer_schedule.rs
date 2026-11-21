@@ -60,14 +60,11 @@ impl Agent<usize> for ProductivityRecorder {
 
 fn main() {
     let mut simulation = Simulation::builder(Halt::AtTime(128))
-        .agents(vec![
+        .agents([
             AgentInitializer::proactive(
                 "developer",
                 Developer {
-                    schedule: [
-                        false, false, false, false, false, false, false, false, false, false,
-                        false, false, false, false, false, false, false, false,
-                    ],
+                    schedule: [false; 18],
                 },
             ),
             AgentInitializer::reactive("productivity_recorder", ProductivityRecorder::default()),

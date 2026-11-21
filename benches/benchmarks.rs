@@ -14,8 +14,8 @@ fn run_periodic_simulation(
     idle_agents: usize,
 ) -> Simulation {
     let mut agent_initializers = vec![
-        periodic_producer("producer".to_string(), 1, "consumer".to_string()),
-        periodic_consumer("consumer".to_string(), 1),
+        periodic_producer("producer", 1, "consumer"),
+        periodic_consumer("consumer", 1),
     ];
     agent_initializers.extend(
         (0..idle_agents)

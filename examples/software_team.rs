@@ -851,7 +851,7 @@ impl SoftwareTeamReport {
 
 fn build_simulation(params: SoftwareTeamParameters) -> Simulation<Payload> {
     Simulation::builder(Halt::Never)
-        .agents(vec![
+        .agents([
             AgentInitializer::proactive(PRODUCT, ProductManager::new(params)),
             AgentInitializer::proactive(MEETINGS, MeetingScheduler { params }),
             AgentInitializer::proactive(SLACK, CommunicationScheduler { params }),

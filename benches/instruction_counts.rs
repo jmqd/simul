@@ -371,9 +371,9 @@ fn histories<M>(simulation: &Simulation<M>) -> Fingerprint {
 fn periodic_pair(enable_queue_depth_metrics: bool) -> Fingerprint {
     let simulation = simulate(
         Simulation::<()>::builder(Halt::AtTime(10_000))
-            .agents(vec![
-                periodic_producer("producer".to_string(), 1, "consumer".to_string()),
-                periodic_consumer("consumer".to_string(), 1),
+            .agents([
+                periodic_producer("producer", 1, "consumer"),
+                periodic_consumer("consumer", 1),
             ])
             .queue_depth_metrics(enable_queue_depth_metrics),
     );
@@ -396,15 +396,9 @@ fn sim_queue_metrics() -> Fingerprint {
 /// Many producers feed one consumer; more than eight agents use name hashing.
 fn sim_fan_in() -> Fingerprint {
     let mut agent_initializers: Vec<AgentInitializer> = (0..64_u64)
-        .map(|index| {
-            periodic_producer(
-                format!("producer-{index}"),
-                1 + index % 7,
-                "sink".to_string(),
-            )
-        })
+        .map(|index| periodic_producer(format!("producer-{index}"), 1 + index % 7, "sink"))
         .collect();
-    agent_initializers.push(periodic_consumer("sink".to_string(), 1));
+    agent_initializers.push(periodic_consumer("sink", 1));
     let simulation = simulate(
         Simulation::builder(Halt::when(|simulation: &Simulation| {
             simulation
@@ -513,9 +507,9 @@ fn exp_search_sim() -> Fingerprint {
                             .find_by_name("consumer")
                             .is_some_and(|consumer| consumer.consumed_count() > 10)
                     }))
-                    .agents(vec![
-                        periodic_producer("producer".to_string(), 2, "consumer".to_string()),
-                        periodic_consumer("consumer".to_string(), consumer_period),
+                    .agents([
+                        periodic_producer("producer", 2, "consumer"),
+                        periodic_consumer("consumer", consumer_period),
                     ])
                     .asleep_cycles_metric(true),
                 );

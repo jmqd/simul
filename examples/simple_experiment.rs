@@ -31,13 +31,9 @@ fn simulation_builder(consumer_period: u64) -> SimulationBuilder {
     };
 
     Simulation::builder(Halt::when(halt_condition))
-        .agents(vec![
-            periodic_producer(
-                "producer".to_string(),
-                PRODUCER_PERIOD,
-                "consumer".to_string(),
-            ),
-            periodic_consumer("consumer".to_string(), consumer_period),
+        .agents([
+            periodic_producer("producer", PRODUCER_PERIOD, "consumer"),
+            periodic_consumer("consumer", consumer_period),
         ])
         .asleep_cycles_metric(true)
 }

@@ -1406,9 +1406,9 @@ mod tests {
     #[test]
     fn basic_periodic_test() {
         let mut simulation = Simulation::<()>::builder(Halt::AtTime(5))
-            .agents(vec![
-                periodic_producer("producer".to_string(), 1, "consumer".to_string()),
-                periodic_consumer("consumer".to_string(), 1),
+            .agents([
+                periodic_producer("producer", 1, "consumer"),
+                periodic_consumer("consumer", 1),
             ])
             .build()
             .unwrap_or_else(|error| panic!("{error}"));
@@ -1424,12 +1424,9 @@ mod tests {
 
     #[test]
     fn sleeping_reactive_agent_preserves_messages_until_wakeup() {
-        let consumer = periodic_consumer("consumer".to_string(), 1).asleep_until(3);
+        let consumer = periodic_consumer("consumer", 1).asleep_until(3);
         let mut simulation = Simulation::<()>::builder(Halt::AtTime(5))
-            .agents(vec![
-                periodic_producer("producer".to_string(), 1, "consumer".to_string()),
-                consumer,
-            ])
+            .agents([periodic_producer("producer", 1, "consumer"), consumer])
             .build()
             .unwrap_or_else(|error| panic!("{error}"));
 
@@ -1488,7 +1485,7 @@ mod tests {
             let mut agent_initializers: Vec<AgentInitializer> = (1..count)
                 .map(|i| periodic_consumer(format!("worker-{i}"), 1))
                 .collect();
-            agent_initializers.push(periodic_consumer("worker-1".to_string(), 2));
+            agent_initializers.push(periodic_consumer("worker-1", 2));
             let result = Simulation::builder(Halt::AtTime(0))
                 .agents(agent_initializers)
                 .build();
