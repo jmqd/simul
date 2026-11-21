@@ -16,8 +16,11 @@ pub enum AgentMode {
     #[default]
     Reactive,
 
-    /// The Agent is sleeping (or on cooldown) until tick `until`, and then
-    /// returns to `then`.
+    /// Sleeping until the absolute tick `until`, then returning to `then`.
+    ///
+    /// Messages keep arriving in the agent's queue while it sleeps. On the
+    /// first tick with `time >= until`, the mode becomes `then` and the agent
+    /// runs in that same tick.
     AsleepUntil {
         /// The tick at which the agent wakes.
         until: DiscreteTime,
@@ -25,7 +28,10 @@ pub enum AgentMode {
         then: WakeMode,
     },
 
-    /// The Agent is dead (inactive) and does nothing in this state.
+    /// Inactive: never called back.
+    ///
+    /// Messages sent to a dead agent are still appended to its queue and are
+    /// never consumed. This is the default mode of [`AgentState`].
     Dead,
 }
 
@@ -334,7 +340,12 @@ pub struct AgentState<M = ()> {
     /// mode it wakes into.
     pub mode: AgentMode,
 
-    /// The queue of incoming Messages for the Agent.
+    /// First-in-first-out inbox of unhandled messages.
+    ///
+    /// Messages sent during a tick are appended at the end of that tick (or at
+    /// arrival for [`AgentContext::send_after`]). Awake agents pop at most one
+    /// message per tick; setting [`MessageProcessingStatus::InProgress`] puts
+    /// it back at the front.
     pub queue: VecDeque<Message<M>>,
 }
 
@@ -519,7 +530,10 @@ impl<'a, M> AgentContext<'a, M> {
         self.name
     }
 
-    /// Returns the tick being executed.
+    /// Returns the tick currently being executed.
+    ///
+    /// Ordinary sends in this callback receive this tick as `queued_time`, and
+    /// [`Self::sleep_for`] and [`Self::send_after`] count forward from it.
     #[must_use]
     pub const fn time(&self) -> DiscreteTime {
         self.time
@@ -564,6 +578,39 @@ impl<'a, M> AgentContext<'a, M> {
     /// its wait as if sent that tick. Messages arriving in one tick come in
     /// send order, so delayed ones precede that tick's ordinary sends. A run
     /// that halts first leaves it in [`Simulation::in_flight`](crate::Simulation::in_flight).
+    ///
+    /// ```
+    /// use simul::agent::{Agent, AgentContext, AgentInitializer};
+    /// use simul::message::Message;
+    /// use simul::{DiscreteTime, Halt, Simulation};
+    ///
+    /// #[derive(Clone, Debug, Default)]
+    /// struct Timer(Option<DiscreteTime>);
+    ///
+    /// impl Agent<bool> for Timer {
+    ///     fn on_message(&mut self, ctx: &mut AgentContext<'_, bool>, msg: &Message<bool>) {
+    ///         if msg.payload {
+    ///             self.0 = Some(ctx.time());
+    ///         } else {
+    ///             ctx.send_after(10, ctx.id(), true);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut sim = Simulation::builder(Halt::AtTime(20))
+    ///     .agent(
+    ///         AgentInitializer::reactive("timer", Timer::default())
+    ///             .initial_queue([Message::new(0, false)]),
+    ///     )
+    ///     .build()?;
+    /// sim.run();
+    /// let fired_at = sim
+    ///     .find_by_name("timer")
+    ///     .and_then(|agent| agent.downcast_ref::<Timer>())
+    ///     .and_then(|timer| timer.0);
+    /// assert_eq!(Some(10), fired_at);
+    /// # Ok::<(), simul::SimulationError>(())
+    /// ```
     ///
     /// # Panics
     ///
@@ -646,7 +693,13 @@ impl<'a, M> AgentContext<'a, M> {
         self.queue_message(destination, payload);
     }
 
-    /// Sends an interrupt to HALT the simulation.
+    /// Requests that the simulation stop after the current tick completes.
+    ///
+    /// Remaining agents still run this tick and all buffered commands (including
+    /// sends issued after this call) are applied in order before the run ends in
+    /// [`SimulationMode::Completed`](crate::SimulationMode::Completed). The
+    /// first interrupt's `reason` in issue order is returned by
+    /// [`Simulation::halt_reason`](crate::Simulation::halt_reason).
     #[inline]
     pub fn send_halt_interrupt(&mut self, reason: &str) {
         self.commands.push(AgentCommand {
@@ -1013,7 +1066,11 @@ pub fn geometric_producer<M: Default>(
     )
 }
 
-/// A simple agent that sends `M::default()` to `target` on a period.
+/// A `Proactive` agent that sends `M::default()` to `target` every `period`
+/// ticks, starting on its first awake tick.
+///
+/// `period = 0` sends every tick, because a zero-tick sleep wakes on the next
+/// tick. An unknown `target` is counted as produced without delivery.
 #[must_use]
 pub fn periodic_producer<M: Default>(
     name: impl Into<String>,
@@ -1045,8 +1102,8 @@ pub fn periodic_producer<M: Default>(
     )
 }
 
-/// A simple agent that consumes messages on a period with no side effects.
-/// Period can be thought of the time to consume 1 message.
+/// A `Reactive` agent that consumes one message and sleeps for `period` ticks
+/// with no side effects. `period = 0` wakes on the next tick.
 #[must_use]
 pub fn periodic_consumer<M>(name: impl Into<String>, period: DiscreteTime) -> AgentInitializer<M> {
     #[derive(Clone, Debug)]

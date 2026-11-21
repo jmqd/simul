@@ -25,7 +25,12 @@ Change the API so that agent names are statically determined?
 ** DONE Implement a sort of "next-event" optimization to skip ticks that don't produce events
 Quiet ticks are skipped under =Halt::AtTime= and =Halt::Never=.
 * Testing
-** TODO Add doctests throughout
+** DONE Add doctests throughout
+Runnable doctests now cover the crate root, =README.md=, =AgentInitializer=,
+=AgentContext::send_after=, =Simulation::run_until=, =FixedReplications::trials=,
+=run_serial=, =BernoulliReducer=, =CrossEntropyOptimizer=, and
+=SeededRandomSearch=, alongside compile-fail doctests on =AgentContext= and
+=Simulation::find_by_name_mut=.
 * Code Cleanup
 ** DONE Gracefully degrade Simulations into Failed state in cases of errors
 ** DONE If possible, move =log= dependency to feature or remove

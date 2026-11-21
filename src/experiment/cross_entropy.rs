@@ -54,14 +54,20 @@ impl<const N: usize> CrossEntropyConfig<N> {
         }
     }
 
-    /// Sets the geometry of every search dimension.
+    /// Sets the geometry of every search dimension (default: all
+    /// [`CrossEntropyDimension::Linear`]).
+    ///
+    /// A [`CrossEntropyDimension::Circular`] initial mean must lie in `[0, 1)`.
     #[must_use]
     pub const fn with_dimensions(mut self, dimensions: [CrossEntropyDimension; N]) -> Self {
         self.dimensions = dimensions;
         self
     }
 
-    /// Sets the lower bound on each standard deviation.
+    /// Sets the lower bound on each standard deviation (default: `1e-6`).
+    ///
+    /// Each floor must be finite, positive, and at most the corresponding
+    /// initial standard deviation; checked by [`CrossEntropyOptimizer::new`].
     #[must_use]
     pub const fn with_minimum_standard_deviation(
         mut self,
@@ -215,6 +221,26 @@ impl std::error::Error for CrossEntropyError {}
 /// fraction of a population. The optimizer neither evaluates objectives nor
 /// allocates storage for a population, allowing callers to batch, parallelize,
 /// and replicate evaluations as their domain requires.
+///
+/// ```
+/// use simul::experiment::{
+///     CrossEntropyConfig, CrossEntropyOptimizer, CrossEntropySample, MasterSeed, SeedDeriver,
+/// };
+///
+/// let config = CrossEntropyConfig::new([0.5], [0.25]).with_elite_fraction(0.25);
+/// let mut optimizer = CrossEntropyOptimizer::new(config)?;
+/// let mut rng = SeedDeriver::new(MasterSeed::from_u64(1)).proposal_seed(0).rng();
+/// let mut samples = [CrossEntropySample::new([0.0], f64::NAN); 16];
+/// for _ in 0..8 {
+///     for sample in &mut samples {
+///         sample.point = optimizer.ask(&mut rng);
+///         sample.score = -(sample.point[0] - 0.8).powi(2);
+///     }
+///     optimizer.tell(&mut samples)?;
+/// }
+/// assert!((optimizer.best().expect("scored samples").point[0] - 0.8).abs() < 0.05);
+/// # Ok::<(), simul::experiment::CrossEntropyError>(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct CrossEntropyOptimizer<const N: usize> {
     /// Current distribution center.
@@ -376,19 +402,26 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         &self.mean
     }
 
-    /// Returns the current marginal standard deviations.
+    /// Returns the current marginal standard deviations, never below the
+    /// configured minimum floor.
     #[must_use]
     pub const fn standard_deviation(&self) -> &[f64; N] {
         &self.standard_deviation
     }
 
-    /// Returns the number of successful distribution updates.
+    /// Returns the number of successful distribution updates (starts at `0`).
+    ///
+    /// A [`Self::tell`] containing only NaN scores returns `Ok(None)` without
+    /// incrementing the generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// Returns the highest-scoring sample observed so far.
+    /// Returns the highest-scoring sample observed so far, or `None` until a
+    /// [`Self::tell`] includes a non-NaN score.
+    ///
+    /// An equal score from a later generation replaces the stored best.
     #[must_use]
     pub const fn best(&self) -> Option<&CrossEntropySample<N>> {
         self.best.as_ref()

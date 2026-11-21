@@ -43,6 +43,10 @@ pub struct Told<S> {
     /// Token originally returned by `ask`.
     pub token: ProposalToken,
     /// Stable candidate identity assigned by the experiment runner.
+    ///
+    /// Must equal `summary.candidate` (otherwise `tell` returns
+    /// [`TellError::CandidateMismatch`]) and must not repeat across tells
+    /// (otherwise [`TellError::DuplicateCandidate`]).
     pub candidate: CandidateId,
     /// Selecting evidence; it is retained rather than rerun for the winner.
     pub summary: CandidateSummary<S>,
@@ -208,6 +212,39 @@ impl<C> PendingProposals<C> {
 ///
 /// Asking in different batch sizes yields the same ordered proposal sequence.
 /// The generator receives the only randomness used by the strategy.
+///
+/// ```
+/// use simul::experiment::search::{SearchStrategy, SeededRandomSearch, Told};
+/// use simul::experiment::{
+///     CandidateId, CandidateSummary, MasterSeed, MaximizeScalarMean, ScalarReducer,
+/// };
+///
+/// let mut search = SeededRandomSearch::new(
+///     MasterSeed::from_u64(42),
+///     4,
+///     |rng| rng.next_u64() % 10,
+///     MaximizeScalarMean,
+/// );
+/// for proposal in search.ask(4) {
+///     let candidate = CandidateId::new(proposal.token.value());
+///     let score = -(proposal.candidate as f64 - 7.0).abs();
+///     let summary = CandidateSummary {
+///         candidate,
+///         requested: 1,
+///         completed: 1,
+///         failed: 0,
+///         statistics: ScalarReducer::from_results([score])?,
+///     };
+///     search.tell(&[Told {
+///         token: proposal.token,
+///         candidate,
+///         summary,
+///     }])?;
+/// }
+/// assert!(search.status().finished);
+/// assert!(search.best().is_some());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct SeededRandomSearch<C, S, P, G> {
     /// V1 seed source for per-token proposal streams.
     deriver: SeedDeriver,
@@ -269,7 +306,10 @@ where
         }
     }
 
-    /// Returns the current winner and exact selecting aggregate, if any.
+    /// Returns the current winner and exact selecting aggregate, or `None`
+    /// until the first successful [`SearchStrategy::tell`].
+    ///
+    /// On a policy tie, the lower [`CandidateId`] wins regardless of tell order.
     #[must_use]
     pub const fn best(&self) -> Option<&SearchResult<C, S>> {
         self.best.as_ref()

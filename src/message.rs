@@ -10,9 +10,15 @@ use crate::{AgentId, DiscreteTime};
 #[derive(Default, Debug, Clone, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub struct Message<M = ()> {
-    /// When the message was first created and put onto a queue.
+    /// For ordinary sends, the sender's tick (delivered at the end of that
+    /// tick); for [`AgentContext::send_after`](crate::agent::AgentContext::send_after),
+    /// `time + delay - 1`; for initial-queue messages, the time passed to
+    /// [`Message::new`].
     pub queued_time: DiscreteTime,
-    /// When the Message was consumed and processed.
+    /// `None` until [`Agent::on_message`](crate::agent::Agent::on_message)
+    /// finishes the message with
+    /// [`MessageProcessingStatus::Done`](crate::agent::MessageProcessingStatus::Done),
+    /// then the tick it was consumed.
     pub completed_time: Option<DiscreteTime>,
     /// The sending agent, or `None` for a message supplied in an initial queue.
     pub source: Option<AgentId>,

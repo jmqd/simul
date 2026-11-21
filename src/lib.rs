@@ -129,7 +129,10 @@ static NEXT_LAYOUT: AtomicU64 = AtomicU64::new(0);
 )]
 type NameStatistics<V> = std::collections::HashMap<String, V>;
 
-/// `DiscreteTime` is a Simulation's internal representation of time.
+/// A simulation's unitless discrete tick count.
+///
+/// One tick is one pass over runnable agents in [`Simulation::run`]. Advancing
+/// past `u64::MAX` panics.
 pub type DiscreteTime = u64;
 
 /// Largest simulation that resolves agent names by linear scan instead of hashing.
@@ -159,7 +162,8 @@ pub enum SimulationMode {
     /// [`Simulation::run_until`] reached its time before the run ended; `run`
     /// or `run_until` continues it.
     Paused,
-    /// The Simulation successfully reached the halt condition.
+    /// The simulation stopped because its [`Halt`] condition held or an agent
+    /// called [`AgentContext::send_halt_interrupt`].
     Completed,
     /// A callback or the halt check panicked mid-tick. The tick was partly
     /// applied, so the simulation refuses to run again.
@@ -833,7 +837,10 @@ impl<M> Simulation<M> {
         Some(self.find_by_name(name)?.consumed())
     }
 
-    /// Returns a `SimulationAgent` by name.
+    /// Returns the agent named `name`, or `None` if no agent has this name.
+    ///
+    /// Simulations of 8 agents or fewer scan linearly; larger ones use a hash
+    /// lookup.
     #[must_use]
     #[inline]
     pub fn find_by_name(&self, name: &str) -> Option<&SimulationAgent<M>> {
@@ -841,14 +848,19 @@ impl<M> Simulation<M> {
             .and_then(|handle| self.agents.get(handle))
     }
 
-    /// Returns the identity of the agent named `name`.
+    /// Returns the identity of the agent named `name`, or `None` if no agent
+    /// has this name.
     #[must_use]
     #[inline]
     pub fn agent_id(&self, name: &str) -> Option<AgentId> {
         self.find_handle_by_name(name).map(AgentId::from_handle)
     }
 
-    /// Returns the agent with identity `id`.
+    /// Returns the agent with identity `id`, or `None` when `id` is out of
+    /// range for this simulation.
+    ///
+    /// Identities are construction indices, so an `AgentId` from another
+    /// simulation can refer to a different agent here.
     #[must_use]
     #[inline]
     pub fn agent(&self, id: AgentId) -> Option<&SimulationAgent<M>> {
@@ -901,7 +913,9 @@ impl<M> Simulation<M> {
         Some(self.find_by_name(name)?.queue_depth_metrics())
     }
 
-    /// Returns the asleep cycle count for a given Agent during the Simulation.
+    /// Returns the number of ticks the agent named `name` spent asleep before
+    /// its wake tick, or `None` if no agent has this name. Always `Some(0)`
+    /// unless [`SimulationBuilder::asleep_cycles_metric`] is enabled.
     #[must_use]
     pub fn asleep_cycle_count(&self, name: &str) -> Option<DiscreteTime> {
         Some(self.find_by_name(name)?.asleep_cycle_count())
@@ -941,6 +955,47 @@ impl<M> Simulation<M> {
     /// alternative that shares the run so far. With equal seeds, a branch
     /// matches a run that took its alternative from the start when the
     /// alternatives act identically before the decision tick.
+    ///
+    /// ```
+    /// use simul::agent::{Agent, AgentContext, AgentInitializer};
+    /// use simul::{Halt, Simulation, SimulationMode};
+    ///
+    /// #[derive(Clone, Debug)]
+    /// struct Counter {
+    ///     step: u64,
+    ///     total: u64,
+    /// }
+    ///
+    /// impl Agent for Counter {
+    ///     fn on_tick(&mut self, _ctx: &mut AgentContext) {
+    ///         self.total += self.step;
+    ///     }
+    /// }
+    ///
+    /// let mut trunk = Simulation::builder(Halt::AtTime(10))
+    ///     .agent(AgentInitializer::proactive("counter", Counter { step: 1, total: 0 }))
+    ///     .build()?;
+    /// trunk.run_until(4);
+    /// assert_eq!(SimulationMode::Paused, trunk.mode());
+    ///
+    /// let mut branch = trunk.clone();
+    /// branch
+    ///     .find_by_name_mut("counter")
+    ///     .and_then(|agent| agent.downcast_mut::<Counter>())
+    ///     .expect("counter agent")
+    ///     .step = 2;
+    /// trunk.run();
+    /// branch.run();
+    ///
+    /// let total = |sim: &Simulation| {
+    ///     sim.find_by_name("counter")
+    ///         .and_then(|agent| agent.downcast_ref::<Counter>())
+    ///         .map(|counter| counter.total)
+    /// };
+    /// assert_eq!(Some(10), total(&trunk));
+    /// assert_eq!(Some(16), total(&branch));
+    /// # Ok::<(), simul::SimulationError>(())
+    /// ```
     ///
     /// # Panics
     ///
@@ -1332,7 +1387,11 @@ impl<M> Simulation<M> {
         &self.agents
     }
 
-    /// Returns the current `DiscreteTime` tick for the Simulation.
+    /// Returns the simulation's current tick.
+    ///
+    /// Starts at [`SimulationBuilder::starting_time`] and advances after each
+    /// tick (or jumps over quiet ticks). After [`Self::run`] or
+    /// [`Self::run_until`], this is the first tick that has not been executed.
     #[must_use]
     pub const fn time(&self) -> DiscreteTime {
         self.time

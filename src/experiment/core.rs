@@ -188,7 +188,9 @@ impl DerivedSeed {
         self.0
     }
 
-    /// Constructs the pinned `ChaCha12` stream for this seed.
+    /// Constructs a fresh pinned `ChaCha12` stream from position 0 for this seed.
+    ///
+    /// Two calls on the same `DerivedSeed` return identical sequences.
     #[must_use]
     pub const fn rng(self) -> TrialRng {
         TrialRng(Keystream::Start(BlockPosition {
@@ -676,7 +678,11 @@ impl TrialContext {
         self.independent_seed(stream, tag).rng()
     }
 
-    /// Derives a stream shared by candidates in the same comparison group.
+    /// Derives a stream shared by trials with the same `common_random_group`
+    /// and [`ReplicationId`].
+    ///
+    /// [`CandidateId`] is excluded from the seed so paired candidates see
+    /// identical draws on each replication while replications vary.
     #[must_use]
     pub fn common_rng(self, stream: TrialStream, tag: &str) -> TrialRng {
         self.common_seed(stream, tag).rng()
@@ -695,6 +701,9 @@ impl TrialContext {
     }
 
     /// Derives a common-random stream seed without consuming it.
+    ///
+    /// Depends on `common_random_group`, [`ReplicationId`], `stream`, and `tag`,
+    /// excluding [`CandidateId`].
     #[must_use]
     pub fn common_seed(self, stream: TrialStream, tag: &str) -> DerivedSeed {
         SeedDeriver::new(self.replay.master_seed).trial_seed(
@@ -706,14 +715,24 @@ impl TrialContext {
         )
     }
 
-    /// Samples the first uniform value from a generic independent named stream.
+    /// Samples the first uniform value in `[0, 1)` from the independent
+    /// [`TrialStream::TrialNoise`] stream for `tag`.
+    ///
+    /// Each call restarts the stream from position 0, so repeated calls with
+    /// the same `tag` return the same value; use distinct tags or
+    /// [`Self::independent_rng`] for multiple draws.
     #[must_use]
     pub fn sample_independent_f64(self, tag: &str) -> f64 {
         self.independent_rng(TrialStream::TrialNoise, tag)
             .uniform_f64()
     }
 
-    /// Samples the first uniform value from a generic common-random named stream.
+    /// Samples the first uniform value in `[0, 1)` from the common-random
+    /// [`TrialStream::TrialNoise`] stream for `tag`.
+    ///
+    /// Each call restarts the stream from position 0, so repeated calls with
+    /// the same `tag` return the same value; use distinct tags or
+    /// [`Self::common_rng`] for multiple draws.
     #[must_use]
     pub fn sample_common_f64(self, tag: &str) -> f64 {
         self.common_rng(TrialStream::TrialNoise, tag).uniform_f64()
@@ -937,6 +956,33 @@ impl std::error::Error for RunError {
 /// Use [`run_serial_bounded`] for input whose size is not already externally
 /// bounded. Evaluator errors remain ordered values and do not cancel the batch.
 ///
+/// ```
+/// use simul::experiment::{
+///     CandidateId, FailurePolicy, FixedReplications, MasterSeed, NonFinitePolicy,
+///     TrialStream, aggregate_scalar, run_serial,
+/// };
+/// use std::convert::Infallible;
+///
+/// let schedule = FixedReplications::new(8, 0);
+/// let records = run_serial(
+///     MasterSeed::from_u64(7),
+///     schedule.trials(CandidateId::new(0), 10.0_f64),
+///     |&base, ctx| {
+///         let noise = ctx.common_rng(TrialStream::TrialNoise, "eps").uniform_f64();
+///         Ok::<_, Infallible>(base + noise)
+///     },
+/// )?;
+/// let summary = aggregate_scalar(
+///     &records,
+///     |&score| score,
+///     FailurePolicy::RejectCandidate,
+///     NonFinitePolicy::RejectCandidate,
+/// )?;
+/// assert_eq!(8, summary.statistics.count());
+/// assert!(summary.statistics.mean() >= 10.0);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
 /// # Errors
 ///
 /// Returns an error for duplicate identities, allocation failure, or an evaluator
@@ -1056,13 +1102,19 @@ impl ParallelConfig {
         }
     }
 
-    /// Returns the requested worker count.
+    /// Returns the requested worker maximum.
+    ///
+    /// The effective worker count for a batch is
+    /// `min(workers, available_parallelism, trial_count)`.
     #[must_use]
     pub const fn workers(self) -> NonZeroUsize {
         self.workers
     }
 
-    /// Returns the retained-record limit.
+    /// Returns the largest number of trials one batch accepts.
+    ///
+    /// Larger batches fail with [`RunError::BatchLimitExceeded`] before any
+    /// factory or evaluator callback runs.
     #[must_use]
     pub const fn batch_limit(self) -> NonZeroUsize {
         self.batch_limit
@@ -1582,6 +1634,20 @@ impl std::error::Error for ReduceError {
 }
 
 /// Online Bernoulli reducer with Wilson-score confidence intervals.
+///
+/// [`Default`] uses `z ≈ 1.96` (95% two-sided confidence interval).
+///
+/// ```
+/// use simul::experiment::BernoulliReducer;
+///
+/// let summary = BernoulliReducer::from_results([true, true, true, false])?;
+/// assert_eq!(4, summary.attempts());
+/// assert_eq!(3, summary.successes());
+/// assert!((summary.rate() - 0.75).abs() < 1e-12);
+/// assert!(summary.wilson_lower() < summary.rate());
+/// assert!(summary.rate() < summary.wilson_upper());
+/// # Ok::<(), simul::experiment::ReduceError>(())
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct BernoulliReducer {
     /// Number of observations processed.
@@ -1718,19 +1784,20 @@ impl BernoulliSummary {
         self.successes
     }
 
-    /// Returns the maximum-likelihood success probability.
+    /// Returns the maximum-likelihood success probability (`successes / attempts`).
     #[must_use]
     pub const fn rate(&self) -> f64 {
         self.rate
     }
 
-    /// Returns the lower Wilson-score confidence bound.
+    /// Returns the lower Wilson-score confidence bound, clamped to `[0, 1]`.
+    /// Exactly `0.0` when `successes == 0`.
     #[must_use]
     pub const fn wilson_lower(&self) -> f64 {
         self.wilson_lower
     }
 
-    /// Returns the upper Wilson-score confidence bound.
+    /// Returns the upper Wilson-score confidence bound, clamped to `[0, 1]`.
     #[must_use]
     pub const fn wilson_upper(&self) -> f64 {
         self.wilson_upper
@@ -1859,7 +1926,12 @@ pub struct ScalarSummary {
 }
 
 impl ScalarSummary {
-    /// Returns the number of observations.
+    /// Returns the number of observations reduced.
+    ///
+    /// When produced by [`aggregate_scalar`], this counts accepted finite
+    /// scores plus `ReplaceWith` substitutes, excluding ignored failures or
+    /// non-finite values, so it may be smaller than
+    /// [`CandidateSummary::requested`].
     #[must_use]
     pub const fn count(&self) -> u64 {
         self.count
@@ -1899,7 +1971,8 @@ impl ScalarSummary {
 /// Explicit treatment of typed evaluator failures during aggregation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FailurePolicy<T> {
-    /// Make the aggregate ineligible when any evaluation fails.
+    /// Rejects the candidate with [`AggregateError::EvaluationFailed`] when any
+    /// evaluation fails. Takes precedence over [`NonFinitePolicy::RejectCandidate`].
     RejectCandidate,
     /// Exclude failed evaluations while retaining their count.
     Ignore,
@@ -1910,7 +1983,8 @@ pub enum FailurePolicy<T> {
 /// Explicit treatment of non-finite scalar observations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NonFinitePolicy {
-    /// Make the aggregate ineligible.
+    /// Rejects the candidate with [`AggregateError::NonFinite`] when any
+    /// successful evaluation produces NaN or infinity.
     RejectCandidate,
     /// Exclude non-finite observations while retaining requested counts.
     Ignore,
@@ -1980,11 +2054,12 @@ impl std::error::Error for AggregateError {}
 pub struct CandidateSummary<S> {
     /// Candidate identity.
     pub candidate: CandidateId,
-    /// Number of requested records.
+    /// Total records supplied (`completed + failed == requested`).
     pub requested: u32,
-    /// Number of successful evaluator calls.
+    /// Successful evaluator calls (`Ok` records), including any whose score
+    /// was non-finite or excluded by [`NonFinitePolicy`].
     pub completed: u32,
-    /// Number of typed evaluator failures.
+    /// Typed evaluator failures (`Err` records).
     pub failed: u32,
     /// Reduced statistics over accepted or explicitly replaced observations.
     pub statistics: S,
@@ -2176,7 +2251,11 @@ impl SelectionPolicy<ScalarSummary> for MaximizeScalarMean {
     }
 }
 
-/// Maximizes Bernoulli success rate.
+/// Maximizes raw Bernoulli success [`rate`](BernoulliSummary::rate), ignoring
+/// sample size (so 1/1 beats 99/100).
+///
+/// Use [`MaximizeWilsonLowerBound`] to penalize small samples. Exact ties break
+/// by lower [`CandidateId`] in [`select_best`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaximizeBernoulliRate;
 
@@ -2186,7 +2265,10 @@ impl SelectionPolicy<BernoulliSummary> for MaximizeBernoulliRate {
     }
 }
 
-/// Maximizes the lower Wilson confidence bound.
+/// Maximizes the lower Wilson confidence bound ([`BernoulliSummary::wilson_lower`]).
+///
+/// Penalizes small sample sizes compared to [`MaximizeBernoulliRate`]. Exact
+/// ties break by lower [`CandidateId`] in [`select_best`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaximizeWilsonLowerBound;
 
@@ -2196,10 +2278,8 @@ impl SelectionPolicy<BernoulliSummary> for MaximizeWilsonLowerBound {
     }
 }
 
-/// Orders numbers normally and ranks NaN below all of them.
-///
-/// Summary fields are public, so callers can supply NaN; treating it as equal
-/// to everything would make selection depend on input order.
+/// Orders numbers normally and ranks NaN below all of them, so selection never
+/// depends on input order even if a NaN reaches a comparison.
 fn compare_nan_lowest(left: f64, right: f64) -> Ordering {
     left.partial_cmp(&right)
         .unwrap_or_else(|| right.is_nan().cmp(&left.is_nan()))
