@@ -10,6 +10,13 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add =examples/retry_storm.rs= metastable-failure showcase
+Add =examples/retry_storm.rs= modeling a retry storm triggered by a transient
+downstream fault, demonstrating cancellable timers, multi-message tick drain,
+strict routing, P99/CVaR quantiles, paired CRN confidence intervals, mixed
+cross-entropy optimization, Pareto frontier tracking, and windowed Perfetto
+forensic replay.
+
 ** DONE Add windowed forensic replay and =TrialContext::from_replay_key=
 Add =TrialContext::from_replay_key= plus =ReplayWindow=, =ForensicReport=,
 =forensic_replay=, =forensic_replay_with_payloads=, =forensic_replay_trial=,

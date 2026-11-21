@@ -127,18 +127,6 @@ model.
 
 ## Software and distributed systems
 
-### Retry storms and metastable failure
-
-- **Dynamic.** Clients with retries, a server with capacity `c`, and a transient
-  blip. The system has two stable states and never recovers from the bad one
-  without load shedding or jittered backoff.
-- **Agents.** A client pool, a server with a bounded queue, a fault injector.
-- **Experiment.** Backoff policy, jitter, retry budget, and load shedding.
-- **Surprise.** The system can stay down after the fault has cleared.
-
-This is the most dramatic demonstration for an engineering audience and is the
-strongest second candidate after the cafe.
-
 ### Merge queue throughput
 
 - **Dynamic.** Batch size versus flaky-test rate with bisection on failure.
