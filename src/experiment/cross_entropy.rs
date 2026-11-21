@@ -329,11 +329,7 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         &mut self,
         samples: &mut [CrossEntropySample<N>],
     ) -> Result<Option<CrossEntropyUpdate>, CrossEntropyError> {
-        validate_samples(samples, &self.dimensions)?;
-        let valid_samples = samples
-            .iter()
-            .filter(|sample| !sample.score.is_nan())
-            .count();
+        let valid_samples = validate_samples(samples, &self.dimensions)?;
         if valid_samples == 0 {
             return Ok(None);
         }
@@ -526,11 +522,13 @@ fn validate_config<const N: usize>(
     Ok(())
 }
 
-/// Validates points that could influence a distribution update.
+/// Validates points that could influence a distribution update and returns the
+/// number of samples with non-NaN scores.
 fn validate_samples<const N: usize>(
     samples: &[CrossEntropySample<N>],
     dimensions: &[CrossEntropyDimension; N],
-) -> Result<(), CrossEntropyError> {
+) -> Result<usize, CrossEntropyError> {
+    let mut valid = 0;
     for (sample_index, sample) in samples.iter().enumerate() {
         if sample.score.is_nan() {
             continue;
@@ -543,8 +541,9 @@ fn validate_samples<const N: usize>(
                 });
             }
         }
+        valid += 1;
     }
-    Ok(())
+    Ok(valid)
 }
 
 /// Returns whether a coordinate belongs to its normalized domain.
