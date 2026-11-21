@@ -10,6 +10,13 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add mixed discrete/continuous cross-entropy optimizer
+Add =MixedCrossEntropyOptimizer=, =MixedCrossEntropyConfig=,
+=MixedDimension= (=Continuous=, =Circular=, =Categorical=, =Integer=),
+=MixedValue=, =MixedCrossEntropySample=, and =MixedCrossEntropyError= for
+joint optimization over continuous, periodic, ordinal integer, and categorical
+policy spaces.
+
 ** DONE Add Latin Hypercube and Sobol space-filling samplers
 Add =sample_latin_hypercube=, =sample_sobol=, =sample_sobol_scrambled=,
 =SobolError=, and =MAX_SOBOL_DIMENSIONS= (32) to =simul::experiment::search=.

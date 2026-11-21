@@ -12,6 +12,8 @@ pub mod cross_entropy;
 pub use cross_entropy::*;
 mod core;
 pub use core::*;
+mod mixed_ce;
+pub use mixed_ce::*;
 mod stats;
 pub use stats::*;
 
