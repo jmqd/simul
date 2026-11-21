@@ -3,6 +3,12 @@
 * Unreleased
 Newest entries first.
 
+** DONE Add =MaximizeScalarMean= selection policy
+Add =simul::experiment::MaximizeScalarMean= for =ScalarSummary= alongside
+=MaximizeFinite=, =MaximizeBernoulliRate=, and =MaximizeWilsonLowerBound=,
+replacing four duplicated local mean-maximizing policies across tests,
+examples, and benchmarks.
+
 ** DONE Implement =Clone= and =Debug= on =TrialRng= and standard traits on public types
 =TrialRng= now implements =Clone= (preserving exact stream position across both
 single-block and =ChaCha12Rng= stages) and redacted =Debug= (=TrialRng(..)=),

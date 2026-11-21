@@ -8,11 +8,10 @@
 use simul::agent::{periodic_consumer, periodic_producer};
 use simul::experiment::search::{SearchStrategy, SeededRandomSearch, Told};
 use simul::experiment::{
-    CandidateId, FailurePolicy, FixedReplications, MasterSeed, NonFinitePolicy, ScalarSummary,
-    SelectionPolicy, aggregate_scalar, run_serial,
+    CandidateId, FailurePolicy, FixedReplications, MasterSeed, MaximizeScalarMean, NonFinitePolicy,
+    aggregate_scalar, run_serial,
 };
 use simul::{Halt, Simulation, SimulationBuilder};
-use std::cmp::Ordering;
 use std::convert::Infallible;
 
 const PRODUCER_PERIOD: u64 = 2;
@@ -20,16 +19,6 @@ const MAX_CONSUMER_PERIOD: u64 = 10;
 const HALT_CONSUMED_COUNT: u64 = 10;
 const CANDIDATE_BUDGET: u64 = 1000;
 const MASTER_SEED: MasterSeed = MasterSeed::from_u64(0x51_4D_50_4C);
-
-/// Selects the candidate with the highest finite mean score.
-#[derive(Clone, Copy, Debug)]
-struct MaximizeMean;
-
-impl SelectionPolicy<ScalarSummary> for MaximizeMean {
-    fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
-        left.mean().total_cmp(&right.mean())
-    }
-}
 
 /// Configures the simulation for one typed consumer-period candidate.
 fn simulation_builder(consumer_period: u64) -> SimulationBuilder {
@@ -64,7 +53,7 @@ fn run_experiment() -> Simulation {
         MASTER_SEED,
         CANDIDATE_BUDGET,
         |rng| rng.next_u64() % (MAX_CONSUMER_PERIOD + 1),
-        MaximizeMean,
+        MaximizeScalarMean,
     );
     let schedule = FixedReplications::new(1, 0);
     let mut best_simulation = None;

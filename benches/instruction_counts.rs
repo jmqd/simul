@@ -27,13 +27,12 @@ use simul::experiment::search::{SearchStrategy, SeededRandomSearch, Told, sample
 use simul::experiment::{
     CandidateId, CandidateSummary, CrossEntropyConfig, CrossEntropyDimension,
     CrossEntropyOptimizer, CrossEntropySample, FailurePolicy, FixedReplications, MasterSeed,
-    NonFinitePolicy, ScalarReducer, ScalarSummary, SelectionPolicy, TrialContext, TrialRecord,
+    MaximizeScalarMean, NonFinitePolicy, ScalarReducer, ScalarSummary, TrialContext, TrialRecord,
     TrialStream, aggregate_bernoulli, aggregate_scalar, run_serial,
     simulated_annealing_search_with_rng,
 };
 use simul::message::Message;
 use simul::{Halt, Simulation, SimulationBuilder};
-use std::cmp::Ordering;
 use std::convert::Infallible;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -497,19 +496,10 @@ fn sim_relay_ring() -> Fingerprint {
         })
 }
 
-/// Selects the candidate with the highest finite mean score.
-#[derive(Clone, Copy, Debug)]
-struct MaximizeMean;
-
-impl SelectionPolicy<ScalarSummary> for MaximizeMean {
-    fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
-        left.mean().total_cmp(&right.mean())
-    }
-}
-
 /// The deterministic search benchmark: one simulation per proposed candidate.
 fn exp_search_sim() -> Fingerprint {
-    let mut search = SeededRandomSearch::new(SEED, 1_000, |rng| rng.next_u64() % 11, MaximizeMean);
+    let mut search =
+        SeededRandomSearch::new(SEED, 1_000, |rng| rng.next_u64() % 11, MaximizeScalarMean);
     let schedule = FixedReplications::new(1, 0);
     for proposal in search.ask(usize::MAX) {
         let candidate = CandidateId::new(proposal.token.value());
@@ -637,8 +627,12 @@ fn exp_sample_bounded() -> Fingerprint {
 
 /// Strategy overhead only: ask in batches and tell precomputed summaries.
 fn exp_random_search() -> Fingerprint {
-    let mut search =
-        SeededRandomSearch::new(SEED, 4_096, |rng| rng.next_u64() % 10_000, MaximizeMean);
+    let mut search = SeededRandomSearch::new(
+        SEED,
+        4_096,
+        |rng| rng.next_u64() % 10_000,
+        MaximizeScalarMean,
+    );
     loop {
         let asked = search.ask(64);
         if asked.is_empty() {

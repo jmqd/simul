@@ -544,7 +544,7 @@ pub fn sample_bounded(
 #[allow(clippy::expect_used, clippy::missing_docs_in_private_items)]
 mod tests {
     use super::*;
-    use crate::experiment::{ScalarReducer, ScalarSummary};
+    use crate::experiment::{MaximizeScalarMean, ScalarReducer};
 
     #[derive(Clone, Copy)]
     struct MaxI32;
@@ -969,21 +969,13 @@ mod tests {
 
     #[test]
     fn selecting_summary_is_retained_without_regeneration() {
-        struct MaxMean;
-        impl SelectionPolicy<ScalarSummary> for MaxMean {
-            fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
-                left.mean()
-                    .partial_cmp(&right.mean())
-                    .unwrap_or(Ordering::Equal)
-            }
-        }
-
         let mut generated = 0_u64;
         let generator = move |_: &mut TrialRng| {
             generated += 1;
             generated
         };
-        let mut search = SeededRandomSearch::new(MasterSeed::from_u64(4), 1, generator, MaxMean);
+        let mut search =
+            SeededRandomSearch::new(MasterSeed::from_u64(4), 1, generator, MaximizeScalarMean);
         let asked = search.ask(1);
         let selecting =
             ScalarReducer::from_results([9.0, 11.0]).expect("finite observations should reduce");

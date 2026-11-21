@@ -2162,6 +2162,20 @@ impl SelectionPolicy<FiniteValue> for MaximizeFinite {
     }
 }
 
+/// Maximizes the sample mean of a [`ScalarSummary`].
+///
+/// Compares [`ScalarSummary::mean`] directly without accounting for sample
+/// size or variance; exact ties break by lower [`CandidateId`] in
+/// [`select_best`] and [`SeededRandomSearch`](super::search::SeededRandomSearch).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MaximizeScalarMean;
+
+impl SelectionPolicy<ScalarSummary> for MaximizeScalarMean {
+    fn compare(&self, left: &ScalarSummary, right: &ScalarSummary) -> Ordering {
+        compare_nan_lowest(left.mean, right.mean)
+    }
+}
+
 /// Maximizes Bernoulli success rate.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaximizeBernoulliRate;
