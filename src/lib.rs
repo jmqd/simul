@@ -106,7 +106,7 @@ pub mod message;
 struct ReadmeDoctests;
 
 use agent::{
-    Agent, AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
+    AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
     AgentMode, AgentState, AgentStreamCache, MessageHistory, MessageProcessingStatus,
     QueueDepthChange, SimulationAgent, WakeMode,
 };
@@ -854,7 +854,19 @@ impl<M> Simulation<M> {
         self.agents.get(id.index())
     }
 
-    /// Returns mutable behavior and state, without exposing the routing identity.
+    /// Returns a mutable reference to the agent with identity `id`, or `None`
+    /// when `id` is out of range for this simulation.
+    #[must_use]
+    #[inline]
+    pub fn agent_mut(&mut self, id: AgentId) -> Option<&mut SimulationAgent<M>> {
+        self.agents.get_mut(id.index())
+    }
+
+    /// Returns a mutable reference to the agent named `name`, or `None` if no
+    /// agent has this name.
+    ///
+    /// Callers may mutate behavior and [`SimulationAgent::state`] between runs;
+    /// the routing name stays read-only.
     ///
     /// ```compile_fail
     /// use simul::Simulation;
@@ -862,11 +874,11 @@ impl<M> Simulation<M> {
     ///     simulation.find_by_name_mut("worker").unwrap().name = "renamed".into();
     /// }
     /// ```
+    #[must_use]
     #[inline]
-    pub fn find_by_name_mut(&mut self, name: &str) -> Option<AgentParts<'_, M>> {
+    pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut SimulationAgent<M>> {
         let handle = self.find_handle_by_name(name)?;
-        let agent = self.agents.get_mut(handle)?;
-        Some((&mut agent.agent, &mut agent.state))
+        self.agents.get_mut(handle)
     }
 
     /// Returns the messages the agent named `name` sent, or `None` if no agent
@@ -885,13 +897,13 @@ impl<M> Simulation<M> {
     /// agent has this name. Empty unless queue depth metrics are enabled.
     #[must_use]
     pub fn queue_depth_metrics(&self, name: &str) -> Option<&[QueueDepthChange]> {
-        Some(&self.find_by_name(name)?.metadata.queue_depth_metrics)
+        Some(self.find_by_name(name)?.queue_depth_metrics())
     }
 
     /// Returns the asleep cycle count for a given Agent during the Simulation.
     #[must_use]
     pub fn asleep_cycle_count(&self, name: &str) -> Option<DiscreteTime> {
-        Some(self.find_by_name(name)?.metadata.asleep_cycle_count)
+        Some(self.find_by_name(name)?.asleep_cycle_count())
     }
 
     /// Returns messages sent with [`AgentContext::send_after`] that have not
@@ -1117,15 +1129,10 @@ impl<M> Simulation<M> {
     #[must_use]
     pub fn calc_avg_wait_statistics(&self) -> NameStatistics<f64> {
         let mut data = NameStatistics::new();
-        for agent in self
-            .agents
-            .iter()
-            .filter(|agent| agent.consumed_count() > 0)
-        {
-            data.insert(
-                agent.name.clone(),
-                agent.metadata.total_wait / agent.consumed_count() as f64,
-            );
+        for agent in &self.agents {
+            if let Some(wait) = agent.avg_wait() {
+                data.insert(agent.name.clone(), wait);
+            }
         }
 
         data
@@ -1326,9 +1333,6 @@ impl<M> Simulation<M> {
         self.time
     }
 }
-
-/// An agent's behavior and state, borrowed for edits between runs.
-type AgentParts<'a, M> = (&'a mut Box<dyn Agent<M>>, &'a mut AgentState<M>);
 
 #[cfg(test)]
 mod tests {

@@ -413,12 +413,12 @@ fn state_snapshot(simulation: &Simulation<Payload>) -> String {
         let _ = writeln!(
             out,
             "{} {:?} {:?} consumed={} produced={} wait={:?}",
-            agent.name,
+            agent.name(),
             agent.agent,
             agent.state,
             agent.consumed_count(),
             agent.produced_count(),
-            waits.get(&agent.name)
+            waits.get(agent.name())
         );
     }
     let _ = writeln!(
@@ -443,15 +443,9 @@ fn metrics(simulation: &Simulation<Payload>) -> Vec<(Vec<QueueDepthChange>, Disc
         .agents()
         .iter()
         .map(|agent| {
-            let name = &agent.name;
             (
-                simulation
-                    .queue_depth_metrics(name)
-                    .unwrap_or_else(|| panic!("agent {name:?} has queue depth metrics"))
-                    .to_vec(),
-                simulation
-                    .asleep_cycle_count(name)
-                    .unwrap_or_else(|| panic!("agent {name:?} has an asleep cycle count")),
+                agent.queue_depth_metrics().to_vec(),
+                agent.asleep_cycle_count(),
             )
         })
         .collect()
@@ -799,7 +793,7 @@ fn check_chaos_history(
         !rest.contains("in_progress: false"),
         "seed {seed}: extra completion"
     );
-    let names = simulation.agents().iter().map(|a| a.name.as_str());
+    let names = simulation.agents().iter().map(SimulationAgent::name);
     for name in names.chain(["ghost", ""]) {
         let resolved = format!("Resolve({name:?}, {:?})", simulation.agent_id(name));
         let prefix = format!("Resolve({name:?}, ");
@@ -936,9 +930,14 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
             );
             assert_eq!(
                 (consumed > 0).then(|| (wait / consumed as f64).to_bits()),
+                agent.avg_wait().map(f64::to_bits),
+                "seed {seed}: agent {handle} direct mean wait"
+            );
+            assert_eq!(
+                (consumed > 0).then(|| (wait / consumed as f64).to_bits()),
                 simulation
                     .calc_avg_wait_statistics()
-                    .get(&agent.name)
+                    .get(agent.name())
                     .map(|mean| mean.to_bits()),
                 "seed {seed}: agent {handle} mean wait"
             );
@@ -1033,11 +1032,12 @@ fn metrics_cover_every_tick_run() {
         let end = case.simulation.time();
         let ticks = end - case.start;
         for agent in case.simulation.agents() {
-            let name = &agent.name;
+            let name = agent.name();
             let changes = case
                 .simulation
                 .queue_depth_metrics(name)
                 .unwrap_or_else(|| panic!("seed {seed}: agent {name:?} has queue depth metrics"));
+            assert_eq!(changes, agent.queue_depth_metrics(), "seed {seed}");
             if queue_metric {
                 // Changes start at the first tick, move forward in time within
                 // the run, always change the depth, and end at the final depth.
@@ -1095,31 +1095,35 @@ fn queue_depth_metrics_agree_between_sparse_and_dense_scheduling() {
 fn mutate_between_runs(simulation: &mut Simulation<Payload>, seed: u64, round: u64) {
     let mut rng = ChaCha8Rng::seed_from_u64(seed.wrapping_mul(31).wrapping_add(round));
     let now = simulation.time();
-    let names: Vec<String> = simulation.agents().iter().map(|a| a.name.clone()).collect();
+    let names: Vec<String> = simulation
+        .agents()
+        .iter()
+        .map(|a| a.name().to_owned())
+        .collect();
     for _ in 0..rng.random_range(0..=names.len().min(40)) {
         let name = &names[rng.random_range(0..names.len())];
         let target = names[rng.random_range(0..names.len())].clone();
-        let (behavior, state) = simulation
+        let agent = simulation
             .find_by_name_mut(name)
             .unwrap_or_else(|| panic!("seed {seed}: agent {name:?} exists"));
         match rng.random_range(0..6) {
-            0 => state.mode = random_mode(&mut rng, now),
+            0 => agent.state.mode = random_mode(&mut rng, now),
             1 => {
                 let wake = random_wake(&mut rng);
-                if let AgentMode::AsleepUntil { then, .. } = &mut state.mode {
+                if let AgentMode::AsleepUntil { then, .. } = &mut agent.state.mode {
                     *then = wake;
                 }
             }
-            2 => state.queue.push_back(Message::new(now, None)),
-            3 => state.queue.clear(),
+            2 => agent.state.queue.push_back(Message::new(now, None)),
+            3 => agent.state.queue.clear(),
             4 => {
-                *behavior =
+                agent.agent =
                     periodic_producer("ignored".to_string(), rng.random_range(1..=20), target)
                         .agent;
-                state.mode = AgentMode::Proactive;
+                agent.state.mode = AgentMode::Proactive;
             }
             _ => {
-                state.mode = AgentMode::AsleepUntil {
+                agent.state.mode = AgentMode::AsleepUntil {
                     until: now + rng.random_range(0..5),
                     then: random_wake(&mut rng),
                 };

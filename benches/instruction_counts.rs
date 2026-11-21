@@ -444,7 +444,7 @@ fn sim_sparse() -> Fingerprint {
         .agents()
         .iter()
         .fold(histories(&simulation), |fingerprint, agent| {
-            fingerprint.mix(simulation.asleep_cycle_count(&agent.name).unwrap_or(0))
+            fingerprint.mix(agent.asleep_cycle_count())
         })
 }
 

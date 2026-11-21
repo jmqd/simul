@@ -3,6 +3,16 @@
 * Unreleased
 Newest entries first.
 
+** DONE Return =&mut SimulationAgent= from =find_by_name_mut= and expose per-agent accessors (breaking)
+=SimulationAgent::name= is now read-only through =SimulationAgent::name(&self)=
+so callers cannot break name routing by renaming an agent in place. With that
+invariant enforced on the field, =Simulation::find_by_name_mut= returns
+=Option<&mut SimulationAgent<M>>= instead of a private tuple alias, and
+=Simulation::agent_mut(AgentId)= mirrors =Simulation::agent=. =SimulationAgent=
+also gains =downcast_mut=, =avg_wait=, =queue_depth_metrics=, and
+=asleep_cycle_count= so callers holding an agent do not need to look it up
+again by name.
+
 ** DONE Cache the next delayed arrival time
 =Simulation= now caches the earliest arrival tick in =in_flight= and outlines
 =deliver_due=, so ticks with no delayed messages due compare one =u64= instead

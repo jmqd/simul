@@ -117,7 +117,7 @@ fn winner<P: Agent<u8> + 'static>(sim: &Simulation<u8>, has_won: fn(&P) -> bool)
     sim.agents()
         .iter()
         .find(|agent| agent.downcast_ref::<P>().is_some_and(has_won))
-        .map(|agent| agent.name.clone())
+        .map(|agent| agent.name().to_owned())
 }
 
 #[allow(clippy::unwrap_used)]

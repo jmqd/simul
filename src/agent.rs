@@ -163,9 +163,11 @@ pub(crate) struct MessageHistory<M> {
 /// An agent inside a simulation: its behavior, name, engine-managed state, and
 /// message counts.
 ///
-/// Read agents after a run with [`Simulation::agents`](crate::Simulation::agents)
-/// or [`Simulation::find_by_name`](crate::Simulation::find_by_name), and get
-/// the behavior back as its own type with [`SimulationAgent::downcast_ref`].
+/// Read agents after a run with [`Simulation::agents`](crate::Simulation::agents),
+/// [`Simulation::agent`](crate::Simulation::agent), or
+/// [`Simulation::find_by_name`](crate::Simulation::find_by_name), and get the
+/// behavior back as its own type with [`SimulationAgent::downcast_ref`] or
+/// [`SimulationAgent::downcast_mut`].
 #[derive(Debug, Clone)]
 pub struct SimulationAgent<M = ()> {
     /// The agent that the user constructed; contains user state and behavior.
@@ -174,8 +176,9 @@ pub struct SimulationAgent<M = ()> {
     /// The metadata associated with the agent.
     pub(crate) metadata: AgentMetadata,
 
-    /// The name for the agent. Must be unique for the simulation.
-    pub name: String,
+    /// The name for the agent. Must be unique for the simulation and never
+    /// changes after construction.
+    pub(crate) name: String,
 
     /// Engine-managed mode and queue. Callbacks see it read-only through
     /// [`AgentContext::state`]; callers may edit it between runs.
@@ -186,6 +189,12 @@ pub struct SimulationAgent<M = ()> {
 }
 
 impl<M> SimulationAgent<M> {
+    /// Returns the agent's unique, immutable name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Returns the agent's behavior as an `A`, or `None` if it is another
     /// type. Read a finished simulation's agents this way rather than sharing
     /// state with them through `Rc`, locks, or atomics.
@@ -193,9 +202,19 @@ impl<M> SimulationAgent<M> {
     pub fn downcast_ref<A: Agent<M> + 'static>(&self) -> Option<&A> {
         self.agent.downcast_ref()
     }
-}
 
-impl<M> SimulationAgent<M> {
+    /// Returns the agent's behavior mutably as an `A`, or `None` if it is
+    /// another type. Use it through [`Simulation::find_by_name_mut`] or
+    /// [`Simulation::agent_mut`] to patch an agent between runs, such as one
+    /// branch's policy after a clone.
+    ///
+    /// [`Simulation::find_by_name_mut`]: crate::Simulation::find_by_name_mut
+    /// [`Simulation::agent_mut`]: crate::Simulation::agent_mut
+    #[must_use]
+    pub fn downcast_mut<A: Agent<M> + 'static>(&mut self) -> Option<&mut A> {
+        self.agent.downcast_mut()
+    }
+
     /// Returns how many messages this agent finished handling.
     #[must_use]
     pub const fn consumed_count(&self) -> u64 {
@@ -207,6 +226,32 @@ impl<M> SimulationAgent<M> {
     #[must_use]
     pub const fn produced_count(&self) -> u64 {
         self.metadata.produced_count
+    }
+
+    /// Returns the mean wait from queueing to completion over messages this
+    /// agent finished handling, or `None` if it consumed nothing. Needs no
+    /// message history.
+    #[must_use]
+    pub fn avg_wait(&self) -> Option<f64> {
+        (self.metadata.consumed_count > 0)
+            .then(|| self.metadata.total_wait / self.metadata.consumed_count as f64)
+    }
+
+    /// Returns this agent's recorded queue depth changes in time order. Empty
+    /// unless [`SimulationBuilder::queue_depth_metrics`](crate::SimulationBuilder::queue_depth_metrics)
+    /// is enabled.
+    #[must_use]
+    pub fn queue_depth_metrics(&self) -> &[QueueDepthChange] {
+        &self.metadata.queue_depth_metrics
+    }
+
+    /// Returns the number of ticks this agent spent asleep before its wake
+    /// tick. Always `0` unless
+    /// [`SimulationBuilder::asleep_cycles_metric`](crate::SimulationBuilder::asleep_cycles_metric)
+    /// is enabled.
+    #[must_use]
+    pub const fn asleep_cycle_count(&self) -> DiscreteTime {
+        self.metadata.asleep_cycle_count
     }
 
     /// Returns the messages this agent finished handling, oldest first, each

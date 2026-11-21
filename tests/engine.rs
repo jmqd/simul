@@ -142,7 +142,7 @@ fn send_to_delivers_by_identity_and_records_unknown_identities() {
                 .iter()
                 .map(|message| message.destination)
                 .collect();
-            assert_eq!(expected, destinations, "{count} agents, {}", agent.name);
+            assert_eq!(expected, destinations, "{count} agents, {}", agent.name());
             assert_eq!(
                 expected[..expected.len() - 1],
                 agent
@@ -152,7 +152,7 @@ fn send_to_delivers_by_identity_and_records_unknown_identities() {
                     .map(|message| message.source)
                     .collect::<Vec<_>>(),
                 "{count} agents, {}",
-                agent.name
+                agent.name()
             );
         }
     }
@@ -571,11 +571,12 @@ fn mutable_agent_access_preserves_identity_and_routing() {
             .message_history(true)
             .build()
             .unwrap_or_else(|error| panic!("{error}"));
-        let Some((behavior, state)) = simulation.find_by_name_mut("sender") else {
+        let Some(sender) = simulation.find_by_name_mut("sender") else {
             panic!("sender must exist");
         };
-        *behavior = periodic_producer("replacement", 1, "receiver-1").agent;
-        state.mode = AgentMode::Proactive;
+        assert_eq!("sender", sender.name());
+        sender.agent = periodic_producer("replacement", 1, "receiver-1").agent;
+        sender.state.mode = AgentMode::Proactive;
         simulation.run();
 
         assert_eq!(
@@ -873,11 +874,12 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
         }
     }
     for agent in dense.agents() {
-        let changes = dense.queue_depth_metrics(&agent.name);
-        assert_eq!(Some(0), changes.and_then(|c| c.first()).map(|c| c.time));
+        let changes = agent.queue_depth_metrics();
+        assert_eq!(Some(changes), dense.queue_depth_metrics(agent.name()));
+        assert_eq!(Some(0), changes.first().map(|c| c.time));
         assert_eq!(
             Some(agent.state.queue.len()),
-            changes.and_then(|c| c.last()).map(|c| c.depth)
+            changes.last().map(|c| c.depth)
         );
     }
 }
@@ -962,11 +964,11 @@ fn quiet_ticks_check_halt_before_waking_and_rebuild_state_on_resume() {
             .unwrap_or_else(|error| panic!("{error}"))
             .is_empty()
     );
-    let (_, state) = simulation
+    let agent = simulation
         .find_by_name_mut("agent-65")
         .unwrap_or_else(|| panic!("missing agent"));
-    assert_eq!(AgentMode::Reactive.asleep_until(5), state.mode);
-    state.mode = AgentMode::Reactive.asleep_until(3);
+    assert_eq!(AgentMode::Reactive.asleep_until(5), agent.state.mode);
+    agent.state.mode = AgentMode::Reactive.asleep_until(3);
     simulation.run();
     // Tick 5 retries the original message; tick 7 completes it.
     assert_eq!(8, simulation.time());
@@ -1173,11 +1175,11 @@ fn forked_branches_match_runs_that_took_their_branch_from_the_start() {
     trunk.run_until(DECIDE);
     for after in [2.0, 3.0, 3.9] {
         let mut branch = trunk.clone();
-        let (behavior, _) = branch
+        let server = branch
             .find_by_name_mut("server")
             .unwrap_or_else(|| panic!("the server exists"));
-        assert!(behavior.downcast_mut::<TickCounter>().is_none());
-        behavior
+        assert!(server.downcast_mut::<TickCounter>().is_none());
+        server
             .downcast_mut::<SwitchingServer>()
             .unwrap_or_else(|| panic!("the server is a SwitchingServer"))
             .after = after;
@@ -1443,11 +1445,14 @@ fn sleeping_agents_wake_into_the_mode_they_slept_from() {
         .agents(vec![periodic_consumer("consumer", 2)])
         .build()
         .unwrap_or_else(|error| panic!("{error}"));
-    let (_, state) = simulation
-        .find_by_name_mut("consumer")
+    let consumer_id = simulation
+        .agent_id("consumer")
         .unwrap_or_else(|| panic!("missing agent"));
-    state.mode = AgentMode::Proactive;
-    state.queue.push_back(Message::new(0, ()));
+    let consumer = simulation
+        .agent_mut(consumer_id)
+        .unwrap_or_else(|| panic!("missing agent"));
+    consumer.state.mode = AgentMode::Proactive;
+    consumer.state.queue.push_back(Message::new(0, ()));
     simulation.run_until(1);
     assert_eq!(
         Some(AgentMode::AsleepUntil {
