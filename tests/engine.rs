@@ -1525,3 +1525,142 @@ fn find_agent_and_all_agents_inspect_agents_by_reference() {
     assert!(simulation.all_agents(|agent| agent.state.mode != AgentMode::Dead));
     assert!(!simulation.all_agents(|agent| agent.consumed_count() > 0));
 }
+
+#[derive(Clone, Debug, Default)]
+struct TimeoutAgent {
+    pending: Option<simul::agent::TimerId>,
+    received: Vec<(simul::DiscreteTime, &'static str)>,
+}
+
+impl Agent<&'static str> for TimeoutAgent {
+    fn on_message(
+        &mut self,
+        ctx: &mut AgentContext<'_, &'static str>,
+        msg: &Message<&'static str>,
+    ) {
+        self.received.push((ctx.time(), msg.payload));
+        match msg.payload {
+            "start" => {
+                let timer = ctx.send_after(10, ctx.id(), "timeout");
+                assert_eq!(ctx.time() + 10, timer.arrival());
+                self.pending = Some(timer);
+            }
+            "start_and_cancel_same_tick" => {
+                let t1 = ctx.send_after(1, ctx.id(), "one_tick");
+                let t5 = ctx.send_after(5, ctx.id(), "five_tick");
+                ctx.cancel_timer(t1);
+                ctx.cancel_timer(t5);
+            }
+            "complete" => {
+                if let Some(timer) = self.pending.take() {
+                    ctx.cancel_timer(timer);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn cancellable_timers_prevent_delivery_including_next_tick_and_same_tick() {
+    // Schedule timeout for tick 10 at tick 0; complete at tick 9 (just before arrival at 10).
+    let mut sim = Simulation::builder(Halt::AtTime(20))
+        .agent(
+            AgentInitializer::reactive("worker", TimeoutAgent::default())
+                .initial_queue([Message::new(0, "start")]),
+        )
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    sim.run_until(9);
+    assert_eq!(1, sim.in_flight().len());
+    let pending = sim
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<TimeoutAgent>())
+        .and_then(|w| w.pending)
+        .unwrap_or_else(|| panic!("expected pending timer"));
+    assert!(sim.is_timer_pending(pending));
+
+    // Branch A: cancel via AgentContext at tick 9 (right before delivery at tick 10).
+    let mut branch_a = sim.clone();
+    branch_a
+        .find_by_name_mut("worker")
+        .unwrap_or_else(|| panic!("worker"))
+        .state
+        .queue
+        .push_back(Message::new(9, "complete"));
+    branch_a.run();
+    assert_eq!(0, branch_a.in_flight().len());
+    let a_received = &branch_a
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<TimeoutAgent>())
+        .unwrap_or_else(|| panic!("worker"))
+        .received;
+    assert_eq!(&[(0, "start"), (9, "complete")], a_received.as_slice());
+
+    // Branch B: cancel directly on Simulation between runs.
+    let mut branch_b = sim.clone();
+    assert!(branch_b.cancel_timer(pending));
+    assert!(!branch_b.cancel_timer(pending));
+    assert!(!branch_b.is_timer_pending(pending));
+    branch_b.run();
+    let b_received = &branch_b
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<TimeoutAgent>())
+        .unwrap_or_else(|| panic!("worker"))
+        .received;
+    assert_eq!(&[(0, "start")], b_received.as_slice());
+
+    // Original trunk still delivers the timeout at tick 10.
+    sim.run();
+    let trunk_received = &sim
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<TimeoutAgent>())
+        .unwrap_or_else(|| panic!("worker"))
+        .received;
+    assert_eq!(&[(0, "start"), (10, "timeout")], trunk_received.as_slice());
+
+    // Same-tick cancellation suppresses both delay == 1 and delay > 1 timers.
+    let mut same_tick = Simulation::builder(Halt::AtTime(10))
+        .agent(
+            AgentInitializer::reactive("worker", TimeoutAgent::default())
+                .initial_queue([Message::new(0, "start_and_cancel_same_tick")]),
+        )
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    same_tick.run();
+    assert_eq!(0, same_tick.in_flight().len());
+    let same_received = &same_tick
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<TimeoutAgent>())
+        .unwrap_or_else(|| panic!("worker"))
+        .received;
+    assert_eq!(
+        &[(0, "start_and_cancel_same_tick")],
+        same_received.as_slice()
+    );
+}
+
+#[test]
+fn cancelled_timer_does_not_defeat_quiet_tick_skipping_or_sparse_scheduling() {
+    // Schedule a far-future timer (tick 1_000_000) and cancel it at tick 1 under
+    // >64 agents (sparse mode) so the engine skips cleanly to tick 10_000_000.
+    let mut builder = Simulation::builder(Halt::AtTime(10_000_000)).agent(
+        AgentInitializer::reactive("worker", TimeoutAgent::default())
+            .initial_queue([Message::new(0, "start"), Message::new(1, "complete")]),
+    );
+    for idx in 0..70 {
+        builder = builder.agent(AgentInitializer::reactive(
+            format!("idle-{idx}"),
+            TimeoutAgent::default(),
+        ));
+    }
+    let mut sim = builder.build().unwrap_or_else(|error| panic!("{error}"));
+    sim.run();
+    assert_eq!(10_000_000, sim.time());
+    let received = &sim
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<TimeoutAgent>())
+        .unwrap_or_else(|| panic!("worker"))
+        .received;
+    assert_eq!(&[(0, "start"), (1, "complete")], received.as_slice());
+}

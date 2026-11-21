@@ -120,6 +120,27 @@ impl fmt::Debug for AgentId {
     }
 }
 
+/// Handle to a delayed message scheduled with [`AgentContext::send_after`].
+///
+/// Pass this handle to [`AgentContext::cancel_timer`] or
+/// [`Simulation::cancel_timer`](crate::Simulation::cancel_timer) to cancel the
+/// delayed message before it arrives.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TimerId {
+    /// Tick on which the delayed message becomes visible.
+    pub(crate) arrival: DiscreteTime,
+    /// Monotonic sequence number in send order.
+    pub(crate) sequence: u64,
+}
+
+impl TimerId {
+    /// Returns the tick on which this delayed message is scheduled to arrive.
+    #[must_use]
+    pub const fn arrival(self) -> DiscreteTime {
+        self.arrival
+    }
+}
+
 /// A queue depth that holds from `time` until the next change.
 ///
 /// The depth is the one an agent's visit at that tick observes: after it pops
@@ -371,9 +392,16 @@ pub(crate) enum AgentCommandType<M> {
     /// Record the message as produced and deliver it to its destination at
     /// the end of the tick.
     SendMessage(Message<M>),
-    /// Record the message as produced and hold it until it arrives, at the
-    /// tick after its `queued_time`, which is later than the next tick.
-    SendDelayed(Message<M>),
+    /// Record the message as produced and deliver it at `timer.arrival` unless
+    /// cancelled first.
+    SendDelayed {
+        /// Handle identifying this delayed message.
+        timer: TimerId,
+        /// The delayed message to deliver on arrival.
+        message: Message<M>,
+    },
+    /// Cancel a pending delayed message if it has not been delivered yet.
+    CancelTimer(TimerId),
     /// Stop the simulation after this tick; the payload is the reason.
     HaltSimulation(String),
 }
@@ -496,6 +524,12 @@ pub struct AgentContext<'a, M = ()> {
 
     /// Number of streams handed out during this visit.
     pub(crate) calls: u64,
+
+    /// Monotonic send-order sequence for delayed messages.
+    pub(crate) next_in_flight: &'a mut u64,
+
+    /// Set when any callback in the current tick requests a timer cancellation.
+    pub(crate) has_cancellations: &'a mut bool,
 }
 
 impl<'a, M> AgentContext<'a, M> {
@@ -616,22 +650,40 @@ impl<'a, M> AgentContext<'a, M> {
     ///
     /// Panics if `delay` is zero, since a message cannot arrive in the tick it
     /// is sent, or if the arrival tick exceeds `u64::MAX`.
+    ///
+    /// Returns a [`TimerId`] that may be passed to [`Self::cancel_timer`] or
+    /// [`Simulation::cancel_timer`](crate::Simulation::cancel_timer) to prevent
+    /// delivery before `time() + delay`.
     #[inline]
-    pub fn send_after(&mut self, delay: DiscreteTime, target: AgentId, payload: M) {
+    pub fn send_after(&mut self, delay: DiscreteTime, target: AgentId, payload: M) -> TimerId {
         assert!(delay > 0, "a message cannot arrive in the tick it is sent");
         let Some(arrival) = self.time.checked_add(delay) else {
             panic!("message arrival exceeds u64::MAX");
         };
+        let sequence = *self.next_in_flight;
+        *self.next_in_flight += 1;
+        let timer = TimerId { arrival, sequence };
         let destination = (target.index() < self.agent_count).then_some(target);
         let message = Message::sent(arrival - 1, self.id, destination, payload);
-        // A one-tick delay arrives with this tick's ordinary sends.
-        let ty = if delay == 1 {
-            AgentCommandType::SendMessage(message)
-        } else {
-            AgentCommandType::SendDelayed(message)
-        };
         self.commands.push(AgentCommand {
-            ty,
+            ty: AgentCommandType::SendDelayed { timer, message },
+            agent_handle: self.id.index(),
+        });
+        timer
+    }
+
+    /// Cancels a pending delayed message scheduled with [`Self::send_after`].
+    ///
+    /// If the message has not yet been delivered, it is removed before its
+    /// arrival tick—including a message due on the next tick or scheduled
+    /// earlier in the current tick—so it is never delivered and never wakes
+    /// quiet-tick skipping. Cancelling an already delivered, already
+    /// cancelled, or unknown timer is a no-op.
+    #[inline]
+    pub fn cancel_timer(&mut self, timer: TimerId) {
+        *self.has_cancellations = true;
+        self.commands.push(AgentCommand {
+            ty: AgentCommandType::CancelTimer(timer),
             agent_handle: self.id.index(),
         });
     }

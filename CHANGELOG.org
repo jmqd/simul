@@ -10,6 +10,13 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add cancellable timers via =TimerId= and =cancel_timer=
+=AgentContext::send_after= now returns a =TimerId= (with =arrival()=), and
+=AgentContext::cancel_timer= / =Simulation::cancel_timer= /
+=Simulation::is_timer_pending= cancel pending delayed messages before arrival
+(including timers due on the next tick or scheduled earlier in the same tick),
+keeping quiet-tick skipping and sparse scheduling intact.
+
 ** DONE Add paired-difference CRN statistics and Student-t confidence intervals
 Add =compare_paired_scalar=, =compare_paired_candidates=, =PairedScalarSummary=,
 and =PairedCompareError= to compute per-replication paired differences

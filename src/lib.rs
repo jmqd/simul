@@ -108,7 +108,7 @@ struct ReadmeDoctests;
 use agent::{
     AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
     AgentMode, AgentState, AgentStreamCache, MessageHistory, MessageProcessingStatus,
-    QueueDepthChange, SimulationAgent, WakeMode,
+    QueueDepthChange, SimulationAgent, TimerId, WakeMode,
 };
 use experiment::{MasterSeed, TrialContext, TrialStream};
 use message::Message;
@@ -423,6 +423,10 @@ struct Tick<'a, M> {
     commands: &'a mut Vec<AgentCommand<M>>,
     /// Lazily derived stream roots by handle.
     agent_streams: &'a mut AgentStreamCache,
+    /// Monotonic send-order sequence for delayed messages.
+    next_in_flight: &'a mut u64,
+    /// Set when any callback in this tick cancels a timer.
+    has_cancellations: &'a mut bool,
 }
 
 /// Tracks runnable handles in callback order and sleeping agents by wake time.
@@ -687,6 +691,8 @@ fn visit_agent<M>(
         message_processing_status: MessageProcessingStatus::Done,
         agent_streams: &mut *tick.agent_streams,
         calls: 0,
+        next_in_flight: &mut *tick.next_in_flight,
+        has_cancellations: &mut *tick.has_cancellations,
     };
     // Every awake agent handles at most one queued message per tick; proactive
     // agents then also tick.
@@ -928,6 +934,31 @@ impl<M> Simulation<M> {
         self.in_flight.values().map(|(_, message)| message)
     }
 
+    /// Cancels a pending delayed message scheduled with
+    /// [`AgentContext::send_after`], returning `true` if it was still in flight
+    /// and removed.
+    pub fn cancel_timer(&mut self, timer: TimerId) -> bool {
+        let removed = self
+            .in_flight
+            .remove(&(timer.arrival, timer.sequence))
+            .is_some();
+        if removed && timer.arrival == self.next_arrival {
+            self.next_arrival = self
+                .in_flight
+                .first_key_value()
+                .map_or(DiscreteTime::MAX, |(key, _)| key.0);
+        }
+        removed
+    }
+
+    /// Returns whether `timer` is currently pending delivery in
+    /// [`Self::in_flight`].
+    #[must_use]
+    pub fn is_timer_pending(&self, timer: TimerId) -> bool {
+        self.in_flight
+            .contains_key(&(timer.arrival, timer.sequence))
+    }
+
     /// Runs the simulation until its halt condition holds or an agent sends a
     /// halt interrupt.
     ///
@@ -1075,14 +1106,21 @@ impl<M> Simulation<M> {
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
             };
+            let mut has_cancellations = false;
             scheduler.before_tick(self.time, &self.agents);
             let callbacks = match scheduler.sparse_mut() {
-                Some(active) => self.run_sparse_tick(&mut command_buffer, active),
-                None => self.run_dense_tick(&mut command_buffer),
+                Some(active) => {
+                    self.run_sparse_tick(&mut command_buffer, &mut has_cancellations, active)
+                }
+                None => self.run_dense_tick(&mut command_buffer, &mut has_cancellations),
             };
 
-            let interrupt =
-                self.process_command_buffer(&mut command_buffer, scheduler.sparse_mut(), next_time);
+            let interrupt = self.process_command_buffer(
+                &mut command_buffer,
+                has_cancellations,
+                scheduler.sparse_mut(),
+                next_time,
+            );
 
             self.time = next_time;
             if let Some(reason) = interrupt {
@@ -1128,6 +1166,7 @@ impl<M> Simulation<M> {
     fn split_tick<'a>(
         &'a mut self,
         commands: &'a mut Vec<AgentCommand<M>>,
+        has_cancellations: &'a mut bool,
     ) -> (&'a mut [SimulationAgent<M>], Tick<'a, M>) {
         let agent_count = self.agents.len();
         let tick = Tick {
@@ -1140,13 +1179,19 @@ impl<M> Simulation<M> {
             agent_streams: &mut self.agent_streams,
             agent_name_handle_map: &self.agent_name_handle_map,
             commands,
+            next_in_flight: &mut self.next_in_flight,
+            has_cancellations,
         };
         (&mut self.agents, tick)
     }
 
     /// Visits every agent in handle order and returns how many callbacks ran.
-    fn run_dense_tick(&mut self, commands: &mut Vec<AgentCommand<M>>) -> usize {
-        let (agents, mut tick) = self.split_tick(commands);
+    fn run_dense_tick(
+        &mut self,
+        commands: &mut Vec<AgentCommand<M>>,
+        has_cancellations: &mut bool,
+    ) -> usize {
+        let (agents, mut tick) = self.split_tick(commands, has_cancellations);
         let mut callbacks = 0;
         for handle in 0..agents.len() {
             let (ran, _) = visit_agent(agents, handle, &mut tick);
@@ -1162,9 +1207,10 @@ impl<M> Simulation<M> {
     fn run_sparse_tick(
         &mut self,
         commands: &mut Vec<AgentCommand<M>>,
+        has_cancellations: &mut bool,
         schedule: &mut SparseSchedule,
     ) -> usize {
-        let (agents, mut tick) = self.split_tick(commands);
+        let (agents, mut tick) = self.split_tick(commands, has_cancellations);
         let mut callbacks = 0;
         let mut cursor = 0;
         while let Some(handle) = schedule.next(cursor) {
@@ -1261,10 +1307,16 @@ impl<M> Simulation<M> {
     fn process_command_buffer(
         &mut self,
         command_buffer: &mut Vec<AgentCommand<M>>,
+        has_cancellations: bool,
         mut schedule: Option<&mut SparseSchedule>,
         next_time: DiscreteTime,
     ) -> Option<String> {
         let mut interrupt = None;
+        let cancelled_next_tick = if has_cancellations {
+            self.cancel_due_timers(command_buffer, next_time)
+        } else {
+            Vec::new()
+        };
         // Delayed messages arriving next tick were sent in earlier ticks, so
         // they arrive ahead of this tick's sends.
         if self.next_arrival <= next_time {
@@ -1279,8 +1331,28 @@ impl<M> Simulation<M> {
                     }
                 }
 
-                AgentCommandType::SendDelayed(message) => {
-                    self.hold_delayed(command.agent_handle, message, next_time);
+                AgentCommandType::SendDelayed { timer, message } => {
+                    if timer.arrival == next_time {
+                        self.record_produced(command.agent_handle, &message);
+                        if !cancelled_next_tick.contains(&timer) {
+                            if let Some(destination) = message.destination {
+                                self.deliver(
+                                    destination,
+                                    message,
+                                    schedule.as_deref_mut(),
+                                    next_time,
+                                );
+                            }
+                        }
+                    } else {
+                        self.hold_delayed(command.agent_handle, timer, message, next_time);
+                    }
+                }
+
+                AgentCommandType::CancelTimer(timer) => {
+                    if timer.arrival > next_time {
+                        self.cancel_timer(timer);
+                    }
                 }
 
                 AgentCommandType::HaltSimulation(reason) => {
@@ -1292,22 +1364,50 @@ impl<M> Simulation<M> {
         interrupt
     }
 
+    /// Removes timers due at or before `next_time` that were cancelled during
+    /// this tick, and returns any `delay == 1` cancellations to suppress during
+    /// command draining.
+    #[inline(never)]
+    fn cancel_due_timers(
+        &mut self,
+        command_buffer: &[AgentCommand<M>],
+        next_time: DiscreteTime,
+    ) -> Vec<TimerId> {
+        let mut cancelled_next_tick = Vec::new();
+        for command in command_buffer {
+            if let AgentCommandType::CancelTimer(timer) = command.ty {
+                if timer.arrival <= next_time {
+                    self.cancel_timer(timer);
+                    if timer.arrival == next_time {
+                        cancelled_next_tick.push(timer);
+                    }
+                }
+            }
+        }
+        cancelled_next_tick
+    }
+
     /// Counts a delayed message as sent by the agent at `handle` and holds it
     /// until it arrives. Kept out of line so that it does not crowd the tick
     /// loop, which most simulations run without delayed sends.
     #[inline(never)]
-    fn hold_delayed(&mut self, handle: usize, message: Message<M>, next_time: DiscreteTime) {
+    fn hold_delayed(
+        &mut self,
+        handle: usize,
+        timer: TimerId,
+        message: Message<M>,
+        next_time: DiscreteTime,
+    ) {
         self.record_produced(handle, &message);
         if let Some(destination) = message.destination {
             debug_assert!(
                 message.queued_time >= next_time,
                 "a delayed message arrives after the next tick"
             );
-            let arrival = message.queued_time + 1;
+            debug_assert_eq!(timer.arrival, message.queued_time + 1);
             self.in_flight
-                .insert((arrival, self.next_in_flight), (destination, message));
-            self.next_arrival = self.next_arrival.min(arrival);
-            self.next_in_flight += 1;
+                .insert((timer.arrival, timer.sequence), (destination, message));
+            self.next_arrival = self.next_arrival.min(timer.arrival);
         }
     }
 
