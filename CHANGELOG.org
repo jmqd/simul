@@ -3,6 +3,13 @@
 * Unreleased
 Newest entries first.
 
+** DONE Disable unused default features on =rand= and =rand_distr=
+Disable default features on =rand= and =rand_distr= in =[dependencies]= (moving
+=rand/std_rng= and =rand_distr/alloc= to =[dev-dependencies]= for tests,
+examples, and benchmarks). Because =simul= is deterministic and never draws
+from OS entropy, this drops =getrandom= and =libc= from the crate's default
+dependency graph.
+
 ** DONE Add =MaximizeScalarMean= selection policy
 Add =simul::experiment::MaximizeScalarMean= for =ScalarSummary= alongside
 =MaximizeFinite=, =MaximizeBernoulliRate=, and =MaximizeWilsonLowerBound=,
