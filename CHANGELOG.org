@@ -10,6 +10,15 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add Python (=PyO3=) bindings crate in =python/=
+Add a standalone =maturin=-ready =PyO3= bindings crate (=python/=) exposing
+deterministic =Simulation= (including custom Python agents, =yield_control=,
+=clone_snapshot=, =reseed=, cancellable timers, and Perfetto/JSONL tracing),
+=TrialRng=, =ScalarSummary=, =BernoulliSummary=, =QuantileSummary=,
+=PairedScalarSummary=, =sample_latin_hypercube=, =sample_sobol=,
+=sample_sobol_scrambled=, =MixedCrossEntropyOptimizer=, and =ParetoArchive=,
+complete with PEP 484 stubs (=python/simul.pyi=) and a Python =unittest= suite.
+
 ** DONE Add step/yield external-actor API and counterfactual branching rollouts
 Add =AgentContext::yield_control=, =RunOutcome=, =Simulation::run_until_yield=,
 =Simulation::yield_tag=, =Simulation::yielded_by=, =Simulation::reseed=,

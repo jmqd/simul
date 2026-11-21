@@ -1,1 +1,6 @@
 /target
+/python/target
+/python/*.so
+/python/*.dylib
+__pycache__/
+*.pyc
