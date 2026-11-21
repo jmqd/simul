@@ -10,8 +10,9 @@
 //! Tracing is purely observational and never alters ticks, scheduling, or RNG
 //! streams.
 
-use crate::DiscreteTime;
 use crate::agent::{AgentId, TimerId};
+use crate::experiment::{ReplayKey, TrialContext};
+use crate::{DiscreteTime, Simulation, SimulationMode};
 use std::fmt::Write as _;
 use std::io;
 
@@ -492,6 +493,174 @@ fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
 }
 
+/// Tick window traced during a windowed forensic replay.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ReplayWindow {
+    /// First tick at which structured tracing is enabled (earlier ticks run at
+    /// full speed without tracing).
+    pub start: DiscreteTime,
+    /// Optional tick at which to pause after tracing; `None` runs to the
+    /// simulation's halt condition or interrupt.
+    pub end: Option<DiscreteTime>,
+}
+
+impl ReplayWindow {
+    /// Creates a replay window tracing ticks starting at `start`, pausing at
+    /// `end` if provided or running to completion otherwise.
+    #[must_use]
+    pub const fn new(start: DiscreteTime, end: Option<DiscreteTime>) -> Self {
+        Self { start, end }
+    }
+
+    /// Creates a replay window tracing the `lookback` ticks leading up to
+    /// `target_tick` and continuing until completion.
+    #[must_use]
+    pub const fn before(target_tick: DiscreteTime, lookback: DiscreteTime) -> Self {
+        Self {
+            start: target_tick.saturating_sub(lookback),
+            end: None,
+        }
+    }
+
+    /// Creates a replay window tracing `lookback` ticks before `target_tick`
+    /// through `after` ticks past `target_tick`.
+    #[must_use]
+    pub const fn around(
+        target_tick: DiscreteTime,
+        lookback: DiscreteTime,
+        after: DiscreteTime,
+    ) -> Self {
+        Self {
+            start: target_tick.saturating_sub(lookback),
+            end: Some(target_tick.saturating_add(after)),
+        }
+    }
+}
+
+/// Result of a windowed forensic replay.
+#[derive(Clone, Debug)]
+pub struct ForensicReport<M> {
+    /// Final simulation state after replaying the window.
+    pub simulation: Simulation<M>,
+    /// Structured trace captured strictly during the replay window.
+    pub trace: SimulationTrace,
+    /// Tick at which tracing actually began.
+    pub trace_started_at: DiscreteTime,
+    /// Final tick reached by the simulation.
+    pub ended_at: DiscreteTime,
+}
+
+/// Fast-forwards `simulation` untraced to `window.start`, enables structured
+/// tracing, and runs through `window.end` (or completion).
+///
+/// ```
+/// use simul::agent::{periodic_consumer, periodic_producer};
+/// use simul::trace::{ReplayWindow, forensic_replay};
+/// use simul::{Halt, Simulation};
+///
+/// let sim = Simulation::<()>::builder(Halt::AtTime(100))
+///     .agents([
+///         periodic_producer("producer", 5, "consumer"),
+///         periodic_consumer("consumer", 5),
+///     ])
+///     .build()?;
+/// let report = forensic_replay(sim, ReplayWindow::before(100, 15));
+/// assert_eq!(85, report.trace_started_at);
+/// assert_eq!(100, report.ended_at);
+/// assert!(!report.trace.is_empty());
+/// assert!(report.trace.events().iter().all(|e| e.time >= 85));
+/// # Ok::<(), simul::SimulationError>(())
+/// ```
+#[must_use]
+pub fn forensic_replay<M>(
+    mut simulation: Simulation<M>,
+    window: ReplayWindow,
+) -> ForensicReport<M> {
+    simulation.disable_trace();
+    if window.start > simulation.time() {
+        simulation.run_until(window.start);
+    }
+    let trace_started_at = simulation.time();
+    simulation.enable_trace();
+    finish_forensic_window(&mut simulation, window.end);
+    let ended_at = simulation.time();
+    let trace = simulation.take_trace().unwrap_or_default();
+    ForensicReport {
+        simulation,
+        trace,
+        trace_started_at,
+        ended_at,
+    }
+}
+
+/// Like [`forensic_replay`], also recording a `Debug` summary of each sent
+/// message payload inside the trace window.
+#[must_use]
+pub fn forensic_replay_with_payloads<M: std::fmt::Debug>(
+    mut simulation: Simulation<M>,
+    window: ReplayWindow,
+) -> ForensicReport<M> {
+    simulation.disable_trace();
+    if window.start > simulation.time() {
+        simulation.run_until(window.start);
+    }
+    let trace_started_at = simulation.time();
+    simulation.enable_trace_with_payloads();
+    finish_forensic_window(&mut simulation, window.end);
+    let ended_at = simulation.time();
+    let trace = simulation.take_trace().unwrap_or_default();
+    ForensicReport {
+        simulation,
+        trace,
+        trace_started_at,
+        ended_at,
+    }
+}
+
+/// Reconstructs a trial from its [`ReplayKey`], builds the simulation via
+/// `build`, and executes [`forensic_replay`] over `window`.
+///
+/// # Errors
+///
+/// Propagates any builder error returned by `build`.
+pub fn forensic_replay_trial<M, E>(
+    replay: ReplayKey,
+    window: ReplayWindow,
+    build: impl FnOnce(&TrialContext) -> Result<Simulation<M>, E>,
+) -> Result<ForensicReport<M>, E> {
+    let context = TrialContext::from_replay_key(replay);
+    let simulation = build(&context)?;
+    Ok(forensic_replay(simulation, window))
+}
+
+/// Like [`forensic_replay_trial`], also recording `Debug`-formatted payloads
+/// inside the trace window.
+///
+/// # Errors
+///
+/// Propagates any builder error returned by `build`.
+pub fn forensic_replay_trial_with_payloads<M: std::fmt::Debug, E>(
+    replay: ReplayKey,
+    window: ReplayWindow,
+    build: impl FnOnce(&TrialContext) -> Result<Simulation<M>, E>,
+) -> Result<ForensicReport<M>, E> {
+    let context = TrialContext::from_replay_key(replay);
+    let simulation = build(&context)?;
+    Ok(forensic_replay_with_payloads(simulation, window))
+}
+
+/// Runs the active trace window to `end` or completion when the simulation has
+/// not already completed during fast-forward.
+fn finish_forensic_window<M>(simulation: &mut Simulation<M>, end: Option<DiscreteTime>) {
+    if simulation.mode() != SimulationMode::Completed {
+        if let Some(until) = end {
+            simulation.run_until(until);
+        } else {
+            simulation.run();
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::missing_docs_in_private_items)]
 mod tests {
@@ -559,5 +728,81 @@ mod tests {
         assert!(perfetto.contains(r#""thread_name""#));
         assert!(perfetto.contains(r#""queue_depth""#));
         assert!(perfetto.contains(r#""ph":"X","ts":1,"dur":4"#));
+    }
+
+    #[test]
+    fn forensic_replay_trial_reproduces_rare_failure_window_bit_for_bit() {
+        use crate::agent::{Agent, AgentContext, AgentInitializer};
+        use crate::experiment::{CandidateId, FixedReplications, MasterSeed, run_serial};
+        use crate::{Halt, SimulationError};
+
+        #[derive(Clone, Debug)]
+        struct FragileAgent {
+            threshold: f64,
+        }
+
+        impl Agent<u32> for FragileAgent {
+            fn on_tick(&mut self, ctx: &mut AgentContext<'_, u32>) {
+                let sample = ctx.rng().uniform_f64();
+                ctx.send_to(ctx.id(), u32::from(sample < self.threshold));
+                if sample < self.threshold {
+                    ctx.send_halt_interrupt("rare_spike");
+                }
+            }
+        }
+
+        let build = |ctx: &TrialContext| -> Result<Simulation<u32>, SimulationError> {
+            Simulation::builder(Halt::AtTime(500))
+                .trial(ctx)
+                .agent(AgentInitializer::proactive(
+                    "fragile",
+                    FragileAgent { threshold: 0.005 },
+                ))
+                .build()
+        };
+
+        let seed = MasterSeed::from_u64(42);
+        let records = run_serial(
+            seed,
+            FixedReplications::new(20, 1).trials(CandidateId::new(0), ()),
+            |(), ctx| {
+                let mut sim = build(ctx)?;
+                sim.run();
+                Ok::<(DiscreteTime, bool), SimulationError>((
+                    sim.time(),
+                    sim.halt_reason() == Some("rare_spike"),
+                ))
+            },
+        )
+        .expect("serial sweep");
+
+        let failed = records
+            .iter()
+            .find(|r| matches!(r.result, Ok((_, true))))
+            .expect("at least one replication should hit rare_spike");
+        let Ok((fail_tick, true)) = failed.result else {
+            panic!("expected failed tick");
+        };
+
+        let report = forensic_replay_trial_with_payloads(
+            failed.replay,
+            ReplayWindow::before(fail_tick, 5),
+            build,
+        )
+        .expect("forensic replay");
+
+        assert_eq!(fail_tick, report.ended_at);
+        assert_eq!(Some("rare_spike"), report.simulation.halt_reason());
+        assert!(
+            report
+                .trace
+                .events()
+                .iter()
+                .all(|e| e.time >= report.trace_started_at)
+        );
+        assert!(report.trace.events().iter().any(|e| matches!(
+            &e.kind,
+            TraceEventKind::HaltInterrupt { reason } if reason == "rare_spike"
+        )));
     }
 }

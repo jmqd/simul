@@ -10,6 +10,14 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add windowed forensic replay and =TrialContext::from_replay_key=
+Add =TrialContext::from_replay_key= plus =ReplayWindow=, =ForensicReport=,
+=forensic_replay=, =forensic_replay_with_payloads=, =forensic_replay_trial=,
+and =forensic_replay_trial_with_payloads= in =simul::trace=. Fast-forward a
+failing replication untraced to =target - lookback=, enable structured tracing
+strictly over the failure window, and export the causal trace to JSONL or
+Perfetto.
+
 ** DONE Add structured simulation tracing with JSONL and Perfetto Chrome Trace export
 Add =simul::trace= (=SimulationTrace=, =TraceEvent=, =TraceEventKind=),
 =SimulationBuilder::trace=, =SimulationBuilder::trace_with_payloads=,

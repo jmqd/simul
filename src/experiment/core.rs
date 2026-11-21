@@ -660,6 +660,15 @@ impl TrialContext {
         }
     }
 
+    /// Reconstructs an exact [`TrialContext`] from a retained [`ReplayKey`].
+    ///
+    /// Every stream derived from the returned context matches the original
+    /// trial bit for bit.
+    #[must_use]
+    pub const fn from_replay_key(replay: ReplayKey) -> Self {
+        Self { replay }
+    }
+
     /// Returns this trial's stable identity.
     #[must_use]
     pub const fn key(self) -> TrialId {
