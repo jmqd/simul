@@ -328,7 +328,7 @@ impl<M> SimulationAgent<M> {
 
 /// The engine-managed part of an agent: its current mode and its queue of
 /// messages not yet handled.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AgentState<M = ()> {
     /// The mode that the agent is in; a sleeping agent's mode also holds the
     /// mode it wakes into.
@@ -677,6 +677,18 @@ impl<'a, M> AgentContext<'a, M> {
     }
 }
 
+impl<M: fmt::Debug> fmt::Debug for AgentContext<'_, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AgentContext")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("time", &self.time)
+            .field("state", &self.state)
+            .field("message_processing_status", &self.message_processing_status)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A built-in agent's message target and its identity in the last layout.
 ///
 /// Agents can be cloned into simulations with other layouts, so the resolved
@@ -713,7 +725,7 @@ impl CachedTarget {
 ///
 /// [`AgentInitializer::reactive`] and [`AgentInitializer::proactive`] fill
 /// these in.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AgentOptions<M = ()> {
     /// The mode the agent starts in; a sleeping mode also says which mode
     /// the agent wakes into.

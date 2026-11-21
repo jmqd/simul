@@ -866,11 +866,7 @@ fn sparse_and_dense_scheduling_preserve_callbacks_and_message_state() {
             .chain(right.produced())
             .chain(right.consumed());
         for (left, right) in left_messages.zip(right_messages) {
-            assert_eq!(right.queued_time, left.queued_time);
-            assert_eq!(right.completed_time, left.completed_time);
-            assert_eq!(right.source, left.source);
-            assert_eq!(right.destination, left.destination);
-            assert_eq!(right.payload, left.payload);
+            assert_eq!(right, left);
         }
     }
     for agent in dense.agents() {

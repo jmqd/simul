@@ -1,33 +1,20 @@
 //! Seeded samplers. Every agent owns named streams derived from the trial's
 //! common seed, so both placements see the same workload and fault draws.
 
-use chacha20::ChaCha12Rng;
-use rand::SeedableRng;
-use simul::experiment::{TrialContext, TrialStream};
+use simul::experiment::{TrialContext, TrialRng, TrialStream};
 
-#[derive(Debug)]
-pub(crate) struct Rng(ChaCha12Rng);
-
-// The generator is not `Clone`; its serialized state (seed, stream, and word
-// position) restores the exact stream position.
-impl Clone for Rng {
-    fn clone(&self) -> Self {
-        Self(ChaCha12Rng::deserialize_state(&self.0.serialize_state()))
-    }
-}
+#[derive(Clone, Debug)]
+pub(crate) struct Rng(TrialRng);
 
 impl Rng {
     /// A stream shared by every candidate in the trial's common-random group.
     pub(crate) fn common(context: &TrialContext, tag: &str) -> Self {
-        Self(ChaCha12Rng::from_seed(
-            context.common_seed(TrialStream::TrialNoise, tag).bytes(),
-        ))
+        Self(context.common_rng(TrialStream::TrialNoise, tag))
     }
 
     /// Uniform on `[0, 1)`.
     pub(crate) fn unit(&mut self) -> f64 {
-        const SCALE: f64 = 1.0 / (1_u64 << 53) as f64;
-        (rand::Rng::next_u64(&mut self.0) >> 11) as f64 * SCALE
+        self.0.uniform_f64()
     }
 
     pub(crate) fn uniform(&mut self, low: f64, high: f64) -> f64 {

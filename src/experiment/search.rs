@@ -232,6 +232,20 @@ pub struct SeededRandomSearch<C, S, P, G> {
     best: Option<SearchResult<C, S>>,
 }
 
+impl<C: fmt::Debug, S: fmt::Debug, P: fmt::Debug, G> fmt::Debug for SeededRandomSearch<C, S, P, G> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SeededRandomSearch")
+            .field("budget", &self.budget)
+            .field("asked", &self.next_token)
+            .field("told", &self.told_count)
+            .field("outstanding", &self.pending.len())
+            .field("policy", &self.policy)
+            .field("best", &self.best)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<C, S, P, G> SeededRandomSearch<C, S, P, G>
 where
     C: Clone,

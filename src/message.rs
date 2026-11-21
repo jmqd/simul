@@ -7,7 +7,7 @@ use crate::{AgentId, DiscreteTime};
 /// Messages identify agents by [`AgentId`]. A payload-free `()` message
 /// allocates nothing; share large payloads by choosing a shared `M`, such as
 /// `Arc<T>`. Use [`Message::new`] rather than a struct literal.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub struct Message<M = ()> {
     /// When the message was first created and put onto a queue.

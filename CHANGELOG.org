@@ -3,6 +3,17 @@
 * Unreleased
 Newest entries first.
 
+** DONE Implement =Clone= and =Debug= on =TrialRng= and standard traits on public types
+=TrialRng= now implements =Clone= (preserving exact stream position across both
+single-block and =ChaCha12Rng= stages) and redacted =Debug= (=TrialRng(..)=),
+allowing agents to hold a =TrialRng= and derive =Clone= and =Debug=;
+=examples/etl_placement/rng.rs= now wraps =TrialRng= directly instead of
+=chacha20::ChaCha12Rng=. Also implement =Debug= on =AgentContext= and
+=SeededRandomSearch=, =Eq=/=Ord=/=TryFrom<f64>=/=From<FiniteValue> for f64= on
+=FiniteValue=, =Eq=/=PartialEq=/=Hash= on =Message=, and =Eq=/=PartialEq= on
+=AgentState=, =AgentOptions=, =TrialSpec=, =TrialContext=, =FeasibleFirst=, and
+the built-in selection policies.
+
 ** DONE Implement =Display= and =std::error::Error= for all experiment errors
 =NonFiniteValue=, =ReduceError=, =AggregateError=, =TellError=, and
 =BoundsError= now implement =std::fmt::Display= and =std::error::Error= (with

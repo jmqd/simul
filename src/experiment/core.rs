@@ -207,6 +207,24 @@ impl DerivedSeed {
 /// algorithm is unchanged.
 pub struct TrialRng(Keystream);
 
+impl Clone for TrialRng {
+    fn clone(&self) -> Self {
+        Self(match &self.0 {
+            Keystream::Start(position) => Keystream::Start(*position),
+            Keystream::Single(single) => Keystream::Single(*single),
+            Keystream::Rest(rng) => {
+                Keystream::Rest(ChaCha12Rng::deserialize_state(&rng.serialize_state()))
+            }
+        })
+    }
+}
+
+impl fmt::Debug for TrialRng {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TrialRng(..)")
+    }
+}
+
 /// The words of a `ChaCha12` keystream, consumed exactly as
 /// [`ChaCha12Rng`] consumes them.
 ///
@@ -621,7 +639,7 @@ impl ReplayKey {
 }
 
 /// Deterministic identity and named randomness supplied to one evaluation.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TrialContext {
     /// Replay metadata backing this context.
     replay: ReplayKey,
@@ -703,7 +721,7 @@ impl TrialContext {
 }
 
 /// One requested candidate replication.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrialSpec<C> {
     /// Stable trial identity.
     key: TrialId,
@@ -1447,8 +1465,39 @@ fn evaluate_claimed_chunks<'a, C, O, E, W>(
 }
 
 /// A finite floating-point value accepted for ranking or replacement policies.
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FiniteValue(f64);
+
+// Every FiniteValue is finite (never NaN), so equality is reflexive and
+// partial_cmp always yields a total order consistent with PartialEq
+// (-0.0 == 0.0 compares Equal).
+impl Eq for FiniteValue {}
+
+impl Ord for FiniteValue {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.partial_cmp(&other.0).unwrap_or(Ordering::Equal)
+    }
+}
+
+impl PartialOrd for FiniteValue {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl TryFrom<f64> for FiniteValue {
+    type Error = NonFiniteValue;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<FiniteValue> for f64 {
+    fn from(value: FiniteValue) -> Self {
+        value.get()
+    }
+}
 
 impl FiniteValue {
     /// Validates and wraps a finite value.
@@ -1859,7 +1908,7 @@ pub enum FailurePolicy<T> {
 }
 
 /// Explicit treatment of non-finite scalar observations.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NonFinitePolicy {
     /// Make the aggregate ineligible.
     RejectCandidate,
@@ -2104,17 +2153,17 @@ pub fn select_best<'a, A>(
 }
 
 /// Maximizes a validated finite scalar.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaximizeFinite;
 
 impl SelectionPolicy<FiniteValue> for MaximizeFinite {
     fn compare(&self, left: &FiniteValue, right: &FiniteValue) -> Ordering {
-        left.partial_cmp(right).unwrap_or(Ordering::Equal)
+        left.cmp(right)
     }
 }
 
 /// Maximizes Bernoulli success rate.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaximizeBernoulliRate;
 
 impl SelectionPolicy<BernoulliSummary> for MaximizeBernoulliRate {
@@ -2124,7 +2173,7 @@ impl SelectionPolicy<BernoulliSummary> for MaximizeBernoulliRate {
 }
 
 /// Maximizes the lower Wilson confidence bound.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaximizeWilsonLowerBound;
 
 impl SelectionPolicy<BernoulliSummary> for MaximizeWilsonLowerBound {
@@ -2152,7 +2201,7 @@ pub enum Feasible<A, V> {
 }
 
 /// Applies objective and violation policies with unconditional feasible-first precedence.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FeasibleFirst<P, Q> {
     /// Policy used between feasible objective aggregates.
     pub objective: P,
@@ -2686,5 +2735,37 @@ mod tests {
             let boxed: Box<dyn std::error::Error> = Box::new(error);
             assert_ne!("", boxed.to_string());
         }
+    }
+
+    #[test]
+    fn trial_rng_clone_preserves_position_and_debug_redacts_key() {
+        let seed = SeedDeriver::new(MasterSeed::from_u64(42)).proposal_seed(7);
+        let rng = seed.rng();
+        assert_eq!("TrialRng(..)", format!("{rng:?}"));
+
+        // Clone before first draw (Start), mid-block at odd word (Single), and
+        // after leaving the single-block path (Rest).
+        for advance_words in [0_usize, 1, 7, 16, 33, 70] {
+            let mut original = seed.rng();
+            for _ in 0..advance_words {
+                let _ = rand::Rng::next_u32(&mut original);
+            }
+            let mut cloned = original.clone();
+            assert_eq!("TrialRng(..)", format!("{cloned:?}"));
+            for _ in 0..40 {
+                assert_eq!(original.next_u64(), cloned.next_u64());
+            }
+        }
+    }
+
+    #[test]
+    fn finite_value_implements_ord_and_conversions() {
+        let neg_zero = FiniteValue::try_from(-0.0).expect("-0.0 is finite");
+        let pos_zero = FiniteValue::try_from(0.0).expect("0.0 is finite");
+        let one = FiniteValue::try_from(1.0).expect("1.0 is finite");
+        assert_eq!(Ordering::Equal, neg_zero.cmp(&pos_zero));
+        assert_eq!(Ordering::Less, pos_zero.cmp(&one));
+        assert_eq!(1.0_f64.to_bits(), f64::from(one).to_bits());
+        assert!(FiniteValue::try_from(f64::NAN).is_err());
     }
 }
