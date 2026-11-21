@@ -62,11 +62,20 @@ Use-cases:
   trial records. With unwinding enabled, callback panics discard partial output
   and return a run-level error without retries. This does not roll back callback
   side effects, and cannot catch panics in `panic = "abort"` builds.
-- `aggregate_scalar` and `aggregate_bernoulli` apply explicit failure policies.
-  Unrepresentable scalar arithmetic returns `ArithmeticOverflow`, never a
-  successful non-finite summary.
-- `search::SeededRandomSearch` provides tokenized ask/tell search.
-  `CrossEntropyOptimizer` and `simulated_annealing_search_with_rng` remain
+- `aggregate_scalar`, `aggregate_bernoulli`, and `aggregate_quantiles` apply
+  explicit failure policies. Unrepresentable scalar arithmetic returns
+  `ArithmeticOverflow`, never a successful non-finite summary. `QuantileSummary`
+  computes exact empirical percentiles (`median`, `p90`, `p95`, `p99`, `p999`)
+  and upper/lower `CVaR` (expected shortfall) with tail-risk selection policies.
+  `compare_paired_scalar` and `compare_paired_candidates` reduce matched
+  replications (`challenger - baseline`) with two-sided 95% Student-t CIs
+  (`ci_95()`) and CRN `variance_reduction_ratio()`.
+- `search::SeededRandomSearch` provides tokenized ask/tell search, while
+  `search::sample_latin_hypercube`, `search::sample_sobol`, and
+  `search::sample_sobol_scrambled` provide space-filling DoE sweeps (up to 32D).
+  `CrossEntropyOptimizer`, `MixedCrossEntropyOptimizer` (continuous, circular,
+  integer, and categorical dimensions), `ParetoArchive` (with crowding distances
+  and exact 2D hypervolume), and `simulated_annealing_search_with_rng` remain
   engine-independent optimizer alternatives; aggregate noisy trials inside their
   objective rather than ranking a lucky single run.
 - To evaluate a `Simulation` in a trial, build it with
@@ -74,8 +83,11 @@ Use-cases:
   common-random stream, so candidates in one common-random group share their
   agents' draws replication by replication; agent streams are keyed by name,
   so the pairing survives candidates that add or reorder agents.
+  `TrialContext::from_replay_key` reconstructs a trial from any retained
+  `ReplayKey`.
 
-See `examples/simple_experiment.rs` for a complete typed experiment.
+See `examples/simple_experiment.rs` and `examples/retry_storm.rs` for complete
+typed experiments, and `python/` for optional Python (`PyO3`) bindings.
 
 ## Basic usage
 
@@ -215,10 +227,15 @@ fn main() -> Result<(), SimulationError> {
   `ctx.send(name, payload)` resolves a name; `ctx.send_to(id, payload)` skips
   the lookup, and `ctx.agent_id(name)` resolves a peer once for reuse.
 - `ctx.send_after(delay, id, payload)` delivers a message `delay` ticks later
-  instead of at the end of the tick. Use it for latency and, sent to `ctx.id()`,
-  for timeouts: an agent waiting on a timer stays idle instead of polling every
+  instead of at the end of the tick and returns a `TimerId` that can be
+  cancelled before arrival with `ctx.cancel_timer(timer)` (or
+  `Simulation::cancel_timer`). Use it for latency and, sent to `ctx.id()`, for
+  timeouts: an agent waiting on a timer stays idle instead of polling every
   tick, so quiet ticks are still skipped. Messages that have not arrived when a
   run halts stay in `Simulation::in_flight` for the next run.
+- By default, awake agents handle at most one queued message per tick; opt into
+  burst processing per agent with `AgentInitializer::drain_messages(MessageDrain::UpTo(..))`
+  or `.drain_all_messages()`.
 - Randomness comes from `ctx.rng()`, a stream derived from the simulation's
   seed, the agent's name, and the tick, so equal seeds give equal runs, and
   adding or reordering other agents does not change an agent's draws.
@@ -228,8 +245,10 @@ fn main() -> Result<(), SimulationError> {
   at the front of its queue for its next visit; the default, `Done`, consumes
   it.
 - `Simulation::builder(halt)` also takes `.seed(..)`, `.starting_time(..)`,
-  `.trial(..)`, `.message_history(..)`, `.queue_depth_metrics(..)`, and
-  `.asleep_cycles_metric(..)`; `build()` returns an error for duplicate names.
+  `.trial(..)`, `.message_history(..)`, `.queue_depth_metrics(..)`,
+  `.asleep_cycles_metric(..)`, `.unknown_destination_policy(..)` (`Drop`,
+  `Halt`, or `Panic`), and `.trace(..)` / `.trace_with_payloads(..)`; `build()`
+  returns an error for duplicate names.
 - Built-in agents send `M::default()` or consume with no side effects:
   `periodic_producer`, `periodic_consumer`, and `geometric_producer` /
   `geometric_consumer`, whose gaps are memoryless with a given mean (at least
@@ -245,16 +264,27 @@ returns that reason. If a callback panics, the simulation becomes
 whether it is constructed, running, paused, completed, or failed.
 
 `simulation.run_until(t)` pauses once the time reaches tick `t`, without
-running it, unless the run ends first; `run()` or another `run_until` then
-continues exactly as one uninterrupted run would, still skipping quiet ticks.
-A paused `Simulation` is a complete snapshot: clone it to branch. To compare
-alternatives that differ only from a decision tick, run once to that tick,
-clone per alternative, change each clone through
-`find_by_name_mut(name)` and `downcast_mut::<YourAgent>()`, and run the clones
-on. Agent draws depend only on the seed, the agent's name, and the tick, so
-each branch matches a run that took its alternative from the start, while the
-shared prefix runs once. Branches share nothing unless agents hold shared
-handles such as `Rc` or `Arc` to outside state.
+running it, unless the run ends first; `simulation.run_until_yield(max_time)`
+also pauses at any agent's `ctx.yield_control(tag)` decision point for external
+RL/LLM controllers. `run()`, `run_until`, or `run_until_yield` then continues
+exactly as one uninterrupted run would, still skipping quiet ticks.
+A paused `Simulation` is a complete snapshot: clone it to branch, or call
+`Simulation::rollout_branches` and `evaluate_branch_replications` (which clones
+and `reseed`s branches across CRN-paired future seeds). To compare alternatives
+that differ only from a decision tick, run once to that tick, clone per
+alternative, change each clone through `find_by_name_mut(name)` and
+`downcast_mut::<YourAgent>()`, and run the clones on. Agent draws depend only
+on the seed, the agent's name, and the tick, so each branch matches a run that
+took its alternative from the start, while the shared prefix runs once. Branches
+share nothing unless agents hold shared handles such as `Rc` or `Arc` to outside
+state.
+
+For post-mortem debugging of rare tail failures, `simul::trace` records
+structured lifecycle events (toggled dynamically with `enable_trace` /
+`enable_trace_with_payloads`) and exports JSONL (`to_jsonl`) and Perfetto Chrome
+Trace JSON (`to_perfetto_json`). `forensic_replay` and `forensic_replay_trial`
+fast-forward untraced to `target - lookback` and record only the causal failure
+window.
 
 Messages identify agents by `AgentId`: `source` is the sender (absent for an
 initial queue entry) and `destination` the addressed agent (absent when the
