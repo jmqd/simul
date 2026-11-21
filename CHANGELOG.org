@@ -3,6 +3,12 @@
 * Unreleased
 Newest entries first.
 
+** DONE Implement =Display= and =std::error::Error= for all experiment errors
+=NonFiniteValue=, =ReduceError=, =AggregateError=, =TellError=, and
+=BoundsError= now implement =std::fmt::Display= and =std::error::Error= (with
+=From<NonFiniteValue> for ReduceError=), and =RunError= derives =Clone=, =Eq=,
+and =PartialEq=. Every public error type in the crate now composes with =?=.
+
 ** DONE Clean up =find_agent=, =in_flight=, and =#[must_use]= annotations (breaking)
 =Simulation::find_agent= now takes =FnMut(&SimulationAgent<M>) -> bool= instead
 of leaking =Iterator::find='s double reference =&&SimulationAgent<M>=, matching

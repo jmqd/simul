@@ -877,7 +877,7 @@ pub fn retain_records<O, E>(
 }
 
 /// Batch validation, allocation, or evaluator-panic failure.
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunError {
     /// A trial identity occurred more than once.
     DuplicateTrial(TrialId),
@@ -1478,6 +1478,14 @@ pub struct NonFiniteValue {
     pub value: f64,
 }
 
+impl fmt::Display for NonFiniteValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "non-finite floating-point value: {}", self.value)
+    }
+}
+
+impl std::error::Error for NonFiniteValue {}
+
 /// Reducer failure caused by an empty or invalid observation set.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReduceError {
@@ -1489,6 +1497,39 @@ pub enum ReduceError {
     ArithmeticOverflow,
     /// Wilson's positive finite z-score was invalid.
     InvalidWilsonZ(f64),
+}
+
+impl From<NonFiniteValue> for ReduceError {
+    fn from(source: NonFiniteValue) -> Self {
+        Self::NonFinite(source)
+    }
+}
+
+impl fmt::Display for ReduceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("cannot reduce an empty observation set"),
+            Self::NonFinite(source) => write!(formatter, "invalid scalar observation: {source}"),
+            Self::ArithmeticOverflow => {
+                formatter.write_str("scalar reduction exceeded representable finite arithmetic")
+            }
+            Self::InvalidWilsonZ(z) => {
+                write!(
+                    formatter,
+                    "Wilson z-score must be finite and positive, got {z}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReduceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NonFinite(source) => Some(source),
+            Self::Empty | Self::ArithmeticOverflow | Self::InvalidWilsonZ(_) => None,
+        }
+    }
 }
 
 /// Online Bernoulli reducer with Wilson-score confidence intervals.
@@ -1852,6 +1893,38 @@ pub enum AggregateError {
     /// Accepted scalar observations overflowed the reducer's arithmetic.
     ArithmeticOverflow,
 }
+
+impl fmt::Display for AggregateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("cannot aggregate an empty record slice"),
+            Self::MixedCandidates => {
+                formatter.write_str("cannot aggregate records from more than one candidate")
+            }
+            Self::TooManyRecords => formatter.write_str("record count exceeds u32::MAX"),
+            Self::EvaluationFailed { failures } => {
+                write!(
+                    formatter,
+                    "candidate rejected after {failures} evaluation failure(s)"
+                )
+            }
+            Self::NonFinite { observations } => {
+                write!(
+                    formatter,
+                    "candidate rejected after {observations} non-finite observation(s)"
+                )
+            }
+            Self::NoUsableObservations => {
+                formatter.write_str("no usable observations remained after applying policies")
+            }
+            Self::ArithmeticOverflow => {
+                formatter.write_str("scalar aggregation exceeded representable finite arithmetic")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AggregateError {}
 
 /// Compact per-candidate counts and typed statistics.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2586,5 +2659,32 @@ mod tests {
             failures[0].key
         );
         assert_eq!(Err("failed"), failures[0].result);
+    }
+
+    #[test]
+    fn experiment_error_types_implement_display_and_error() {
+        use std::error::Error as _;
+
+        let non_finite = NonFiniteValue { value: f64::NAN };
+        assert!(non_finite.to_string().contains("NaN"));
+        let reduce: ReduceError = non_finite.into();
+        assert!(reduce.source().is_some());
+        assert_ne!("", reduce.to_string());
+        assert_ne!("", ReduceError::Empty.to_string());
+        assert_ne!("", ReduceError::ArithmeticOverflow.to_string());
+        assert_ne!("", ReduceError::InvalidWilsonZ(-1.0).to_string());
+
+        for error in [
+            AggregateError::Empty,
+            AggregateError::MixedCandidates,
+            AggregateError::TooManyRecords,
+            AggregateError::EvaluationFailed { failures: 2 },
+            AggregateError::NonFinite { observations: 1 },
+            AggregateError::NoUsableObservations,
+            AggregateError::ArithmeticOverflow,
+        ] {
+            let boxed: Box<dyn std::error::Error> = Box::new(error);
+            assert_ne!("", boxed.to_string());
+        }
     }
 }

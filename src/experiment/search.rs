@@ -4,6 +4,7 @@ use super::{CandidateId, CandidateSummary, MasterSeed, SeedDeriver, SelectionPol
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::fmt;
 
 /// Largest tell batch checked for repeated identities by scanning earlier
 /// entries, which avoids allocating and hashing two sets per call.
@@ -90,6 +91,34 @@ pub enum TellError {
         summary: CandidateId,
     },
 }
+
+impl fmt::Display for TellError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateToken(token) => {
+                write!(formatter, "duplicate proposal token {}", token.value())
+            }
+            Self::UnknownToken(token) => {
+                write!(formatter, "unknown proposal token {}", token.value())
+            }
+            Self::DuplicateCandidate(candidate) => {
+                write!(
+                    formatter,
+                    "duplicate candidate identity {}",
+                    candidate.value()
+                )
+            }
+            Self::CandidateMismatch { told, summary } => write!(
+                formatter,
+                "candidate identity mismatch: told {} but summary is for {}",
+                told.value(),
+                summary.value()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TellError {}
 
 /// Tokenized strategy lifecycle independent of any evaluator engine.
 pub trait SearchStrategy<C, S> {
@@ -424,6 +453,25 @@ pub enum BoundsError {
         dimension: usize,
     },
 }
+
+impl fmt::Display for BoundsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFinite { dimension } => {
+                write!(
+                    formatter,
+                    "bound endpoint in dimension {dimension} is not finite"
+                )
+            }
+            Self::Reversed { dimension } => write!(
+                formatter,
+                "lower bound exceeds upper bound in dimension {dimension}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BoundsError {}
 
 /// Produces ordered, uniformly sampled bounded vectors using proposal streams.
 ///
@@ -962,5 +1010,28 @@ mod tests {
         );
         assert_f64_bits_eq(actual.min(), selecting.min());
         assert_f64_bits_eq(actual.max(), selecting.max());
+    }
+
+    #[test]
+    fn search_error_types_implement_display_and_error() {
+        for error in [
+            TellError::DuplicateToken(ProposalToken::new(1)),
+            TellError::UnknownToken(ProposalToken::new(2)),
+            TellError::DuplicateCandidate(CandidateId::new(3)),
+            TellError::CandidateMismatch {
+                told: CandidateId::new(4),
+                summary: CandidateId::new(5),
+            },
+        ] {
+            let boxed: Box<dyn std::error::Error> = Box::new(error);
+            assert_ne!("", boxed.to_string());
+        }
+        for error in [
+            BoundsError::NonFinite { dimension: 0 },
+            BoundsError::Reversed { dimension: 1 },
+        ] {
+            let boxed: Box<dyn std::error::Error> = Box::new(error);
+            assert_ne!("", boxed.to_string());
+        }
     }
 }
