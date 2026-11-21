@@ -162,8 +162,7 @@ fn has_tick_queued(ctx: &Ctx<'_>) -> bool {
 
 fn ensure_self_tick(ctx: &mut Ctx<'_>) {
     if !has_tick_queued(ctx) {
-        let name = ctx.name().to_string();
-        ctx.send(&name, Payload::Tick);
+        ctx.send_to(ctx.id(), Payload::Tick);
     }
 }
 
@@ -612,8 +611,7 @@ impl DecisionMaker {
     }
 
     fn on_tick(&mut self, ctx: &mut Ctx<'_>) {
-        let mut remaining = Vec::with_capacity(self.pending.len());
-        for decision in self.pending.drain(..) {
+        self.pending.retain(|decision| {
             if ctx.time() >= decision.due_at {
                 ctx.send(
                     developer_name(decision.requester),
@@ -621,11 +619,11 @@ impl DecisionMaker {
                         ticket_id: decision.ticket_id,
                     },
                 );
+                false
             } else {
-                remaining.push(decision);
+                true
             }
-        }
-        self.pending = remaining;
+        });
         ensure_self_tick(ctx);
     }
 }
