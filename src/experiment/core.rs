@@ -2183,7 +2183,7 @@ pub fn aggregate_scalar<O, E>(
 }
 
 /// Validates that a non-empty record slice belongs to one candidate.
-fn validate_candidate_records<O, E>(
+pub(super) fn validate_candidate_records<O, E>(
     records: &[TrialRecord<O, E>],
 ) -> Result<CandidateId, AggregateError> {
     let Some(first) = records.first() else {
@@ -2280,7 +2280,7 @@ impl SelectionPolicy<BernoulliSummary> for MaximizeWilsonLowerBound {
 
 /// Orders numbers normally and ranks NaN below all of them, so selection never
 /// depends on input order even if a NaN reaches a comparison.
-fn compare_nan_lowest(left: f64, right: f64) -> Ordering {
+pub(super) fn compare_nan_lowest(left: f64, right: f64) -> Ordering {
     left.partial_cmp(&right)
         .unwrap_or_else(|| right.is_nan().cmp(&left.is_nan()))
 }

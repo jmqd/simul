@@ -1541,3 +1541,77 @@ fn annealing_accepts_improvements_and_rejects_worse_states_when_greedy() {
         }
     }
 }
+
+// Law: QuantileSummary is permutation-invariant, monotonic in probability,
+// brackets quantiles between lower and upper CVaR, and merges identically to
+// reducing the combined sample.
+#[test]
+fn quantile_and_cvar_are_order_independent_monotonic_and_bracketed() {
+    use simul::experiment::{Probability, QuantileReducer};
+
+    let levels: Vec<Probability> = [0.0, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 1.0]
+        .into_iter()
+        .map(|p| Probability::new(p).unwrap_or_else(|e| panic!("valid p {p}: {e}")))
+        .collect();
+
+    for case in 0..500_u64 {
+        let mut r = rng(140_000 + case);
+        let len = r.random_range(1..80);
+        let values: Vec<f64> = (0..len)
+            .map(|_| {
+                let sign = if r.random_bool(0.5) { 1.0 } else { -1.0 };
+                sign * log_uniform(&mut r, -100, 100)
+            })
+            .collect();
+        let mut shuffled = values.clone();
+        shuffle(&mut r, &mut shuffled);
+
+        let a = QuantileReducer::from_results(values.iter().copied())
+            .unwrap_or_else(|e| panic!("case {case}: {e}"));
+        let b = QuantileReducer::from_results(shuffled.iter().copied())
+            .unwrap_or_else(|e| panic!("case {case}: {e}"));
+        assert_eq!(a, b, "case {case}: permutation changed summary");
+
+        let split = r.random_range(0..=len);
+        if split > 0 && split < len {
+            let left = QuantileReducer::from_results(values[..split].iter().copied())
+                .unwrap_or_else(|e| panic!("case {case}: left: {e}"));
+            let right = QuantileReducer::from_results(values[split..].iter().copied())
+                .unwrap_or_else(|e| panic!("case {case}: right: {e}"));
+            assert_eq!(a, left.merged(&right), "case {case}: merge mismatch");
+        }
+
+        let scale = a.max().abs().max(a.min().abs()).max(1.0);
+        let tol = 1e-9 * scale;
+        let mut prev_q = f64::NEG_INFINITY;
+        let mut prev_upper = f64::NEG_INFINITY;
+        let mut prev_lower = f64::NEG_INFINITY;
+        for &p in &levels {
+            let q = a.quantile(p);
+            let uc = a.upper_cvar(p);
+            let lc = a.lower_cvar(p);
+            assert!(
+                q.is_finite() && uc.is_finite() && lc.is_finite(),
+                "case {case}"
+            );
+            assert!(q >= prev_q, "case {case}: quantile not monotonic at {p:?}");
+            assert!(uc >= prev_upper, "case {case}: upper_cvar not monotonic");
+            assert!(lc >= prev_lower, "case {case}: lower_cvar not monotonic");
+            assert!(
+                a.min() <= lc + tol && lc <= a.mean() + tol,
+                "case {case}: lower_cvar out of [min, mean]"
+            );
+            assert!(
+                a.mean() <= uc + tol && uc <= a.max() + tol,
+                "case {case}: upper_cvar out of [mean, max]"
+            );
+            assert!(
+                lc <= q + tol && q <= uc + tol,
+                "case {case}: lower_cvar <= quantile <= upper_cvar violated at {p:?}: {lc} / {q} / {uc}"
+            );
+            prev_q = q;
+            prev_upper = uc;
+            prev_lower = lc;
+        }
+    }
+}

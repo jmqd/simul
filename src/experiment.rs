@@ -12,6 +12,8 @@ pub mod cross_entropy;
 pub use cross_entropy::*;
 mod core;
 pub use core::*;
+mod stats;
+pub use stats::*;
 
 /// Tokenized deterministic search strategies.
 pub mod search;

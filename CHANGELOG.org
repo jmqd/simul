@@ -10,6 +10,13 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add quantile, tail-percentile, and CVaR experiment reducers
+Add =Probability=, =InvalidProbability=, =QuantileReducer=, =QuantileSummary=,
+=aggregate_quantiles=, and tail-risk selection policies (=MinimizeScalarMean=,
+=MinimizeQuantile=, =MaximizeQuantile=, =MinimizeUpperCvar=, and
+=MaximizeLowerCvar=). Reductions are exact, permutation-invariant, overflow-safe,
+and mergeable across batches.
+
 ** DONE Update Rust toolchain to 1.100.0 and refresh lockfile
 Update =rust-toolchain.toml= to Rust 1.100.0 and =rust-overlay= in =flake.lock=
 to 2026-11-20, update compatible lockfile dependencies (including =rand=
