@@ -1,7 +1,14 @@
 #+title: Changelog
 
-* Unreleased
-Newest entries first.
+* 0.7.0 (unreleased)
+A breaking release building with the Rust 2024 edition (MSRV remains 1.85).
+Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
+=AgentMode::AsleepUntil { until, then }= (removing =wake_mode= from
+=AgentState= and =AgentOptions=), =AgentContext::rng= is no longer =const fn=,
+=SimulationAgent::name= is now read-only through =name(&self)= with
+=Simulation::find_by_name_mut= returning =Option<&mut SimulationAgent<M>>=, and
+=Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
+entries first.
 
 ** DONE Update Rust toolchain to 1.100.0 and refresh lockfile
 Update =rust-toolchain.toml= to Rust 1.100.0 and =rust-overlay= in =flake.lock=

@@ -81,7 +81,7 @@ See `examples/simple_experiment.rs` for a complete typed experiment.
 
 ``` toml
 [dependencies]
-simul = "0.6.0"
+simul = "0.7.0"
 ```
 
 ``` rust
@@ -223,7 +223,7 @@ fn main() -> Result<(), SimulationError> {
   seed, the agent's name, and the tick, so equal seeds give equal runs, and
   adding or reordering other agents does not change an agent's draws.
 - `ctx.sleep_for(ticks)` puts an agent to sleep; it then wakes into the mode it
-  was built with. An agent that has not finished a message calls
+  slept from. An agent that has not finished a message calls
   `ctx.set_processing_status(MessageProcessingStatus::InProgress)` to keep it
   at the front of its queue for its next visit; the default, `Done`, consumes
   it.
