@@ -10,6 +10,19 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add =examples/connection_pool/= sizing & nested-pool deadlock showcase
+Add a configurable five-agent database connection-pool simulation in
+=examples/connection_pool/= with full CLI parameter controls, TSV data export,
+=plot.gp= gnuplot visualizations, and a comprehensive analysis report in
+=examples/connection_pool/README.md=. Demonstrates the HikariCP / Universal
+Scalability Law (USL) throughput knee and U-shaped latency crossover,
+hold-across-RPC starvation (Session vs. Transaction pooling), fast/slow
+bulkhead isolation and cancellable DB =statement_timeout= under paired CRN
+statistics, nested-pool deadlock phase cliffs with Wilson CIs and two-pass
+windowed Perfetto forensic replay, mixed-variable CEM + Pareto frontier
+discovery, and 6D Sobol global sensitivity screening (quartile =eta= vs.
+Spearman =rho=).
+
 ** DONE Add Python (=PyO3=) bindings crate in =python/=
 Add a standalone =maturin=-ready =PyO3= bindings crate (=python/=) exposing
 deterministic =Simulation= (including custom Python agents, =yield_control=,

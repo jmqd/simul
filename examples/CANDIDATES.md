@@ -135,14 +135,6 @@ model.
 - **Surprise.** Throughput is non-monotonic in batch size and the optimum moves
   with flakiness.
 
-### Connection pool sizing
-
-- **Dynamic.** Slow queries exhaust the pool, and a pool nested inside another
-  pool deadlocks. Little's law in action.
-- **Agents.** Request producer, a thread pool, a connection pool, a database.
-- **Experiment.** Pool sizes and query latency distribution.
-- **Surprise.** Smaller pools win.
-
 ### Tail latency in fan-out
 
 - **Dynamic.** A request fans out to a hundred shards, and the P99 of the

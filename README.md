@@ -86,7 +86,8 @@ Use-cases:
   `TrialContext::from_replay_key` reconstructs a trial from any retained
   `ReplayKey`.
 
-See `examples/simple_experiment.rs` and `examples/retry_storm.rs` for complete
+See `examples/simple_experiment.rs`, `examples/retry_storm.rs`, and
+[`examples/connection_pool/`](./examples/connection_pool/README.md) for complete
 typed experiments, and `python/` for optional Python (`PyO3`) bindings.
 
 ## Basic usage
