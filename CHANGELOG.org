@@ -10,6 +10,12 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add Latin Hypercube and Sobol space-filling samplers
+Add =sample_latin_hypercube=, =sample_sobol=, =sample_sobol_scrambled=,
+=SobolError=, and =MAX_SOBOL_DIMENSIONS= (32) to =simul::experiment::search=.
+Sobol uses Joe & Kuo primitive polynomials in Gray-code order with exact dyadic
+stratification across all 32 dimensions and optional seeded XOR digital shifts.
+
 ** DONE Add opt-in multi-message tick drain per agent
 Add =MessageDrain= (=One=, =UpTo(NonZeroUsize)=, =All=),
 =AgentOptions::message_drain=, =AgentInitializer::drain_messages=,
