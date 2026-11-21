@@ -1699,3 +1699,99 @@ fn paired_comparison_is_order_independent_and_antisymmetric() {
         }
     }
 }
+
+// Law: ParetoArchive produces the exact same frontier regardless of insertion
+// order; no frontier point dominates another; every omitted point is strictly
+// dominated by some frontier point; and 2D hypervolume is monotonic.
+#[test]
+fn pareto_frontier_is_order_independent_non_dominated_and_complete() {
+    use simul::experiment::{ObjectiveDirection, ParetoArchive, dominates, select_pareto_frontier};
+
+    for case in 0..300_u64 {
+        let mut r = rng(160_000 + case);
+        let dims = r.random_range(1..=4);
+        let directions: Vec<ObjectiveDirection> = (0..dims)
+            .map(|_| {
+                if r.random_bool(0.5) {
+                    ObjectiveDirection::Maximize
+                } else {
+                    ObjectiveDirection::Minimize
+                }
+            })
+            .collect();
+        let n = r.random_range(1..35_u64);
+        let items: Vec<(CandidateId, u64, Vec<f64>)> = (0..n)
+            .map(|id| {
+                let objs = (0..dims)
+                    .map(|_| f64::from(r.random_range(-5..=5)))
+                    .collect();
+                (CandidateId::new(id), id, objs)
+            })
+            .collect();
+
+        let forward = select_pareto_frontier(&directions, items.clone())
+            .unwrap_or_else(|e| panic!("case {case}: forward: {e}"));
+        let mut shuffled = items.clone();
+        shuffle(&mut r, &mut shuffled);
+        let permuted = select_pareto_frontier(&directions, shuffled)
+            .unwrap_or_else(|e| panic!("case {case}: permuted: {e}"));
+        assert_eq!(forward, permuted, "case {case}: order changed frontier");
+
+        // No frontier entry strictly dominates another.
+        for a in &forward {
+            for b in &forward {
+                assert!(
+                    !dominates(&a.objectives, &b.objectives, &directions),
+                    "case {case}: frontier entry {:?} dominates {:?}",
+                    a.candidate,
+                    b.candidate
+                );
+            }
+        }
+
+        // Every dropped candidate is strictly dominated by at least one frontier entry.
+        for (id, _, objs) in &items {
+            let on_frontier = forward.iter().any(|e| e.candidate == *id);
+            if !on_frontier {
+                assert!(
+                    forward
+                        .iter()
+                        .any(|e| dominates(&e.objectives, objs, &directions)),
+                    "case {case}: dropped candidate {id:?} was not dominated"
+                );
+            }
+        }
+
+        // For 2D cases, incremental insertions never decrease hypervolume.
+        if dims == 2 {
+            let reference = [
+                if directions[0] == ObjectiveDirection::Maximize {
+                    -10.0
+                } else {
+                    10.0
+                },
+                if directions[1] == ObjectiveDirection::Maximize {
+                    -10.0
+                } else {
+                    10.0
+                },
+            ];
+            let mut archive = ParetoArchive::new(directions)
+                .unwrap_or_else(|e| panic!("case {case}: archive: {e}"));
+            let mut prev_hv = 0.0_f64;
+            for (id, payload, objs) in items {
+                let _ = archive
+                    .insert(id, payload, objs)
+                    .unwrap_or_else(|e| panic!("case {case}: insert: {e}"));
+                let hv = archive
+                    .hypervolume_2d(reference)
+                    .unwrap_or_else(|e| panic!("case {case}: hv: {e}"));
+                assert!(
+                    hv + 1e-12 >= prev_hv,
+                    "case {case}: hypervolume decreased from {prev_hv} to {hv}"
+                );
+                prev_hv = hv;
+            }
+        }
+    }
+}

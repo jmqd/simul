@@ -10,6 +10,12 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add multi-objective Pareto frontier archive
+Add =ObjectiveDirection=, =ParetoArchive=, =ParetoEntry=, =ParetoError=,
+=dominates=, and =select_pareto_frontier= to =simul::experiment=, maintaining
+an exact insertion-order-independent non-dominated frontier with NSGA-II
+crowding distances and exact 2D dominated hypervolume.
+
 ** DONE Add mixed discrete/continuous cross-entropy optimizer
 Add =MixedCrossEntropyOptimizer=, =MixedCrossEntropyConfig=,
 =MixedDimension= (=Continuous=, =Circular=, =Categorical=, =Integer=),

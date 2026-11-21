@@ -14,6 +14,8 @@ mod core;
 pub use core::*;
 mod mixed_ce;
 pub use mixed_ce::*;
+mod pareto;
+pub use pareto::*;
 mod stats;
 pub use stats::*;
 
