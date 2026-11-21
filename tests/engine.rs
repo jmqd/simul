@@ -1967,3 +1967,154 @@ fn structured_trace_records_events_exports_jsonl_and_perfetto_without_perturbing
     assert!(window_trace.events().iter().all(|e| e.time >= 6));
     assert!(windowed.trace().is_none());
 }
+
+#[derive(Clone, Debug)]
+struct DecisionAgent {
+    mode_gain: f64,
+    total_reward: f64,
+    decision_ticks: Vec<simul::DiscreteTime>,
+}
+
+impl Agent<()> for DecisionAgent {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, ()>) {
+        let noise = ctx.rng().uniform_f64() * 10.0;
+        self.total_reward += self.mode_gain + noise;
+        if self.decision_ticks.contains(&ctx.time()) {
+            ctx.yield_control("choose_mode");
+        }
+    }
+}
+
+#[test]
+fn yield_control_and_counterfactual_branch_replications_support_external_planning() {
+    use simul::experiment::{
+        CandidateId, FailurePolicy, FixedReplications, MasterSeed, NonFinitePolicy,
+        compare_paired_candidates,
+    };
+    use simul::{RunOutcome, evaluate_branch_replications};
+
+    let mut sim = Simulation::<()>::builder(Halt::AtTime(20))
+        .seed(MasterSeed::from_u64(11))
+        .agent(AgentInitializer::proactive(
+            "actor",
+            DecisionAgent {
+                mode_gain: 0.0,
+                total_reward: 0.0,
+                decision_ticks: vec![5],
+            },
+        ))
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    // Runs until tick 5 finishes (so sim.time() == 6) and yields control.
+    let outcome = sim.run_until_yield(None);
+    assert_eq!(
+        RunOutcome::Yielded {
+            agent: AgentId::new(0),
+            tag: "choose_mode".into(),
+        },
+        outcome
+    );
+    assert_eq!(SimulationMode::Paused, sim.mode());
+    assert_eq!(Some("choose_mode"), sim.yield_tag());
+    assert_eq!(Some(AgentId::new(0)), sim.yielded_by());
+    assert_eq!(6, sim.time());
+
+    // Single-seed deterministic branch rollout from the yielded snapshot.
+    let single = sim.rollout_branches(
+        &[1.0_f64, 4.0_f64],
+        |branch, &gain| {
+            if let Some(actor) = branch
+                .find_by_name_mut("actor")
+                .and_then(|a| a.downcast_mut::<DecisionAgent>())
+            {
+                actor.mode_gain = gain;
+            }
+        },
+        |branch| {
+            branch
+                .find_by_name("actor")
+                .and_then(|a| a.downcast_ref::<DecisionAgent>())
+                .map_or(0.0, |a| a.total_reward)
+        },
+    );
+    assert!(single[1] > single[0]);
+
+    // CRN-paired stochastic future rollouts across 16 independent future seeds.
+    let records = evaluate_branch_replications(
+        &sim,
+        MasterSeed::from_u64(999),
+        FixedReplications::new(16, 1),
+        &[1.0_f64, 4.0_f64],
+        |branch, &gain| {
+            if let Some(actor) = branch
+                .find_by_name_mut("actor")
+                .and_then(|a| a.downcast_mut::<DecisionAgent>())
+            {
+                actor.mode_gain = gain;
+            }
+        },
+        |branch| {
+            Ok::<f64, ()>(
+                branch
+                    .find_by_name("actor")
+                    .and_then(|a| a.downcast_ref::<DecisionAgent>())
+                    .map_or(0.0, |a| a.total_reward),
+            )
+        },
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+
+    let paired = compare_paired_candidates(
+        &records,
+        CandidateId::new(0),
+        CandidateId::new(1),
+        |&v| v,
+        FailurePolicy::RejectCandidate,
+        NonFinitePolicy::RejectCandidate,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(paired.is_common_random_paired());
+    assert_eq!(16, paired.challenger_wins());
+    // 14 remaining ticks * (4.0 - 1.0) = exactly 42.0 gain on every CRN future.
+    assert!((paired.difference().mean() - 42.0).abs() < 1e-12);
+
+    // Commit winning action and resume the original simulation to completion.
+    if let Some(actor) = sim
+        .find_by_name_mut("actor")
+        .and_then(|a| a.downcast_mut::<DecisionAgent>())
+    {
+        actor.mode_gain = 4.0;
+    }
+    assert_eq!(RunOutcome::Halted, sim.run_until_yield(None));
+    assert_eq!(SimulationMode::Completed, sim.mode());
+    assert_eq!(None, sim.yield_tag());
+    assert_eq!(20, sim.time());
+}
+
+#[derive(Clone, Debug)]
+struct YieldAndHalt;
+
+impl Agent<()> for YieldAndHalt {
+    fn on_tick(&mut self, ctx: &mut AgentContext<'_, ()>) {
+        ctx.yield_control("decide");
+        ctx.send_halt_interrupt("fatal");
+    }
+}
+
+#[test]
+fn halt_interrupt_takes_precedence_over_yield_control_in_same_tick() {
+    use simul::RunOutcome;
+
+    let mut sim = Simulation::<()>::builder(Halt::AtTime(10))
+        .agent(AgentInitializer::proactive("both", YieldAndHalt))
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        RunOutcome::Interrupted("fatal".into()),
+        sim.run_until_yield(None)
+    );
+    assert_eq!(SimulationMode::Completed, sim.mode());
+    assert_eq!(Some("fatal"), sim.halt_reason());
+    assert_eq!(None, sim.yield_tag());
+}

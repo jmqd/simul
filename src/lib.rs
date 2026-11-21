@@ -112,7 +112,9 @@ use agent::{
     AgentMode, AgentState, AgentStreamCache, MessageDrain, MessageHistory, MessageProcessingStatus,
     Peers, QueueDepthChange, SimulationAgent, TimerId, WakeMode,
 };
-use experiment::{MasterSeed, TrialContext, TrialStream};
+use experiment::{
+    CandidateId, FixedReplications, MasterSeed, RunError, TrialContext, TrialRecord, TrialStream,
+};
 use message::Message;
 use trace::{SimulationTrace, TraceEventKind, TraceRecorder, debug_format_payload};
 
@@ -215,6 +217,9 @@ pub struct Simulation<M = ()> {
 
     /// The reason given by the interrupt that ended the latest run, if any.
     halt_reason: Option<String>,
+
+    /// The agent and tag from the latest [`AgentContext::yield_control`], if paused at a yield.
+    yield_point: Option<(AgentId, String)>,
 
     /// Messages sent with a delay and their receivers, by arrival tick and
     /// then send order.
@@ -679,14 +684,28 @@ impl QuietTicks {
     }
 }
 
-/// Why a run stopped.
-enum Stop {
-    /// The halt condition held.
+/// Why a simulation run stopped.
+///
+/// Returned by [`Simulation::run_until_yield`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RunOutcome {
+    /// The simulation's [`Halt`] condition held.
     Halted,
-    /// An agent sent a halt interrupt with this reason.
+    /// An agent sent [`AgentContext::send_halt_interrupt`] or triggered
+    /// [`UnknownDestinationPolicy::Halt`].
     Interrupted(String),
-    /// The run reached the time given to [`Simulation::run_until`].
-    Paused,
+    /// Reached the pause time passed to [`Simulation::run_until`] or
+    /// [`Simulation::run_until_yield`] before the run ended.
+    PausedAtTime,
+    /// An agent called [`AgentContext::yield_control`], pausing between ticks
+    /// so an external controller can inspect state, fork counterfactual
+    /// rollouts, or inject an action before resuming.
+    Yielded {
+        /// Identity of the first agent that requested a yield in issue order.
+        agent: AgentId,
+        /// Tag supplied to [`AgentContext::yield_control`].
+        tag: String,
+    },
 }
 
 /// Records a consumed message to an active trace out of line.
@@ -1058,6 +1077,7 @@ impl<M> Simulation<M> {
             layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
             agent_streams: AgentStreamCache::new(parameters.seed),
             halt_reason: None,
+            yield_point: None,
             in_flight: BTreeMap::new(),
             next_arrival: DiscreteTime::MAX,
             next_in_flight: 0,
@@ -1257,7 +1277,7 @@ impl<M> Simulation<M> {
     /// agent callback or the halt check panics. Any panic during the run
     /// leaves the simulation [`SimulationMode::Failed`].
     pub fn run(&mut self) {
-        self.run_guarded(None);
+        let _ = self.run_guarded(None);
     }
 
     /// Runs like [`Self::run`], but pauses once the simulation time reaches
@@ -1320,21 +1340,39 @@ impl<M> Simulation<M> {
     ///
     /// As [`Self::run`].
     pub fn run_until(&mut self, time: DiscreteTime) {
-        self.run_guarded(Some(time));
+        let _ = self.run_guarded(Some(time));
     }
 
-    /// Runs ticks until halted, interrupted, or paused at `until`, marking the
-    /// simulation failed if anything panics.
-    fn run_guarded(&mut self, until: Option<DiscreteTime>) {
+    /// Runs ticks until the simulation halts, hits an interrupt, reaches
+    /// `max_time` (if `Some`), or pauses at an agent's
+    /// [`AgentContext::yield_control`] decision point.
+    ///
+    /// When [`RunOutcome::Yielded`] is returned, the simulation is in
+    /// [`SimulationMode::Paused`] at a clean between-tick boundary: callers may
+    /// inspect observations, clone the simulation for counterfactual rollouts,
+    /// mutate agent state or inject messages, and call `run_until_yield` again
+    /// to resume deterministically.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::run`].
+    pub fn run_until_yield(&mut self, max_time: Option<DiscreteTime>) -> RunOutcome {
+        self.run_guarded(max_time)
+    }
+
+    /// Runs ticks until halted, interrupted, paused at `until`, or yielded by
+    /// an agent, marking the simulation failed if anything panics.
+    fn run_guarded(&mut self, until: Option<DiscreteTime>) -> RunOutcome {
         assert!(
             self.mode != SimulationMode::Failed,
             "a simulation that panicked mid-tick cannot run again"
         );
-        if let Err(payload) =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_ticks(until)))
-        {
-            self.mode = SimulationMode::Failed;
-            std::panic::resume_unwind(payload);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_ticks(until))) {
+            Ok(outcome) => outcome,
+            Err(payload) => {
+                self.mode = SimulationMode::Failed;
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 
@@ -1347,10 +1385,59 @@ impl<M> Simulation<M> {
 
     /// Returns the reason passed to [`AgentContext::send_halt_interrupt`] by
     /// the first interrupt that ended the latest run, or `None` when the run
-    /// ended by its [`Halt`] condition.
+    /// ended by its [`Halt`] condition or paused.
     #[must_use]
     pub fn halt_reason(&self) -> Option<&str> {
         self.halt_reason.as_deref()
+    }
+
+    /// Returns the tag passed to [`AgentContext::yield_control`] when the
+    /// latest run paused at a yield point, or `None` otherwise.
+    #[must_use]
+    pub fn yield_tag(&self) -> Option<&str> {
+        self.yield_point.as_ref().map(|(_, tag)| tag.as_str())
+    }
+
+    /// Returns the identity of the agent that paused the latest run via
+    /// [`AgentContext::yield_control`], or `None` otherwise.
+    #[must_use]
+    pub fn yielded_by(&self) -> Option<AgentId> {
+        self.yield_point.as_ref().map(|(agent, _)| *agent)
+    }
+
+    /// Replaces the simulation's root seed for all subsequent
+    /// [`AgentContext::rng`] calls without altering agents, queues, or time.
+    ///
+    /// Use this on a cloned, paused simulation to evaluate multiple stochastic
+    /// future rollouts from one shared decision-point prefix.
+    pub fn reseed(&mut self, seed: MasterSeed) {
+        self.agent_streams = AgentStreamCache::new(seed);
+    }
+
+    /// Evaluates each candidate action in `branches` from this paused snapshot:
+    /// clones `self`, applies `patch(&mut branch, action)`, runs `branch.run()`,
+    /// and collects `extract(&branch)`.
+    ///
+    /// Because agent random streams depend only on seed, name, and tick, each
+    /// branch shares identical future noise with the others (Common Random
+    /// Numbers) while executing the shared prefix only once.
+    pub fn rollout_branches<B, O>(
+        &self,
+        branches: &[B],
+        mut patch: impl FnMut(&mut Self, &B),
+        mut extract: impl FnMut(&Self) -> O,
+    ) -> Vec<O>
+    where
+        M: Clone,
+    {
+        let mut outcomes = Vec::with_capacity(branches.len());
+        for action in branches {
+            let mut branch = self.clone();
+            patch(&mut branch, action);
+            branch.run();
+            outcomes.push(extract(&branch));
+        }
+        outcomes
     }
 
     /// Evaluates the halt condition against the current state.
@@ -1362,11 +1449,12 @@ impl<M> Simulation<M> {
         }
     }
 
-    /// Executes ticks until the halt condition or an interrupt stops the run,
-    /// or until the time reaches `until`.
-    fn run_ticks(&mut self, until: Option<DiscreteTime>) {
+    /// Executes ticks until the halt condition, an interrupt, or a yield stops
+    /// the run, or until the time reaches `until`.
+    fn run_ticks(&mut self, until: Option<DiscreteTime>) -> RunOutcome {
         self.mode = SimulationMode::Running;
         self.halt_reason = None;
+        self.yield_point = None;
         let mut command_buffer: Vec<AgentCommand<M>> = Vec::new();
         if self.enable_queue_depth_metric {
             // Queues may have been edited between runs.
@@ -1384,12 +1472,12 @@ impl<M> Simulation<M> {
         // One compare per tick: an unset pause only matches at u64::MAX, where
         // `until.is_some()` lets an unpaused run reach the overflow panic.
         let pause_at = until.unwrap_or(DiscreteTime::MAX);
-        let stop = loop {
+        let outcome = loop {
             if self.halt_reached() {
-                break Stop::Halted;
+                break RunOutcome::Halted;
             }
             if self.time >= pause_at && until.is_some() {
-                break Stop::Paused;
+                break RunOutcome::PausedAtTime;
             }
             let Some(next_time) = self.time.checked_add(1) else {
                 panic!("simulation time exceeds u64::MAX");
@@ -1403,7 +1491,7 @@ impl<M> Simulation<M> {
                 None => self.run_dense_tick(&mut command_buffer, &mut has_cancellations),
             };
 
-            let interrupt = self.process_command_buffer(
+            let (interrupt, yield_point) = self.process_command_buffer(
                 &mut command_buffer,
                 has_cancellations,
                 scheduler.sparse_mut(),
@@ -1412,7 +1500,10 @@ impl<M> Simulation<M> {
 
             self.time = next_time;
             if let Some(reason) = interrupt {
-                break Stop::Interrupted(reason);
+                break RunOutcome::Interrupted(reason);
+            }
+            if let Some((agent, tag)) = yield_point {
+                break RunOutcome::Yielded { agent, tag };
             }
             scheduler.after_tick(callbacks, &self.agents);
             // A tick without callbacks issued no commands, so state can change
@@ -1423,11 +1514,17 @@ impl<M> Simulation<M> {
             }
         };
 
-        (self.mode, self.halt_reason) = match stop {
-            Stop::Halted => (SimulationMode::Completed, None),
-            Stop::Interrupted(reason) => (SimulationMode::Completed, Some(reason)),
-            Stop::Paused => (SimulationMode::Paused, None),
+        (self.mode, self.halt_reason, self.yield_point) = match &outcome {
+            RunOutcome::Halted => (SimulationMode::Completed, None, None),
+            RunOutcome::Interrupted(reason) => {
+                (SimulationMode::Completed, Some(reason.clone()), None)
+            }
+            RunOutcome::PausedAtTime => (SimulationMode::Paused, None, None),
+            RunOutcome::Yielded { agent, tag } => {
+                (SimulationMode::Paused, None, Some((*agent, tag.clone())))
+            }
         };
+        outcome
     }
 
     /// Jumps from a tick without callbacks to the next tick at which an agent
@@ -1596,7 +1693,8 @@ impl<M> Simulation<M> {
     }
 
     /// Applies buffered Agent commands in the order they were issued, and
-    /// returns the reason of the first halt interrupt among them, if any.
+    /// returns the first halt interrupt reason and the first yield point among
+    /// them, if any.
     #[inline]
     fn process_command_buffer(
         &mut self,
@@ -1604,8 +1702,9 @@ impl<M> Simulation<M> {
         has_cancellations: bool,
         mut schedule: Option<&mut SparseSchedule>,
         next_time: DiscreteTime,
-    ) -> Option<String> {
+    ) -> (Option<String>, Option<(AgentId, String)>) {
         let mut interrupt = None;
+        let mut yield_point = None;
         let cancelled_next_tick = if has_cancellations {
             self.cancel_due_timers(command_buffer, next_time)
         } else {
@@ -1666,6 +1765,11 @@ impl<M> Simulation<M> {
                     }
                 }
 
+                AgentCommandType::YieldControl(tag) => {
+                    yield_point
+                        .get_or_insert_with(|| (AgentId::from_handle(command.agent_handle), tag));
+                }
+
                 AgentCommandType::HaltSimulation(reason) => {
                     if self.trace_active() {
                         self.record_trace_halt(command.agent_handle, &reason);
@@ -1675,7 +1779,7 @@ impl<M> Simulation<M> {
                 }
             }
         }
-        interrupt
+        (interrupt, yield_point)
     }
 
     /// Returns whether structured tracing is currently recording events.
@@ -1924,6 +2028,53 @@ impl<M: std::fmt::Debug> Simulation<M> {
             self.trace = Some(TraceRecorder::new(names, Some(debug_format_payload::<M>)));
         }
     }
+}
+
+/// Evaluates counterfactual `branches` forked from a shared paused or yielded
+/// `trunk` simulation across `schedule` replications using Common Random
+/// Numbers (`CRN`).
+///
+/// Each branch index `i` is assigned a [`CandidateId`] with integer value
+/// `i as u64`. For
+/// every `(branch, replication)` pair, this clones `trunk`, reseeds it with
+/// that replication's common-random `simul::Simulation` seed (so all branches
+/// experience identical stochastic futures on each replication), applies
+/// `patch(&mut branch, action)`, runs `branch.run()`, and returns
+/// `evaluate(&branch)`.
+///
+/// The returned [`TrialRecord`]s are directly compatible with
+/// [`aggregate_scalar`](experiment::aggregate_scalar),
+/// [`aggregate_quantiles`](experiment::aggregate_quantiles),
+/// [`compare_paired_candidates`](experiment::compare_paired_candidates), and
+/// [`ParetoArchive`](experiment::ParetoArchive).
+///
+/// # Errors
+///
+/// Returns [`RunError`] if serial execution encounters a batch limit,
+/// allocation error, or evaluator panic.
+pub fn evaluate_branch_replications<M, B, O, E>(
+    trunk: &Simulation<M>,
+    master_seed: MasterSeed,
+    schedule: FixedReplications,
+    branches: &[B],
+    patch: impl Fn(&mut Simulation<M>, &B),
+    evaluate: impl Fn(&Simulation<M>) -> Result<O, E>,
+) -> Result<Vec<TrialRecord<O, E>>, RunError>
+where
+    M: Clone,
+{
+    let trials = branches.iter().enumerate().flat_map(|(index, action)| {
+        let candidate = CandidateId::new(u64::try_from(index).unwrap_or(u64::MAX));
+        schedule.trials(candidate, action)
+    });
+    experiment::run_serial(master_seed, trials, |&action, ctx| {
+        let mut branch = trunk.clone();
+        let future_seed = ctx.common_seed(TrialStream::TrialNoise, "simul::Simulation");
+        branch.reseed(MasterSeed::new(future_seed.bytes()));
+        patch(&mut branch, action);
+        branch.run();
+        evaluate(&branch)
+    })
 }
 
 #[cfg(test)]

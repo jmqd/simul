@@ -416,6 +416,9 @@ pub(crate) enum AgentCommandType<M> {
     },
     /// Cancel a pending delayed message if it has not been delivered yet.
     CancelTimer(TimerId),
+    /// Pause the simulation after this tick and yield control to an external
+    /// controller with the given tag.
+    YieldControl(String),
     /// Stop the simulation after this tick; the payload is the reason.
     HaltSimulation(String),
 }
@@ -789,6 +792,26 @@ impl<'a, M> AgentContext<'a, M> {
     pub fn send_halt_interrupt(&mut self, reason: &str) {
         self.commands.push(AgentCommand {
             ty: AgentCommandType::HaltSimulation(reason.to_string()),
+            agent_handle: self.id.index(),
+        });
+    }
+
+    /// Requests that the simulation pause after the current tick completes,
+    /// yielding control to an external caller (such as an RL policy, LLM
+    /// agent, or counterfactual rollout planner).
+    ///
+    /// Remaining agents finish this tick and all buffered commands are applied
+    /// in order before the simulation enters
+    /// [`SimulationMode::Paused`](crate::SimulationMode::Paused). The first
+    /// yield in issue order is returned by
+    /// [`Simulation::run_until_yield`](crate::Simulation::run_until_yield) and
+    /// readable through [`Simulation::yield_tag`](crate::Simulation::yield_tag)
+    /// and [`Simulation::yielded_by`](crate::Simulation::yielded_by). A halt
+    /// interrupt in the same tick takes precedence over a yield.
+    #[inline]
+    pub fn yield_control(&mut self, tag: &str) {
+        self.commands.push(AgentCommand {
+            ty: AgentCommandType::YieldControl(tag.to_string()),
             agent_handle: self.id.index(),
         });
     }

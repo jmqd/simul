@@ -10,6 +10,13 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add step/yield external-actor API and counterfactual branching rollouts
+Add =AgentContext::yield_control=, =RunOutcome=, =Simulation::run_until_yield=,
+=Simulation::yield_tag=, =Simulation::yielded_by=, =Simulation::reseed=,
+=Simulation::rollout_branches=, and =evaluate_branch_replications=. Agents can
+pause between ticks for an external RL/LLM controller, fork counterfactual
+branches across CRN-paired stochastic future seeds, and resume deterministically.
+
 ** DONE Add =examples/retry_storm.rs= metastable-failure showcase
 Add =examples/retry_storm.rs= modeling a retry storm triggered by a transient
 downstream fault, demonstrating cancellable timers, multi-message tick drain,
