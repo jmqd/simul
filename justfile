@@ -8,13 +8,17 @@ check: test lint fmt-check audit doc check-licenses check-udeps
 # Fix all auto-fixable issues
 fix: fix-clippy fix-fmt fix-audit fix-cargo
 
-# Run tests
+# Run tests (with and without optional features, plus doctests)
 test:
     cargo test --all-features --all-targets
+    cargo test --all-features --doc
+    cargo test --no-default-features --lib --tests
+    cargo test --no-default-features --doc
 
 # Run clippy lints
 lint:
     cargo clippy --all-features --all-targets -- -D warnings
+    cargo clippy --no-default-features --all-targets -- -D warnings
 
 # Install the nightly components required by the pinned Dylint libraries
 dylint-toolchain:
@@ -32,9 +36,9 @@ fmt-check:
 audit:
     cargo audit
 
-# Build documentation
+# Build documentation and fail on warnings
 doc:
-    cargo doc --all-features
+    RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 
 # Check that every dependency is MIT, Apache-2.0, or BSD-2/3 licensed
 check-licenses:
@@ -52,7 +56,7 @@ check-licenses:
 
 # Check unused dependencies (requires nightly/RUSTC_BOOTSTRAP)
 check-udeps:
-    RUSTC_BOOTSTRAP=1 cargo udeps
+    RUSTC_BOOTSTRAP=1 cargo udeps --all-features --all-targets
 
 # Fix clippy issues
 fix-clippy:

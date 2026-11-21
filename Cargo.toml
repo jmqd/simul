@@ -32,6 +32,9 @@ include = [
     "/LICENSE",
 ]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [profile.release]
 lto = "fat"
 panic = "abort"
@@ -58,7 +61,6 @@ harness = false
 [[bench]]
 name = "deterministic_search_benchmark"
 harness = false
-
 
 [[bench]]
 name = "cross_entropy_benchmark"
