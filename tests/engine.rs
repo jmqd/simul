@@ -1723,3 +1723,150 @@ fn unknown_destination_policy_counts_halts_or_panics() {
     assert!(outcome.is_err());
     assert_eq!(SimulationMode::Failed, panicked.mode());
 }
+
+#[derive(Clone, Debug, Default)]
+struct BatchWorker {
+    seen: Vec<(simul::DiscreteTime, u32, u64)>,
+    sleep_on: Option<u32>,
+    in_progress_once: Option<u32>,
+}
+
+impl Agent<u32> for BatchWorker {
+    fn on_message(&mut self, ctx: &mut AgentContext<'_, u32>, msg: &Message<u32>) {
+        let draw = ctx.rng().next_u64();
+        self.seen.push((ctx.time(), msg.payload, draw));
+        if self.in_progress_once == Some(msg.payload) {
+            self.in_progress_once = None;
+            ctx.set_processing_status(MessageProcessingStatus::InProgress);
+            return;
+        }
+        if self.sleep_on == Some(msg.payload) {
+            ctx.sleep_for(3);
+        }
+    }
+}
+
+#[test]
+fn multi_message_drain_handles_bursts_limits_sleep_in_progress_and_sparse_mode() {
+    use simul::agent::MessageDrain;
+    use std::num::NonZeroUsize;
+
+    let initial: Vec<Message<u32>> = (0..5).map(|i| Message::new(0, i)).collect();
+
+    // MessageDrain::All drains all 5 messages on tick 0 with distinct rng draws.
+    let mut all_sim = Simulation::builder(Halt::AtTime(5))
+        .agent(
+            AgentInitializer::reactive("worker", BatchWorker::default())
+                .drain_all_messages()
+                .initial_queue(initial.clone()),
+        )
+        .queue_depth_metrics(true)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    all_sim.run();
+    let all_worker = all_sim
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<BatchWorker>())
+        .unwrap_or_else(|| panic!("worker"));
+    assert_eq!(5, all_worker.seen.len());
+    assert!(all_worker.seen.iter().all(|(t, _, _)| *t == 0));
+    let unique_draws: std::collections::BTreeSet<u64> =
+        all_worker.seen.iter().map(|(_, _, d)| *d).collect();
+    assert_eq!(
+        5,
+        unique_draws.len(),
+        "each drained message gets a fresh rng window"
+    );
+
+    // MessageDrain::UpTo(2) processes 2 on tick 0, 2 on tick 1, 1 on tick 2.
+    let mut bounded = Simulation::builder(Halt::AtTime(5))
+        .agent(
+            AgentInitializer::reactive("worker", BatchWorker::default())
+                .drain_messages(MessageDrain::UpTo(
+                    NonZeroUsize::new(2).unwrap_or_else(|| panic!("nonzero")),
+                ))
+                .initial_queue(initial),
+        )
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    bounded.run();
+    let bounded_times: Vec<(simul::DiscreteTime, u32)> = bounded
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<BatchWorker>())
+        .unwrap_or_else(|| panic!("worker"))
+        .seen
+        .iter()
+        .map(|&(t, p, _)| (t, p))
+        .collect();
+    assert_eq!(vec![(0, 0), (0, 1), (1, 2), (1, 3), (2, 4)], bounded_times);
+}
+
+#[test]
+fn multi_message_drain_stops_on_sleep_or_in_progress_and_matches_sparse_mode() {
+    let initial: Vec<Message<u32>> = (0..5).map(|i| Message::new(0, i)).collect();
+    // Sleep and InProgress both stop draining mid-tick.
+    let mut controlled = Simulation::builder(Halt::AtTime(10))
+        .agent(
+            AgentInitializer::reactive(
+                "worker",
+                BatchWorker {
+                    seen: Vec::new(),
+                    sleep_on: Some(1),
+                    in_progress_once: Some(3),
+                },
+            )
+            .drain_all_messages()
+            .initial_queue(initial),
+        )
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    controlled.run();
+    let controlled_times: Vec<(simul::DiscreteTime, u32)> = controlled
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<BatchWorker>())
+        .unwrap_or_else(|| panic!("worker"))
+        .seen
+        .iter()
+        .map(|&(t, p, _)| (t, p))
+        .collect();
+    // Tick 0: 0 (Done), 1 (Done + sleep_for(3) -> stops drain, wakes at tick 3).
+    // Tick 3: 2 (Done), 3 (InProgress -> pushed back, stops drain).
+    // Tick 4: 3 (Done), 4 (Done).
+    assert_eq!(
+        vec![(0, 0), (0, 1), (3, 2), (3, 3), (4, 3), (4, 4)],
+        controlled_times
+    );
+
+    // Sparse (>64 agents) matches dense identically.
+    let mut sparse_builder = Simulation::builder(Halt::AtTime(10)).agent(
+        AgentInitializer::reactive(
+            "worker",
+            BatchWorker {
+                seen: Vec::new(),
+                sleep_on: Some(1),
+                in_progress_once: Some(3),
+            },
+        )
+        .drain_all_messages()
+        .initial_queue((0..5).map(|i| Message::new(0, i))),
+    );
+    for idx in 0..70 {
+        sparse_builder = sparse_builder.agent(AgentInitializer::reactive(
+            format!("idle-{idx}"),
+            BatchWorker::default(),
+        ));
+    }
+    let mut sparse = sparse_builder
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    sparse.run();
+    let sparse_times: Vec<(simul::DiscreteTime, u32)> = sparse
+        .find_by_name("worker")
+        .and_then(|a| a.downcast_ref::<BatchWorker>())
+        .unwrap_or_else(|| panic!("worker"))
+        .seen
+        .iter()
+        .map(|&(t, p, _)| (t, p))
+        .collect();
+    assert_eq!(controlled_times, sparse_times);
+}

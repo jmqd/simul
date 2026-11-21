@@ -10,6 +10,14 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add opt-in multi-message tick drain per agent
+Add =MessageDrain= (=One=, =UpTo(NonZeroUsize)=, =All=),
+=AgentOptions::message_drain=, =AgentInitializer::drain_messages=,
+=AgentInitializer::drain_all_messages=, =SimulationAgent::message_drain=, and
+=SimulationAgent::set_message_drain= so routers, pumps, and coordinators can
+process bursts in one tick while stopping early on =sleep_for= or
+=MessageProcessingStatus::InProgress=.
+
 ** DONE Add strict unknown-destination routing policies
 Add =UnknownDestinationPolicy= (=Drop=, =Halt=, =Panic=),
 =SimulationBuilder::unknown_destination_policy=,

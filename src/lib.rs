@@ -107,8 +107,8 @@ struct ReadmeDoctests;
 
 use agent::{
     AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
-    AgentMode, AgentState, AgentStreamCache, MessageHistory, MessageProcessingStatus,
-    QueueDepthChange, SimulationAgent, TimerId, WakeMode,
+    AgentMode, AgentState, AgentStreamCache, MessageDrain, MessageHistory, MessageProcessingStatus,
+    Peers, QueueDepthChange, SimulationAgent, TimerId, WakeMode,
 };
 use experiment::{MasterSeed, TrialContext, TrialStream};
 use message::Message;
@@ -700,6 +700,9 @@ fn visit_agent<M>(
         }
         AgentMode::Dead => return (false, None),
     };
+    if agent.message_drain != MessageDrain::One {
+        return visit_agent_multi_drain(agent, peers, handle, wake_mode, tick);
+    }
     let proactive = wake_mode == WakeMode::Proactive;
     let message = agent.state.queue.pop_front();
     if tick.queue_depth_metric && message.is_some() {
@@ -750,6 +753,98 @@ fn visit_agent<M>(
             }
             MessageProcessingStatus::Done => agent.record_consumed(msg, tick.time),
         }
+    }
+    if let Some(sleep_until) = requested_sleep_until {
+        agent.state.mode = AgentMode::AsleepUntil {
+            until: sleep_until,
+            then: wake_mode,
+        };
+    }
+    (true, requested_sleep_until)
+}
+
+/// Outlined visit path for agents configured with [`MessageDrain::UpTo`] or
+/// [`MessageDrain::All`], keeping the default single-message loop compact.
+#[inline(never)]
+fn visit_agent_multi_drain<M>(
+    agent: &mut SimulationAgent<M>,
+    peers: Option<Peers<'_, M>>,
+    handle: usize,
+    wake_mode: WakeMode,
+    tick: &mut Tick<'_, M>,
+) -> (bool, Option<DiscreteTime>) {
+    let proactive = wake_mode == WakeMode::Proactive;
+    if !proactive && agent.state.queue.is_empty() {
+        return (false, None);
+    }
+    let limit = match agent.message_drain {
+        MessageDrain::One => 1,
+        MessageDrain::UpTo(max) => max.get(),
+        MessageDrain::All => usize::MAX,
+    };
+    let mut requested_sleep_until = None;
+    let mut calls = 0_u64;
+    let mut handled = 0_usize;
+    while handled < limit && requested_sleep_until.is_none() {
+        let Some(msg) = agent.state.queue.pop_front() else {
+            break;
+        };
+        if tick.queue_depth_metric {
+            agent.record_queue_depth(tick.time);
+        }
+        let mut ctx = AgentContext {
+            id: AgentId::from_handle(handle),
+            name: &agent.name,
+            time: tick.time,
+            commands: &mut *tick.commands,
+            requested_sleep_until: &mut requested_sleep_until,
+            peers,
+            agent_name_handle_map: tick.agent_name_handle_map,
+            agent_count: tick.agent_count,
+            layout: tick.layout,
+            state: &agent.state,
+            message_processing_status: MessageProcessingStatus::Done,
+            agent_streams: &mut *tick.agent_streams,
+            calls,
+            next_in_flight: &mut *tick.next_in_flight,
+            has_cancellations: &mut *tick.has_cancellations,
+        };
+        agent.agent.on_message(&mut ctx, &msg);
+        calls = ctx.calls;
+        let status = ctx.message_processing_status;
+        match status {
+            MessageProcessingStatus::InProgress => {
+                agent.state.queue.push_front(msg);
+                if tick.queue_depth_metric {
+                    agent.record_queue_depth(tick.time.saturating_add(1));
+                }
+                break;
+            }
+            MessageProcessingStatus::Done => {
+                agent.record_consumed(msg, tick.time);
+                handled += 1;
+            }
+        }
+    }
+    if proactive {
+        let mut ctx = AgentContext {
+            id: AgentId::from_handle(handle),
+            name: &agent.name,
+            time: tick.time,
+            commands: &mut *tick.commands,
+            requested_sleep_until: &mut requested_sleep_until,
+            peers,
+            agent_name_handle_map: tick.agent_name_handle_map,
+            agent_count: tick.agent_count,
+            layout: tick.layout,
+            state: &agent.state,
+            message_processing_status: MessageProcessingStatus::Done,
+            agent_streams: &mut *tick.agent_streams,
+            calls,
+            next_in_flight: &mut *tick.next_in_flight,
+            has_cancellations: &mut *tick.has_cancellations,
+        };
+        agent.agent.on_tick(&mut ctx);
     }
     if let Some(sleep_until) = requested_sleep_until {
         agent.state.mode = AgentMode::AsleepUntil {
@@ -844,6 +939,7 @@ impl<M> Simulation<M> {
                         produced: Vec::with_capacity(history_capacity),
                         copy,
                     }),
+                    message_drain: agent_initializer.options.message_drain,
                 }
             })
             .collect();

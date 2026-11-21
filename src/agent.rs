@@ -4,7 +4,7 @@ use dyn_clone::DynClone;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::fmt;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 /// Possible states an Agent can be in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Default)]
@@ -213,6 +213,9 @@ pub struct SimulationAgent<M = ()> {
 
     /// `None` unless the simulation records message history.
     pub(crate) history: Option<MessageHistory<M>>,
+
+    /// How many queued messages this agent may handle in one tick.
+    pub(crate) message_drain: MessageDrain,
 }
 
 impl<M> SimulationAgent<M> {
@@ -220,6 +223,17 @@ impl<M> SimulationAgent<M> {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns how many queued messages this agent may handle in a single tick.
+    #[must_use]
+    pub const fn message_drain(&self) -> MessageDrain {
+        self.message_drain
+    }
+
+    /// Changes how many queued messages this agent may handle in a single tick.
+    pub const fn set_message_drain(&mut self, drain: MessageDrain) {
+        self.message_drain = drain;
     }
 
     /// Returns the agent's behavior as an `A`, or `None` if it is another
@@ -409,6 +423,25 @@ pub(crate) enum AgentCommandType<M> {
 /// Agents before and after the visited one, which small simulations scan to
 /// route messages by name.
 pub(crate) type Peers<'a, M> = (&'a [SimulationAgent<M>], &'a [SimulationAgent<M>]);
+
+/// How many queued messages an awake agent may handle in a single tick.
+///
+/// Configure per agent with [`AgentInitializer::drain_messages`],
+/// [`AgentInitializer::drain_all_messages`], or
+/// [`SimulationAgent::set_message_drain`].
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum MessageDrain {
+    /// Handle at most one queued message per tick (the default).
+    #[default]
+    One,
+    /// Handle up to `limit` queued messages per tick, stopping early if the
+    /// agent sleeps or marks a message [`MessageProcessingStatus::InProgress`].
+    UpTo(NonZeroUsize),
+    /// Drain every message currently queued at the start of the tick, stopping
+    /// early if the agent sleeps or marks a message
+    /// [`MessageProcessingStatus::InProgress`].
+    All,
+}
 
 /// Whether the message an agent just handled is finished.
 ///
@@ -840,6 +873,9 @@ pub struct AgentOptions<M = ()> {
     pub initial_queue: VecDeque<Message<M>>,
     /// The agent's name, unique within its simulation.
     pub name: String,
+    /// How many queued messages this agent may handle per tick. Defaults to
+    /// [`MessageDrain::One`].
+    pub message_drain: MessageDrain,
 }
 
 // A derive would demand `M: Default` just to start with an empty queue.
@@ -849,6 +885,7 @@ impl<M> Default for AgentOptions<M> {
             initial_mode: AgentMode::default(),
             initial_queue: VecDeque::new(),
             name: String::new(),
+            message_drain: MessageDrain::One,
         }
     }
 }
@@ -905,8 +942,24 @@ impl<M> AgentInitializer<M> {
                 initial_mode: mode,
                 initial_queue: VecDeque::new(),
                 name,
+                message_drain: MessageDrain::One,
             },
         }
+    }
+
+    /// Configures how many queued messages this agent may handle per tick.
+    #[must_use]
+    pub const fn drain_messages(mut self, drain: MessageDrain) -> Self {
+        self.options.message_drain = drain;
+        self
+    }
+
+    /// Configures this agent to drain all currently queued messages each tick
+    /// (unless it sleeps or marks a message [`MessageProcessingStatus::InProgress`]).
+    #[must_use]
+    pub const fn drain_all_messages(mut self) -> Self {
+        self.options.message_drain = MessageDrain::All;
+        self
     }
 
     /// Starts the agent asleep until tick `time`; it then wakes into the mode
