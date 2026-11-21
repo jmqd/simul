@@ -10,6 +10,14 @@ Breaking API changes: =AgentMode::AsleepUntil(t)= becomes
 =Simulation::find_agent= takes =FnMut(&SimulationAgent<M>) -> bool=. Newest
 entries first.
 
+** DONE Add strict unknown-destination routing policies
+Add =UnknownDestinationPolicy= (=Drop=, =Halt=, =Panic=),
+=SimulationBuilder::unknown_destination_policy=,
+=Simulation::unknown_destination_policy=, and
+=Simulation::unknown_destination_count= so misrouted sends to unknown names or
+out-of-range =AgentId=s can be detected deterministically instead of only
+dropping silently.
+
 ** DONE Add cancellable timers via =TimerId= and =cancel_timer=
 =AgentContext::send_after= now returns a =TimerId= (with =arrival()=), and
 =AgentContext::cancel_timer= / =Simulation::cancel_timer= /

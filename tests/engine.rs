@@ -1664,3 +1664,62 @@ fn cancelled_timer_does_not_defeat_quiet_tick_skipping_or_sparse_scheduling() {
         .received;
     assert_eq!(&[(0, "start"), (1, "complete")], received.as_slice());
 }
+
+#[test]
+fn unknown_destination_policy_counts_halts_or_panics() {
+    use simul::UnknownDestinationPolicy;
+
+    // Default Drop counts unknown sends without halting.
+    let mut dropped = Simulation::<()>::builder(Halt::AtTime(5))
+        .agent(periodic_producer("sender", 1, "missing"))
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        UnknownDestinationPolicy::Drop,
+        dropped.unknown_destination_policy()
+    );
+    dropped.run();
+    assert_eq!(SimulationMode::Completed, dropped.mode());
+    assert_eq!(None, dropped.halt_reason());
+    assert_eq!(5, dropped.unknown_destination_count());
+
+    // Halt stops after the first offending tick with a clear halt reason.
+    let mut halted = Simulation::<()>::builder(Halt::AtTime(5))
+        .agent(periodic_producer("sender", 1, "missing"))
+        .unknown_destination_policy(UnknownDestinationPolicy::Halt)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    halted.run();
+    assert_eq!(SimulationMode::Completed, halted.mode());
+    assert_eq!(1, halted.time());
+    assert_eq!(1, halted.unknown_destination_count());
+    assert_eq!(
+        Some("unknown destination sent by 'sender' at tick 0"),
+        halted.halt_reason()
+    );
+
+    // Delayed send to an unknown AgentId also triggers Halt.
+    let mut delayed_halted = Simulation::builder(Halt::AtTime(10))
+        .agent(AgentInitializer::proactive("delayed_sender", SendToNobody))
+        .unknown_destination_policy(UnknownDestinationPolicy::Halt)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    delayed_halted.run();
+    assert_eq!(SimulationMode::Completed, delayed_halted.mode());
+    assert_eq!(1, delayed_halted.time());
+    assert_eq!(2, delayed_halted.unknown_destination_count());
+    assert_eq!(
+        Some("unknown destination sent by 'delayed_sender' at tick 0"),
+        delayed_halted.halt_reason()
+    );
+
+    // Panic marks the simulation Failed.
+    let mut panicked = Simulation::<()>::builder(Halt::AtTime(5))
+        .agent(periodic_producer("sender", 1, "missing"))
+        .unknown_destination_policy(UnknownDestinationPolicy::Panic)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| panicked.run()));
+    assert!(outcome.is_err());
+    assert_eq!(SimulationMode::Failed, panicked.mode());
+}

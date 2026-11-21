@@ -222,6 +222,30 @@ pub struct Simulation<M = ()> {
 
     /// Send-order number of the next delayed message.
     next_in_flight: u64,
+
+    /// How messages with unknown or out-of-range destinations are handled.
+    unknown_destination_policy: UnknownDestinationPolicy,
+
+    /// Number of messages addressed to an unknown agent name or out-of-range
+    /// [`AgentId`].
+    unknown_destination_count: u64,
+}
+
+/// How a simulation handles a message addressed to an unknown agent name or
+/// out-of-range [`AgentId`].
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum UnknownDestinationPolicy {
+    /// Count the message as produced on the sender and silently drop it
+    /// (the default).
+    #[default]
+    Drop,
+    /// Count the message as produced and stop the simulation after the current
+    /// tick with a halt reason naming the sender, ending in
+    /// [`SimulationMode::Completed`].
+    Halt,
+    /// Panic immediately while processing commands, leaving the simulation in
+    /// [`SimulationMode::Failed`].
+    Panic,
 }
 
 /// When a simulation stops running.
@@ -294,6 +318,8 @@ pub struct SimulationBuilder<M = ()> {
     message_history: Option<CloneMessage<M>>,
     /// Root of every agent's [`AgentContext::rng`] stream.
     seed: MasterSeed,
+    /// How sends to unknown or out-of-range destinations are handled.
+    unknown_destination_policy: UnknownDestinationPolicy,
 }
 
 /// Copies a message; recording a history is the only reason the engine
@@ -350,6 +376,13 @@ impl<M> SimulationBuilder<M> {
     /// dense scheduling.
     pub const fn asleep_cycles_metric(mut self, enabled: bool) -> Self {
         self.asleep_cycles_metric = enabled;
+        self
+    }
+
+    /// Configures how messages sent to an unknown agent name or out-of-range
+    /// [`AgentId`] are handled. Defaults to [`UnknownDestinationPolicy::Drop`].
+    pub const fn unknown_destination_policy(mut self, policy: UnknownDestinationPolicy) -> Self {
+        self.unknown_destination_policy = policy;
         self
     }
 
@@ -741,6 +774,7 @@ impl<M> Simulation<M> {
             asleep_cycles_metric: false,
             message_history: None,
             seed: MasterSeed::from_u64(0),
+            unknown_destination_policy: UnknownDestinationPolicy::Drop,
         }
     }
 
@@ -828,6 +862,8 @@ impl<M> Simulation<M> {
             in_flight: BTreeMap::new(),
             next_arrival: DiscreteTime::MAX,
             next_in_flight: 0,
+            unknown_destination_policy: parameters.unknown_destination_policy,
+            unknown_destination_count: 0,
         })
     }
 
@@ -957,6 +993,20 @@ impl<M> Simulation<M> {
     pub fn is_timer_pending(&self, timer: TimerId) -> bool {
         self.in_flight
             .contains_key(&(timer.arrival, timer.sequence))
+    }
+
+    /// Returns the policy applied to messages addressed to an unknown agent
+    /// name or out-of-range [`AgentId`].
+    #[must_use]
+    pub const fn unknown_destination_policy(&self) -> UnknownDestinationPolicy {
+        self.unknown_destination_policy
+    }
+
+    /// Returns how many messages were addressed to an unknown agent name or
+    /// out-of-range [`AgentId`].
+    #[must_use]
+    pub const fn unknown_destination_count(&self) -> u64 {
+        self.unknown_destination_count
     }
 
     /// Runs the simulation until its halt condition holds or an agent sends a
@@ -1328,6 +1378,10 @@ impl<M> Simulation<M> {
                     self.record_produced(command.agent_handle, &message);
                     if let Some(destination) = message.destination {
                         self.deliver(destination, message, schedule.as_deref_mut(), next_time);
+                    } else if let Some(reason) =
+                        self.handle_unknown_destination(command.agent_handle, self.time)
+                    {
+                        interrupt.get_or_insert(reason);
                     }
                 }
 
@@ -1342,10 +1396,16 @@ impl<M> Simulation<M> {
                                     schedule.as_deref_mut(),
                                     next_time,
                                 );
+                            } else if let Some(reason) =
+                                self.handle_unknown_destination(command.agent_handle, self.time)
+                            {
+                                interrupt.get_or_insert(reason);
                             }
                         }
-                    } else {
-                        self.hold_delayed(command.agent_handle, timer, message, next_time);
+                    } else if let Some(reason) =
+                        self.hold_delayed(command.agent_handle, timer, message, next_time)
+                    {
+                        interrupt.get_or_insert(reason);
                     }
                 }
 
@@ -1362,6 +1422,28 @@ impl<M> Simulation<M> {
             }
         }
         interrupt
+    }
+
+    /// Records an unknown-destination send and applies the configured policy.
+    #[cold]
+    #[inline(never)]
+    fn handle_unknown_destination(
+        &mut self,
+        sender_handle: usize,
+        tick: DiscreteTime,
+    ) -> Option<String> {
+        self.unknown_destination_count += 1;
+        match self.unknown_destination_policy {
+            UnknownDestinationPolicy::Drop => None,
+            UnknownDestinationPolicy::Halt => Some(format!(
+                "unknown destination sent by '{}' at tick {tick}",
+                self.agents[sender_handle].name
+            )),
+            UnknownDestinationPolicy::Panic => panic!(
+                "unknown destination sent by '{}' at tick {tick}",
+                self.agents[sender_handle].name
+            ),
+        }
     }
 
     /// Removes timers due at or before `next_time` that were cancelled during
@@ -1397,7 +1479,7 @@ impl<M> Simulation<M> {
         timer: TimerId,
         message: Message<M>,
         next_time: DiscreteTime,
-    ) {
+    ) -> Option<String> {
         self.record_produced(handle, &message);
         if let Some(destination) = message.destination {
             debug_assert!(
@@ -1408,6 +1490,9 @@ impl<M> Simulation<M> {
             self.in_flight
                 .insert((timer.arrival, timer.sequence), (destination, message));
             self.next_arrival = self.next_arrival.min(timer.arrival);
+            None
+        } else {
+            self.handle_unknown_destination(handle, self.time)
         }
     }
 
