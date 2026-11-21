@@ -58,9 +58,6 @@ code-grounded rewrites, public API first, is in the untracked
 Against 0.5.x (=tools/instruction_counts.py=), search_sim_1000 retires 17%
 more instructions, simple_experiment 15%, and sparse_512_scheduled and
 relay_ring_16 about 8%. A commit-by-commit bisect points at three commits:
-- Name-keyed agent streams (=34ad9b0=): search_sim +9.5%, sparse_512 +10%.
-  Likely deriving every agent's stream key at build time; derive it on the
-  first =rng()= call instead.
 - Delayed sends (=95809cc=): periodic_10k +7.5%, search_sim +5%. Likely the
   per-tick in-flight check; cache the next arrival time instead.
 - Message histories on request (=3deb207=): periodic_10k and relay_ring_16

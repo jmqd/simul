@@ -1,4 +1,4 @@
-use crate::experiment::{AgentStreams, TrialRng};
+use crate::experiment::{AgentStreams, MasterSeed, SeedDeriver, TrialRng};
 use crate::{DiscreteTime, message::Message};
 use dyn_clone::DynClone;
 use rustc_hash::FxHashMap;
@@ -340,6 +340,55 @@ pub enum MessageProcessingStatus {
     InProgress,
 }
 
+/// Lazily derived per-agent stream roots for one simulation.
+///
+/// Simulations whose agents never draw randomness allocate nothing and hash
+/// nothing at build time.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentStreamCache {
+    /// Root seed for every agent's stream.
+    seed: MasterSeed,
+    /// Cached stream root per agent handle; empty until the first `rng()` call.
+    roots: Vec<Option<AgentStreams>>,
+}
+
+impl AgentStreamCache {
+    /// Creates an empty cache for `seed`.
+    pub(crate) const fn new(seed: MasterSeed) -> Self {
+        Self {
+            seed,
+            roots: Vec::new(),
+        }
+    }
+
+    /// Returns the cached stream root for `handle`, deriving and storing it on
+    /// the first call.
+    #[inline]
+    pub(crate) fn get_or_derive(
+        &mut self,
+        handle: usize,
+        agent_count: usize,
+        name: &str,
+    ) -> AgentStreams {
+        if let Some(&Some(root)) = self.roots.get(handle) {
+            return root;
+        }
+        self.derive(handle, agent_count, name)
+    }
+
+    /// Allocates the cache table on first use and derives one agent's stream root.
+    #[cold]
+    #[inline(never)]
+    fn derive(&mut self, handle: usize, agent_count: usize, name: &str) -> AgentStreams {
+        if self.roots.is_empty() {
+            self.roots.resize(agent_count, None);
+        }
+        let root = SeedDeriver::new(self.seed).agent_streams(name);
+        self.roots[handle] = Some(root);
+        root
+    }
+}
+
 /// The capability for agents to act on the world.
 ///
 /// Identity, name, time, and state are read-only to callbacks.
@@ -386,8 +435,8 @@ pub struct AgentContext<'a, M = ()> {
     /// Whether the current message finished or stays queued.
     pub(crate) message_processing_status: MessageProcessingStatus,
 
-    /// This agent's stream root.
-    pub(crate) stream_root: &'a AgentStreams,
+    /// Lazily derived stream roots for this simulation.
+    pub(crate) agent_streams: &'a mut AgentStreamCache,
 
     /// Number of streams handed out during this visit.
     pub(crate) calls: u64,
@@ -404,15 +453,19 @@ impl<'a, M> AgentContext<'a, M> {
     ///
     /// The `n`th call during a tick (counting `on_message` and `on_tick`
     /// together) returns window `n` of the tick's stream, which is keyed by
-    /// the simulation seed and this agent's name. Equal seeds therefore give
-    /// equal draws regardless of other agents, their order, scheduling,
-    /// clones, or how a run is split. Each call seeks a fresh `ChaCha12`
-    /// stream, so keep it for several draws rather than calling this per draw.
+    /// the simulation seed and this agent's name (derived on the first call
+    /// and cached). Equal seeds therefore give equal draws regardless of other
+    /// agents, their order, scheduling, clones, or how a run is split. Each
+    /// call seeks a fresh `ChaCha12` stream, so keep it for several draws
+    /// rather than calling this per draw.
     #[must_use]
-    pub const fn rng(&mut self) -> TrialRng {
+    pub fn rng(&mut self) -> TrialRng {
+        let root = self
+            .agent_streams
+            .get_or_derive(self.id.index(), self.agent_count, self.name);
         let call = self.calls;
         self.calls += 1;
-        self.stream_root.rng(self.time, call)
+        root.rng(self.time, call)
     }
 
     /// Returns the agent's name.

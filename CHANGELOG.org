@@ -3,6 +3,14 @@
 * Unreleased
 Newest entries first.
 
+** DONE Derive agent random streams on first use (breaking)
+=Simulation::build= no longer hashes a =BLAKE3= stream root for every agent up
+front; =AgentStreamCache= derives and caches each agent's root on its first
+=AgentContext::rng= call and allocates nothing when no agent draws randomness.
+=AgentContext::rng= is no longer =const fn=. Every draw is unchanged;
+=exp/search_sim_1000= retires 11% fewer instructions, =sim/sparse_512= 9% fewer,
+and =sim/sparse_512_scheduled= 7% fewer.
+
 ** DONE Version the Nix package from Cargo.toml
 The flake hard-coded the stale version 0.5.1; it now reads =package.version=
 from =Cargo.toml=.
