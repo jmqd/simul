@@ -213,6 +213,9 @@ pub struct Simulation<M = ()> {
     /// then send order.
     in_flight: BTreeMap<(DiscreteTime, u64), (AgentId, Message<M>)>,
 
+    /// Earliest arrival tick in `in_flight`, or `DiscreteTime::MAX` when empty.
+    next_arrival: DiscreteTime,
+
     /// Send-order number of the next delayed message.
     next_in_flight: u64,
 }
@@ -812,6 +815,7 @@ impl<M> Simulation<M> {
             agent_streams: AgentStreamCache::new(parameters.seed),
             halt_reason: None,
             in_flight: BTreeMap::new(),
+            next_arrival: DiscreteTime::MAX,
             next_in_flight: 0,
         })
     }
@@ -1042,11 +1046,13 @@ impl<M> Simulation<M> {
             Scheduler::Sparse(active) => active.next_event(self.time),
             Scheduler::Dense | Scheduler::DenseOnly => self.next_event_dense(self.time),
         };
-        let next_arrival = self.in_flight.first_key_value().map(|(key, _)| key.0);
+        let next_arrival = (!self.in_flight.is_empty()).then_some(self.next_arrival);
         let next_event = next_agent.into_iter().chain(next_arrival).min();
         if let Some(target) = quiet_ticks.skip_to(next_event) {
             self.time = self.time.max(target);
-            self.deliver_due(self.time, scheduler.sparse_mut());
+            if self.next_arrival <= self.time {
+                self.deliver_due(self.time, scheduler.sparse_mut());
+            }
         }
     }
 
@@ -1198,7 +1204,9 @@ impl<M> Simulation<M> {
         let mut interrupt = None;
         // Delayed messages arriving next tick were sent in earlier ticks, so
         // they arrive ahead of this tick's sends.
-        self.deliver_due(next_time, schedule.as_deref_mut());
+        if self.next_arrival <= next_time {
+            self.deliver_due(next_time, schedule.as_deref_mut());
+        }
         for command in command_buffer.drain(..) {
             match command.ty {
                 AgentCommandType::SendMessage(message) => {
@@ -1235,6 +1243,7 @@ impl<M> Simulation<M> {
             let arrival = message.queued_time + 1;
             self.in_flight
                 .insert((arrival, self.next_in_flight), (destination, message));
+            self.next_arrival = self.next_arrival.min(arrival);
             self.next_in_flight += 1;
         }
     }
@@ -1272,7 +1281,9 @@ impl<M> Simulation<M> {
     }
 
     /// Delivers delayed messages that arrive at or before `now`, in arrival
-    /// order, then send order.
+    /// order, then send order. Kept out of line so the tick loop only checks
+    /// the cached arrival time when nothing is due.
+    #[inline(never)]
     fn deliver_due(&mut self, now: DiscreteTime, mut schedule: Option<&mut SparseSchedule>) {
         while let Some(entry) = self.in_flight.first_entry() {
             if entry.key().0 > now {
@@ -1281,6 +1292,10 @@ impl<M> Simulation<M> {
             let (destination, message) = entry.remove();
             self.deliver(destination, message, schedule.as_deref_mut(), now);
         }
+        self.next_arrival = self
+            .in_flight
+            .first_key_value()
+            .map_or(DiscreteTime::MAX, |(key, _)| key.0);
     }
 
     /// Searches for an agent in the Simulation matching the given predicate.

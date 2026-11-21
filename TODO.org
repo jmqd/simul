@@ -54,11 +54,9 @@ cross_entropy.rs ~21, lib.rs ~17, search.rs ~13). Deleting them fails
 =None= cases, units, ordering, and invariants. A ranked table of 40
 code-grounded rewrites, public API first, is in the untracked
 =plans/audit-2026-10-22/doc_rewrites.md=.
-** TODO Recover short-workload regressions from the October 2026 upstream commits
-Against 0.5.x (=tools/instruction_counts.py=), search_sim_1000 retires 17%
-more instructions, simple_experiment 15%, and sparse_512_scheduled and
-relay_ring_16 about 8%. A commit-by-commit bisect points at three commits:
-- Delayed sends (=95809cc=): periodic_10k +7.5%, search_sim +5%. Likely the
-  per-tick in-flight check; cache the next arrival time instead.
-- Message histories on request (=3deb207=): periodic_10k and relay_ring_16
-  +6%, from per-message counting; probably inherent to the change.
+** DONE Recover short-workload regressions from the October 2026 upstream commits
+Agent stream roots are now derived lazily on first =rng()= call and the next
+delayed arrival time is cached with =deliver_due= outlined, recovering both
+avoidable regressions (=exp/search_sim_1000= -15.6%, =sim/sparse_512= -9.5%,
+=sim/periodic_10k= -8.6%, =process/simple_experiment= -10.1%). The remaining
+per-message counting from opt-in message history (=3deb207=) is inherent.

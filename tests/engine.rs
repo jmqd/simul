@@ -1319,6 +1319,34 @@ fn skipping_quiet_ticks_stops_at_the_next_arrival() {
     }
 }
 
+#[test]
+fn delayed_message_arriving_at_max_tick_is_delivered() {
+    let start = u64::MAX - 2;
+    let script = vec![(start, 2, 7)];
+    let mut simulation = Simulation::builder(Halt::AtTime(u64::MAX))
+        .agents(vec![
+            AgentInitializer::proactive("sender", ScriptedSender(script)),
+            AgentInitializer::reactive("inbox", Inbox::default()),
+        ])
+        .starting_time(start)
+        .build()
+        .unwrap_or_else(|error| panic!("{error}"));
+    simulation.run();
+    assert_eq!(0, simulation.in_flight().count());
+    let queued: Vec<(u8, u64)> = simulation
+        .find_by_name("inbox")
+        .map(|agent| {
+            agent
+                .state
+                .queue
+                .iter()
+                .map(|message| (message.payload, message.queued_time))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(vec![(7, u64::MAX - 1)], queued);
+}
+
 /// Keeps one draw per tick from its agent stream.
 #[derive(Clone, Debug, Default)]
 struct Sampler(Vec<u64>);

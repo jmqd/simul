@@ -3,6 +3,13 @@
 * Unreleased
 Newest entries first.
 
+** DONE Cache the next delayed arrival time
+=Simulation= now caches the earliest arrival tick in =in_flight= and outlines
+=deliver_due=, so ticks with no delayed messages due compare one =u64= instead
+of probing the =BTreeMap= every tick. Output fingerprints are unchanged;
+=sim/periodic_10k= retires 5.7% fewer instructions, =sim/queue_metrics_10k=
+5.0% fewer, and =exp/search_sim_1000= 5.1% fewer.
+
 ** DONE Derive agent random streams on first use (breaking)
 =Simulation::build= no longer hashes a =BLAKE3= stream root for every agent up
 front; =AgentStreamCache= derives and caches each agent's root on its first
