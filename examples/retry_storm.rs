@@ -112,10 +112,10 @@ struct ClientPool {
     server: Option<AgentId>,
     /// Next logical request ID.
     next_req_id: u64,
-    /// Active requests indexed by `req_id`.
-    in_flight: Vec<(u64, PendingRequest)>,
-    /// End-to-end latencies of requests completed after `RECOVERY_WINDOW_START`.
-    recovery_latencies: Vec<f64>,
+    /// Active requests directly indexed by `req_id` (`None` once completed or abandoned).
+    in_flight: Vec<Option<PendingRequest>>,
+    /// End-to-end latencies (ticks) of requests completed after `RECOVERY_WINDOW_START`.
+    recovery_latencies: Vec<DiscreteTime>,
     /// Requests started after `RECOVERY_WINDOW_START`.
     recovery_started: u64,
     /// Requests succeeded after `RECOVERY_WINDOW_START`.
@@ -126,17 +126,23 @@ struct ClientPool {
 
 impl ClientPool {
     /// Creates a client pool governed by `policy`.
-    const fn new(policy: Policy) -> Self {
+    fn new(policy: Policy) -> Self {
         Self {
             policy,
             server: None,
             next_req_id: 0,
-            in_flight: Vec::new(),
-            recovery_latencies: Vec::new(),
+            in_flight: Vec::with_capacity(750),
+            recovery_latencies: Vec::with_capacity(420),
             recovery_started: 0,
             recovery_succeeded: 0,
             total_retries: 0,
         }
+    }
+
+    /// Converts a monotonic request ID into a dense `in_flight` slot index.
+    #[inline]
+    fn slot_index(req_id: u64) -> Option<usize> {
+        usize::try_from(req_id).ok()
     }
 
     /// Resolves and caches the server identity.
@@ -155,7 +161,10 @@ impl ClientPool {
         next_attempt: u8,
     ) {
         if next_attempt > self.policy.max_retries {
-            self.in_flight.retain(|(id, _)| *id != req_id);
+            if let Some(slot) = Self::slot_index(req_id).and_then(|idx| self.in_flight.get_mut(idx))
+            {
+                *slot = None;
+            }
             return;
         }
         self.total_retries += 1;
@@ -188,7 +197,10 @@ impl ClientPool {
             ctx.id(),
             StormMessage::Timeout { req_id, attempt },
         );
-        if let Some((_, entry)) = self.in_flight.iter_mut().find(|(id, _)| *id == req_id) {
+        if let Some(entry) = Self::slot_index(req_id)
+            .and_then(|idx| self.in_flight.get_mut(idx))
+            .and_then(Option::as_mut)
+        {
             entry.attempt = attempt;
             entry.timeout_timer = Some(timer);
         }
@@ -203,27 +215,29 @@ impl Agent<StormMessage> for ClientPool {
     ) {
         match msg.payload {
             StormMessage::Response { req_id, ok } => {
-                let Some(pos) = self.in_flight.iter().position(|(id, _)| *id == req_id) else {
+                let Some(slot) =
+                    Self::slot_index(req_id).and_then(|idx| self.in_flight.get_mut(idx))
+                else {
                     return;
                 };
                 if ok {
-                    let (_, pending) = self.in_flight.swap_remove(pos);
+                    let Some(pending) = slot.take() else {
+                        return;
+                    };
                     if let Some(timer) = pending.timeout_timer {
                         ctx.cancel_timer(timer);
                     }
                     if pending.started_at >= RECOVERY_WINDOW_START {
                         self.recovery_succeeded += 1;
                         self.recovery_latencies
-                            .push((ctx.time().saturating_sub(pending.started_at)) as f64);
+                            .push(ctx.time().saturating_sub(pending.started_at));
                     }
                 } else {
-                    let (old_timer, next_attempt) = {
-                        let (_, pending) = &mut self.in_flight[pos];
-                        (
-                            pending.timeout_timer.take(),
-                            pending.attempt.saturating_add(1),
-                        )
+                    let Some(pending) = slot.as_mut() else {
+                        return;
                     };
+                    let old_timer = pending.timeout_timer.take();
+                    let next_attempt = pending.attempt.saturating_add(1);
                     if let Some(timer) = old_timer {
                         ctx.cancel_timer(timer);
                     }
@@ -231,18 +245,22 @@ impl Agent<StormMessage> for ClientPool {
                 }
             }
             StormMessage::Timeout { req_id, attempt } => {
-                let matched = self
-                    .in_flight
-                    .iter_mut()
-                    .find(|(id, entry)| *id == req_id && entry.attempt == attempt);
-                if let Some((_, entry)) = matched {
-                    entry.timeout_timer = None;
-                    let next_attempt = attempt.saturating_add(1);
-                    self.schedule_retry(ctx, req_id, next_attempt);
+                let matched = Self::slot_index(req_id)
+                    .and_then(|idx| self.in_flight.get_mut(idx))
+                    .and_then(Option::as_mut);
+                if let Some(entry) = matched {
+                    if entry.attempt == attempt {
+                        entry.timeout_timer = None;
+                        let next_attempt = attempt.saturating_add(1);
+                        self.schedule_retry(ctx, req_id, next_attempt);
+                    }
                 }
             }
             StormMessage::RetryNow { req_id, attempt } => {
-                if self.in_flight.iter().any(|(id, _)| *id == req_id) {
+                if Self::slot_index(req_id)
+                    .and_then(|idx| self.in_flight.get(idx))
+                    .is_some_and(Option::is_some)
+                {
                     self.send_attempt(ctx, req_id, attempt);
                 }
             }
@@ -263,14 +281,11 @@ impl Agent<StormMessage> for ClientPool {
             if ctx.time() >= RECOVERY_WINDOW_START {
                 self.recovery_started += 1;
             }
-            self.in_flight.push((
-                req_id,
-                PendingRequest {
-                    started_at: ctx.time(),
-                    attempt: 0,
-                    timeout_timer: None,
-                },
-            ));
+            self.in_flight.push(Some(PendingRequest {
+                started_at: ctx.time(),
+                attempt: 0,
+                timeout_timer: None,
+            }));
             self.send_attempt(ctx, req_id, 0);
         }
     }
@@ -297,12 +312,12 @@ struct ServiceServer {
 
 impl ServiceServer {
     /// Creates a server with `concurrency` slots and `queue_cap` bounded queue.
-    const fn new(concurrency: usize, queue_cap: usize) -> Self {
+    fn new(concurrency: usize, queue_cap: usize) -> Self {
         Self {
             concurrency,
             busy: 0,
             queue_cap,
-            waiting: VecDeque::new(),
+            waiting: VecDeque::with_capacity(queue_cap),
             degraded: false,
             client: None,
             shed_count: 0,
@@ -410,13 +425,37 @@ fn build_simulation(
         .build()
 }
 
+/// Computes exact Type-7 P99 latency in place via linear-time selection.
+fn p99_in_place(values: &mut [DiscreteTime], fallback: f64) -> f64 {
+    if values.is_empty() {
+        return fallback;
+    }
+    let last = values.len() - 1;
+    if last == 0 {
+        return values[0] as f64;
+    }
+    let position = Probability::P99.get() * last as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let lower_index = (position.floor() as usize).min(last);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let upper_index = (position.ceil() as usize).min(last);
+    let (_, pivot, right) = values.select_nth_unstable(lower_index);
+    let a = *pivot as f64;
+    if lower_index == upper_index {
+        return a;
+    }
+    let b = right.iter().copied().min().unwrap_or(*pivot) as f64;
+    let fraction = (position - lower_index as f64).clamp(0.0, 1.0);
+    fraction.mul_add(b - a, a)
+}
+
 /// Runs one replication and summarizes post-fault recovery performance.
 fn evaluate_policy(policy: &Policy, ctx: &TrialContext) -> Result<StormOutcome, SimulationError> {
     let mut sim = build_simulation(*policy, ctx)?;
     sim.run();
     let Some(client) = sim
-        .find_by_name("client")
-        .and_then(|agent| agent.downcast_ref::<ClientPool>())
+        .find_by_name_mut("client")
+        .and_then(|agent| agent.downcast_mut::<ClientPool>())
     else {
         return Ok(StormOutcome {
             recovery_success_rate: 0.0,
@@ -429,9 +468,7 @@ fn evaluate_policy(policy: &Policy, ctx: &TrialContext) -> Result<StormOutcome, 
     } else {
         client.recovery_succeeded as f64 / client.recovery_started as f64
     };
-    let p99 =
-        simul::experiment::QuantileReducer::from_results(client.recovery_latencies.iter().copied())
-            .map_or(HORIZON as f64, |q| q.p99());
+    let p99 = p99_in_place(&mut client.recovery_latencies, HORIZON as f64);
     Ok(StormOutcome {
         recovery_success_rate: success_rate,
         recovery_p99_latency: p99,
