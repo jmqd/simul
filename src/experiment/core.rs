@@ -40,6 +40,97 @@ const U64_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 53) as f64);
 /// heap. Both paths hash identical bytes.
 const STACK_DERIVATION_INPUT: usize = 256;
 
+/// Builds a frozen V1 domain-separator prefix:
+/// `ROOT_NAMESPACE || (namespace.len() as u64).to_le_bytes() || namespace || suffix`.
+const fn build_derivation_prefix<const N: usize>(namespace: &[u8], suffix: &[u8]) -> [u8; N] {
+    let mut out = [0_u8; N];
+    let mut pos = 0;
+    let mut idx = 0;
+    while idx < ROOT_NAMESPACE.len() {
+        out[pos] = ROOT_NAMESPACE[idx];
+        pos += 1;
+        idx += 1;
+    }
+    let len_bytes = (namespace.len() as u64).to_le_bytes();
+    let mut idx = 0;
+    while idx < len_bytes.len() {
+        out[pos] = len_bytes[idx];
+        pos += 1;
+        idx += 1;
+    }
+    let mut idx = 0;
+    while idx < namespace.len() {
+        out[pos] = namespace[idx];
+        pos += 1;
+        idx += 1;
+    }
+    let mut idx = 0;
+    while idx < suffix.len() {
+        out[pos] = suffix[idx];
+        pos += 1;
+        idx += 1;
+    }
+    assert!(pos == N, "derivation prefix length mismatch");
+    out
+}
+
+/// Pre-encoded V1 derivation prefix for [`SeedDeriver::proposal_seed`] and
+/// [`SeedDeriver::proposal_dimension_seed`].
+const PROPOSAL_PREFIX: [u8; ROOT_NAMESPACE.len() + 8 + PROPOSAL_NAMESPACE.len()] =
+    build_derivation_prefix(PROPOSAL_NAMESPACE, &[]);
+/// Pre-encoded V1 derivation prefix for [`SeedDeriver::acceptance_seed`].
+const ACCEPTANCE_PREFIX: [u8; ROOT_NAMESPACE.len() + 8 + ACCEPTANCE_NAMESPACE.len()] =
+    build_derivation_prefix(ACCEPTANCE_NAMESPACE, &[]);
+/// Pre-encoded V1 derivation prefix for [`SeedDeriver::agent_streams`].
+const AGENT_PREFIX: [u8; ROOT_NAMESPACE.len() + 8 + AGENT_NAMESPACE.len()] =
+    build_derivation_prefix(AGENT_NAMESPACE, &[]);
+/// Pre-encoded V1 prefix for independent `TrialNoise` streams.
+const INDEP_TRIAL_NOISE_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + INDEPENDENT_NAMESPACE.len()
+    + TRIAL_NOISE_NAMESPACE.len()] =
+    build_derivation_prefix(INDEPENDENT_NAMESPACE, TRIAL_NOISE_NAMESPACE);
+/// Pre-encoded V1 prefix for independent `LayoutNoise` streams.
+const INDEP_LAYOUT_NOISE_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + INDEPENDENT_NAMESPACE.len()
+    + LAYOUT_NOISE_NAMESPACE.len()] =
+    build_derivation_prefix(INDEPENDENT_NAMESPACE, LAYOUT_NOISE_NAMESPACE);
+/// Pre-encoded V1 prefix for independent `ExecutionNoise` streams.
+const INDEP_EXECUTION_NOISE_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + INDEPENDENT_NAMESPACE.len()
+    + EXECUTION_NOISE_NAMESPACE.len()] =
+    build_derivation_prefix(INDEPENDENT_NAMESPACE, EXECUTION_NOISE_NAMESPACE);
+/// Pre-encoded V1 prefix for independent `ValidationHoldout` streams.
+const INDEP_HOLDOUT_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + INDEPENDENT_NAMESPACE.len()
+    + HOLDOUT_NAMESPACE.len()] = build_derivation_prefix(INDEPENDENT_NAMESPACE, HOLDOUT_NAMESPACE);
+/// Pre-encoded V1 prefix for common `TrialNoise` streams.
+const COMMON_TRIAL_NOISE_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + COMMON_NAMESPACE.len()
+    + TRIAL_NOISE_NAMESPACE.len()] =
+    build_derivation_prefix(COMMON_NAMESPACE, TRIAL_NOISE_NAMESPACE);
+/// Pre-encoded V1 prefix for common `LayoutNoise` streams.
+const COMMON_LAYOUT_NOISE_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + COMMON_NAMESPACE.len()
+    + LAYOUT_NOISE_NAMESPACE.len()] =
+    build_derivation_prefix(COMMON_NAMESPACE, LAYOUT_NOISE_NAMESPACE);
+/// Pre-encoded V1 prefix for common `ExecutionNoise` streams.
+const COMMON_EXECUTION_NOISE_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + COMMON_NAMESPACE.len()
+    + EXECUTION_NOISE_NAMESPACE.len()] =
+    build_derivation_prefix(COMMON_NAMESPACE, EXECUTION_NOISE_NAMESPACE);
+/// Pre-encoded V1 prefix for common `ValidationHoldout` streams.
+const COMMON_HOLDOUT_PREFIX: [u8; ROOT_NAMESPACE.len()
+    + 8
+    + COMMON_NAMESPACE.len()
+    + HOLDOUT_NAMESPACE.len()] = build_derivation_prefix(COMMON_NAMESPACE, HOLDOUT_NAMESPACE);
+
 /// A stable candidate identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CandidateId(u64);
@@ -166,13 +257,23 @@ pub enum TrialStream {
 }
 
 impl TrialStream {
-    /// Returns the domain separator for this stream family.
-    const fn namespace(self) -> &'static [u8] {
-        match self {
-            Self::TrialNoise => TRIAL_NOISE_NAMESPACE,
-            Self::LayoutNoise => LAYOUT_NOISE_NAMESPACE,
-            Self::ExecutionNoise => EXECUTION_NOISE_NAMESPACE,
-            Self::ValidationHoldout => HOLDOUT_NAMESPACE,
+    /// Returns the pre-encoded V1 derivation prefix for this stream family
+    /// under either the common-random or candidate-independent scope.
+    const fn derivation_prefix(self, common: bool) -> &'static [u8] {
+        if common {
+            match self {
+                Self::TrialNoise => &COMMON_TRIAL_NOISE_PREFIX,
+                Self::LayoutNoise => &COMMON_LAYOUT_NOISE_PREFIX,
+                Self::ExecutionNoise => &COMMON_EXECUTION_NOISE_PREFIX,
+                Self::ValidationHoldout => &COMMON_HOLDOUT_PREFIX,
+            }
+        } else {
+            match self {
+                Self::TrialNoise => &INDEP_TRIAL_NOISE_PREFIX,
+                Self::LayoutNoise => &INDEP_LAYOUT_NOISE_PREFIX,
+                Self::ExecutionNoise => &INDEP_EXECUTION_NOISE_PREFIX,
+                Self::ValidationHoldout => &INDEP_HOLDOUT_PREFIX,
+            }
         }
     }
 }
@@ -498,25 +599,32 @@ impl SeedDeriver {
     /// Derives an independent proposal seed for a stable proposal token.
     #[must_use]
     pub fn proposal_seed(self, token: u64) -> DerivedSeed {
-        self.derive(PROPOSAL_NAMESPACE, &[&token.to_le_bytes()])
+        let mut input = [0_u8; PROPOSAL_PREFIX.len() + 8];
+        input[..PROPOSAL_PREFIX.len()].copy_from_slice(&PROPOSAL_PREFIX);
+        input[PROPOSAL_PREFIX.len()..].copy_from_slice(&token.to_le_bytes());
+        DerivedSeed(*blake3::keyed_hash(&self.master.0, &input).as_bytes())
     }
 
     /// Derives an independent proposal seed for one stable vector dimension.
     #[must_use]
     pub fn proposal_dimension_seed(self, token: u64, dimension: u64) -> DerivedSeed {
-        self.derive(
-            PROPOSAL_NAMESPACE,
-            &[&token.to_le_bytes(), &dimension.to_le_bytes()],
-        )
+        let mut input = [0_u8; PROPOSAL_PREFIX.len() + 16];
+        input[..PROPOSAL_PREFIX.len()].copy_from_slice(&PROPOSAL_PREFIX);
+        input[PROPOSAL_PREFIX.len()..PROPOSAL_PREFIX.len() + 8]
+            .copy_from_slice(&token.to_le_bytes());
+        input[PROPOSAL_PREFIX.len() + 8..].copy_from_slice(&dimension.to_le_bytes());
+        DerivedSeed(*blake3::keyed_hash(&self.master.0, &input).as_bytes())
     }
 
     /// Derives an optimizer-acceptance seed for a generation and step.
     #[must_use]
     pub fn acceptance_seed(self, generation: u64, step: u64) -> DerivedSeed {
-        self.derive(
-            ACCEPTANCE_NAMESPACE,
-            &[&generation.to_le_bytes(), &step.to_le_bytes()],
-        )
+        let mut input = [0_u8; ACCEPTANCE_PREFIX.len() + 16];
+        input[..ACCEPTANCE_PREFIX.len()].copy_from_slice(&ACCEPTANCE_PREFIX);
+        input[ACCEPTANCE_PREFIX.len()..ACCEPTANCE_PREFIX.len() + 8]
+            .copy_from_slice(&generation.to_le_bytes());
+        input[ACCEPTANCE_PREFIX.len() + 8..].copy_from_slice(&step.to_le_bytes());
+        DerivedSeed(*blake3::keyed_hash(&self.master.0, &input).as_bytes())
     }
 
     /// Derives the stream root of the agent named `name`.
@@ -527,7 +635,10 @@ impl SeedDeriver {
     #[must_use]
     pub fn agent_streams(self, name: &str) -> AgentStreams {
         let length = u64::try_from(name.len()).unwrap_or(u64::MAX).to_le_bytes();
-        AgentStreams(self.derive(AGENT_NAMESPACE, &[&length, name.as_bytes()]).0)
+        AgentStreams(
+            self.derive_with_tail(&AGENT_PREFIX, &length, name.as_bytes())
+                .0,
+        )
     }
 
     /// Derives a candidate-specific or common-random trial stream.
@@ -539,65 +650,52 @@ impl SeedDeriver {
         tag: &str,
         common: bool,
     ) -> DerivedSeed {
-        let candidate = key.candidate().value().to_le_bytes();
-        let replication = key.replication().value().to_le_bytes();
-        let group = common_random_group.to_le_bytes();
-        let tag_length = u64::try_from(tag.len()).unwrap_or(u64::MAX).to_le_bytes();
-        let scope = if common {
-            COMMON_NAMESPACE
+        let prefix = stream.derivation_prefix(common);
+        let scope_id = if common {
+            common_random_group
         } else {
-            INDEPENDENT_NAMESPACE
+            key.candidate().value()
         };
-        if common {
-            self.derive(
-                scope,
-                &[
-                    stream.namespace(),
-                    &group,
-                    &replication,
-                    &tag_length,
-                    tag.as_bytes(),
-                ],
-            )
-        } else {
-            self.derive(
-                scope,
-                &[
-                    stream.namespace(),
-                    &candidate,
-                    &replication,
-                    &tag_length,
-                    tag.as_bytes(),
-                ],
-            )
-        }
+        let mut header = [0_u8; 20];
+        header[..8].copy_from_slice(&scope_id.to_le_bytes());
+        header[8..12].copy_from_slice(&key.replication().value().to_le_bytes());
+        header[12..20].copy_from_slice(&u64::try_from(tag.len()).unwrap_or(u64::MAX).to_le_bytes());
+        self.derive_with_tail(prefix, &header, tag.as_bytes())
     }
 
-    /// Hashes length-delimited protocol fields under one domain separator.
-    ///
-    /// The fields are concatenated and hashed in one call, which yields the
-    /// same digest as streaming them through an incremental hasher.
-    fn derive(self, namespace: &[u8], fields: &[&[u8]]) -> DerivedSeed {
-        let namespace_length = u64::try_from(namespace.len())
-            .unwrap_or(u64::MAX)
-            .to_le_bytes();
-        let prefix: [&[u8]; 3] = [ROOT_NAMESPACE, &namespace_length, namespace];
-        let length: usize = prefix.iter().chain(fields).map(|part| part.len()).sum();
-        let mut stack = [0_u8; STACK_DERIVATION_INPUT];
-        let mut heap = Vec::new();
-        let input = if length <= STACK_DERIVATION_INPUT {
-            &mut stack[..length]
-        } else {
-            heap.resize(length, 0);
-            heap.as_mut_slice()
+    /// Hashes `prefix || header || tail` from an uninitialized stack buffer
+    /// when it fits, falling back to the heap for unusually long names or tags.
+    fn derive_with_tail(self, prefix: &[u8], header: &[u8], tail: &[u8]) -> DerivedSeed {
+        let head_len = prefix.len() + header.len();
+        let Some(total_len) = head_len.checked_add(tail.len()) else {
+            return self.derive_with_tail_heap(prefix, header, tail);
         };
-        let mut offset = 0;
-        for part in prefix.iter().chain(fields) {
-            let end = offset + part.len();
-            input[offset..end].copy_from_slice(part);
-            offset = end;
+        if total_len > STACK_DERIVATION_INPUT {
+            return self.derive_with_tail_heap(prefix, header, tail);
         }
+        let mut stack = [std::mem::MaybeUninit::<u8>::uninit(); STACK_DERIVATION_INPUT];
+        let base = stack.as_mut_ptr().cast::<u8>();
+        // SAFETY: `total_len = prefix.len() + header.len() + tail.len() <= STACK_DERIVATION_INPUT`,
+        // so all three non-overlapping writes stay within `stack` and initialize
+        // `base[..total_len]` completely before constructing the shared slice.
+        let input = unsafe {
+            std::ptr::copy_nonoverlapping(prefix.as_ptr(), base, prefix.len());
+            std::ptr::copy_nonoverlapping(header.as_ptr(), base.add(prefix.len()), header.len());
+            std::ptr::copy_nonoverlapping(tail.as_ptr(), base.add(head_len), tail.len());
+            std::slice::from_raw_parts(base, total_len)
+        };
         DerivedSeed(*blake3::keyed_hash(&self.master.0, input).as_bytes())
+    }
+
+    /// Heap fallback for derivation inputs exceeding [`STACK_DERIVATION_INPUT`].
+    #[cold]
+    #[inline(never)]
+    fn derive_with_tail_heap(self, prefix: &[u8], header: &[u8], tail: &[u8]) -> DerivedSeed {
+        let mut heap = Vec::with_capacity(prefix.len() + header.len() + tail.len());
+        heap.extend_from_slice(prefix);
+        heap.extend_from_slice(header);
+        heap.extend_from_slice(tail);
+        DerivedSeed(*blake3::keyed_hash(&self.master.0, &heap).as_bytes())
     }
 }
 
