@@ -942,23 +942,40 @@ impl PairedScalarSummary {
     }
 }
 
-/// Candidate identity paired with its replication-sorted record references.
-type OrderedCandidateRecords<'a, O, E> = (CandidateId, Vec<&'a TrialRecord<O, E>>);
+/// Either a directly borrowed canonical slice or a replication-sorted vector of
+/// record references.
+enum OrderedRecords<'a, O, E> {
+    /// Contiguous records already verified strictly ascending by replication.
+    Slice(&'a [TrialRecord<O, E>]),
+    /// Non-contiguous or initially unsorted records sorted by replication.
+    Refs(Vec<&'a TrialRecord<O, E>>),
+}
 
-/// Sorts references to a single candidate's records by [`ReplicationId`] and
-/// rejects empty, mixed-candidate, or duplicate-replication slices.
-fn sort_unique_replications<O, E>(
+/// Validates a single-candidate slice and returns its records in strictly
+/// ascending [`ReplicationId`] order without allocating or sorting when the
+/// input is already canonical.
+fn prepare_unique_replications<O, E>(
     records: &[TrialRecord<O, E>],
-) -> Result<OrderedCandidateRecords<'_, O, E>, PairedCompareError> {
-    let candidate = validate_candidate_records(records).map_err(|error| match error {
-        AggregateError::MixedCandidates => PairedCompareError::MixedCandidates,
-        AggregateError::Empty
-        | AggregateError::TooManyRecords
-        | AggregateError::EvaluationFailed { .. }
-        | AggregateError::NonFinite { .. }
-        | AggregateError::NoUsableObservations
-        | AggregateError::ArithmeticOverflow => PairedCompareError::Empty,
-    })?;
+) -> Result<(CandidateId, OrderedRecords<'_, O, E>), PairedCompareError> {
+    let Some(first) = records.first() else {
+        return Err(PairedCompareError::Empty);
+    };
+    let candidate = first.key.candidate();
+    let mut prev_rep = first.key.replication();
+    let mut strictly_sorted = true;
+    for record in &records[1..] {
+        if record.key.candidate() != candidate {
+            return Err(PairedCompareError::MixedCandidates);
+        }
+        let rep = record.key.replication();
+        if rep <= prev_rep {
+            strictly_sorted = false;
+        }
+        prev_rep = rep;
+    }
+    if strictly_sorted {
+        return Ok((candidate, OrderedRecords::Slice(records)));
+    }
     let mut ordered: Vec<&TrialRecord<O, E>> = records.iter().collect();
     ordered.sort_unstable_by_key(|record| record.key.replication());
     for pair in ordered.windows(2) {
@@ -969,10 +986,11 @@ fn sort_unique_replications<O, E>(
             });
         }
     }
-    Ok((candidate, ordered))
+    Ok((candidate, OrderedRecords::Refs(ordered)))
 }
 
 /// Evaluates one record under the declared failure and non-finite policies.
+#[inline]
 fn extract_policy_value<O, E>(
     record: &TrialRecord<O, E>,
     score: &impl Fn(&O) -> f64,
@@ -1055,9 +1073,9 @@ pub fn compare_paired_scalar<O, E>(
     failure_policy: FailurePolicy<FiniteValue>,
     non_finite_policy: NonFinitePolicy,
 ) -> Result<PairedScalarSummary, PairedCompareError> {
-    let (baseline_candidate, ordered_baseline) = sort_unique_replications(baseline)?;
-    let (challenger_candidate, ordered_challenger) = sort_unique_replications(challenger)?;
-    compare_paired_refs(
+    let (baseline_candidate, ordered_baseline) = prepare_unique_replications(baseline)?;
+    let (challenger_candidate, ordered_challenger) = prepare_unique_replications(challenger)?;
+    dispatch_paired_compare(
         baseline_candidate,
         &ordered_baseline,
         challenger_candidate,
@@ -1068,17 +1086,72 @@ pub fn compare_paired_scalar<O, E>(
     )
 }
 
-/// Core paired-difference reduction over two sorted, deduplicated candidate
-/// record reference lists.
-fn compare_paired_refs<O, E>(
+/// Dispatches paired reduction over directly borrowed slices or sorted
+/// reference lists without redundant indirection on canonical inputs.
+fn dispatch_paired_compare<O, E>(
     baseline_candidate: CandidateId,
-    ordered_baseline: &[&TrialRecord<O, E>],
+    ordered_baseline: &OrderedRecords<'_, O, E>,
     challenger_candidate: CandidateId,
-    ordered_challenger: &[&TrialRecord<O, E>],
+    ordered_challenger: &OrderedRecords<'_, O, E>,
     score: &impl Fn(&O) -> f64,
     failure_policy: FailurePolicy<FiniteValue>,
     non_finite_policy: NonFinitePolicy,
 ) -> Result<PairedScalarSummary, PairedCompareError> {
+    match (ordered_baseline, ordered_challenger) {
+        (OrderedRecords::Slice(base), OrderedRecords::Slice(chal)) => compare_paired_ordered(
+            baseline_candidate,
+            base,
+            challenger_candidate,
+            chal,
+            score,
+            failure_policy,
+            non_finite_policy,
+        ),
+        (OrderedRecords::Slice(base), OrderedRecords::Refs(chal)) => compare_paired_ordered(
+            baseline_candidate,
+            base,
+            challenger_candidate,
+            chal,
+            score,
+            failure_policy,
+            non_finite_policy,
+        ),
+        (OrderedRecords::Refs(base), OrderedRecords::Slice(chal)) => compare_paired_ordered(
+            baseline_candidate,
+            base,
+            challenger_candidate,
+            chal,
+            score,
+            failure_policy,
+            non_finite_policy,
+        ),
+        (OrderedRecords::Refs(base), OrderedRecords::Refs(chal)) => compare_paired_ordered(
+            baseline_candidate,
+            base,
+            challenger_candidate,
+            chal,
+            score,
+            failure_policy,
+            non_finite_policy,
+        ),
+    }
+}
+
+/// Core paired-difference reduction over two sorted, deduplicated candidate
+/// record lists.
+fn compare_paired_ordered<O, E, L, R>(
+    baseline_candidate: CandidateId,
+    ordered_baseline: &[L],
+    challenger_candidate: CandidateId,
+    ordered_challenger: &[R],
+    score: &impl Fn(&O) -> f64,
+    failure_policy: FailurePolicy<FiniteValue>,
+    non_finite_policy: NonFinitePolicy,
+) -> Result<PairedScalarSummary, PairedCompareError>
+where
+    L: std::borrow::Borrow<TrialRecord<O, E>>,
+    R: std::borrow::Borrow<TrialRecord<O, E>>,
+{
     let requested_pairs =
         u32::try_from(ordered_baseline.len()).map_err(|_| PairedCompareError::TooManyRecords)?;
     if ordered_challenger.len() > u32::MAX as usize {
@@ -1101,7 +1174,9 @@ fn compare_paired_refs<O, E>(
     let mut common_random_paired = true;
     let mut reduction = Ok(());
 
-    for (base_rec, chal_rec) in ordered_baseline.iter().zip(ordered_challenger.iter()) {
+    for (base_item, chal_item) in ordered_baseline.iter().zip(ordered_challenger.iter()) {
+        let base_rec = base_item.borrow();
+        let chal_rec = chal_item.borrow();
         if base_rec.replay.master_seed() != chal_rec.replay.master_seed()
             || base_rec.replay.common_random_group() != chal_rec.replay.common_random_group()
         {
@@ -1133,9 +1208,9 @@ fn compare_paired_refs<O, E>(
             let diff = c.get() - b.get();
             if diff.is_finite() {
                 reduction = reduction
-                    .and_then(|()| diff_reducer.observe(diff))
-                    .and_then(|()| base_reducer.observe(b.get()))
-                    .and_then(|()| chal_reducer.observe(c.get()));
+                    .and_then(|()| diff_reducer.observe_finite(diff))
+                    .and_then(|()| base_reducer.observe_finite(b.get()))
+                    .and_then(|()| chal_reducer.observe_finite(c.get()));
             } else {
                 reduction = Err(ReduceError::ArithmeticOverflow);
             }
@@ -1186,53 +1261,112 @@ fn compare_paired_refs<O, E>(
 }
 
 /// Checks that two replication-sorted slices cover the exact same replications.
-fn verify_matching_replications<O, E>(
-    left: &[&TrialRecord<O, E>],
-    right: &[&TrialRecord<O, E>],
-) -> Result<(), PairedCompareError> {
+fn verify_matching_replications<O, E, L, R>(
+    left: &[L],
+    right: &[R],
+) -> Result<(), PairedCompareError>
+where
+    L: std::borrow::Borrow<TrialRecord<O, E>>,
+    R: std::borrow::Borrow<TrialRecord<O, E>>,
+{
     for (a, b) in left.iter().zip(right.iter()) {
-        let ra = a.key.replication();
-        let rb = b.key.replication();
+        let ra = a.borrow().key.replication();
+        let rb = b.borrow().key.replication();
         if ra != rb {
             return Err(PairedCompareError::UnmatchedReplication(ra.min(rb)));
         }
     }
     if left.len() > right.len() {
         return Err(PairedCompareError::UnmatchedReplication(
-            left[right.len()].key.replication(),
+            left[right.len()].borrow().key.replication(),
         ));
     }
     if right.len() > left.len() {
         return Err(PairedCompareError::UnmatchedReplication(
-            right[left.len()].key.replication(),
+            right[left.len()].borrow().key.replication(),
         ));
     }
     Ok(())
 }
 
-/// Sorts references filtered for one candidate and rejects empty or duplicate
-/// replication slices.
-fn filter_unique_replications<O, E>(
-    records: &[TrialRecord<O, E>],
-    candidate: CandidateId,
-) -> Result<Vec<&TrialRecord<O, E>>, PairedCompareError> {
-    let mut ordered: Vec<&TrialRecord<O, E>> = records
-        .iter()
-        .filter(|record| record.key.candidate() == candidate)
-        .collect();
-    if ordered.is_empty() {
-        return Err(PairedCompareError::Empty);
-    }
-    ordered.sort_unstable_by_key(|record| record.key.replication());
-    for pair in ordered.windows(2) {
-        if pair[0].key.replication() == pair[1].key.replication() {
-            return Err(PairedCompareError::DuplicateReplication {
-                candidate,
-                replication: pair[0].key.replication(),
-            });
+/// Tracks whether one candidate's records within a mixed slice form a
+/// contiguous, strictly ascending replication run.
+struct CandidateSpan {
+    /// Number of matching records seen so far.
+    count: usize,
+    /// First matching index (valid when `count > 0`).
+    start: usize,
+    /// One past the most recent matching index (valid when `count > 0`).
+    end: usize,
+    /// Whether all matches so far formed a contiguous subslice.
+    contiguous: bool,
+    /// Whether matching replications arrived in strictly ascending order.
+    strictly_sorted: bool,
+    /// Last matching replication observed (valid when `count > 0`).
+    last_rep: ReplicationId,
+}
+
+impl CandidateSpan {
+    /// Creates an empty tracker.
+    const fn new() -> Self {
+        Self {
+            count: 0,
+            start: 0,
+            end: 0,
+            contiguous: true,
+            strictly_sorted: true,
+            last_rep: ReplicationId::new(0),
         }
     }
-    Ok(ordered)
+
+    /// Records a match at `index` with `replication`.
+    #[inline]
+    fn push(&mut self, index: usize, replication: ReplicationId) {
+        if self.count == 0 {
+            self.start = index;
+        } else {
+            if index != self.end {
+                self.contiguous = false;
+            }
+            if replication <= self.last_rep {
+                self.strictly_sorted = false;
+            }
+        }
+        self.end = index + 1;
+        self.count += 1;
+        self.last_rep = replication;
+    }
+
+    /// Materializes the candidate's records as either a zero-copy slice or a
+    /// deduplicated sorted reference vector.
+    fn resolve<'a, O, E>(
+        &self,
+        records: &'a [TrialRecord<O, E>],
+        candidate: CandidateId,
+    ) -> Result<OrderedRecords<'a, O, E>, PairedCompareError> {
+        if self.count == 0 {
+            return Err(PairedCompareError::Empty);
+        }
+        if self.contiguous && self.strictly_sorted {
+            return Ok(OrderedRecords::Slice(&records[self.start..self.end]));
+        }
+        let mut ordered = Vec::with_capacity(self.count);
+        for record in records {
+            if record.key.candidate() == candidate {
+                ordered.push(record);
+            }
+        }
+        ordered.sort_unstable_by_key(|record| record.key.replication());
+        for pair in ordered.windows(2) {
+            if pair[0].key.replication() == pair[1].key.replication() {
+                return Err(PairedCompareError::DuplicateReplication {
+                    candidate,
+                    replication: pair[0].key.replication(),
+                });
+            }
+        }
+        Ok(OrderedRecords::Refs(ordered))
+    }
 }
 
 /// Extracts two candidates from a mixed batch of [`TrialRecord`]s and compares
@@ -1251,9 +1385,20 @@ pub fn compare_paired_candidates<O, E>(
     failure_policy: FailurePolicy<FiniteValue>,
     non_finite_policy: NonFinitePolicy,
 ) -> Result<PairedScalarSummary, PairedCompareError> {
-    let ordered_baseline = filter_unique_replications(records, baseline)?;
-    let ordered_challenger = filter_unique_replications(records, challenger)?;
-    compare_paired_refs(
+    let mut base_span = CandidateSpan::new();
+    let mut chal_span = CandidateSpan::new();
+    for (index, record) in records.iter().enumerate() {
+        let candidate = record.key.candidate();
+        if candidate == baseline {
+            base_span.push(index, record.key.replication());
+        }
+        if candidate == challenger {
+            chal_span.push(index, record.key.replication());
+        }
+    }
+    let ordered_baseline = base_span.resolve(records, baseline)?;
+    let ordered_challenger = chal_span.resolve(records, challenger)?;
+    dispatch_paired_compare(
         baseline,
         &ordered_baseline,
         challenger,
