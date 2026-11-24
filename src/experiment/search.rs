@@ -8,8 +8,15 @@ use std::collections::VecDeque;
 use std::fmt;
 
 /// Largest tell batch checked for repeated identities by scanning earlier
-/// entries, which avoids allocating and hashing two sets per call.
+/// entries, which avoids allocating and hashing sets per call.
 const SCANNED_TELL_BATCH: usize = 16;
+
+/// Number of 64-bit words in the stack bitset tracking intra-batch token
+/// uniqueness during `tell` validation.
+const STACK_TOKEN_BITSET_WORDS: usize = 16;
+
+/// Largest pending window size covered by the stack bitset during `tell`.
+const STACK_TOKEN_BITSET_BITS: usize = STACK_TOKEN_BITSET_WORDS * 64;
 
 /// Stable identity returned with a proposed candidate.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -171,12 +178,6 @@ impl<C> PendingProposals<C> {
         self.window.reserve(additional);
     }
 
-    /// Records the candidate for the next token, `first_token + window.len()`.
-    fn push(&mut self, candidate: C) {
-        self.window.push_back(Some(candidate));
-        self.outstanding += 1;
-    }
-
     /// Returns the window index of `token`, if it lies inside the window.
     fn slot(&self, token: ProposalToken) -> Option<usize> {
         let offset = token.value().checked_sub(self.first_token)?;
@@ -185,21 +186,27 @@ impl<C> PendingProposals<C> {
             .filter(|&index| index < self.window.len())
     }
 
-    /// Returns whether `token` is awaiting a `tell`.
-    fn contains(&self, token: ProposalToken) -> bool {
+    /// Returns the window index of `token` if it is currently awaiting a `tell`.
+    fn pending_slot(&self, token: ProposalToken) -> Option<usize> {
         self.slot(token)
-            .is_some_and(|index| self.window[index].is_some())
+            .filter(|&index| self.window[index].is_some())
     }
 
     /// Removes and returns the candidate for an untold `token`.
     fn remove(&mut self, token: ProposalToken) -> Option<C> {
         let index = self.slot(token)?;
-        let candidate = self.window[index].take()?;
-        self.outstanding -= 1;
-        while matches!(self.window.front(), Some(None)) {
-            self.window.pop_front();
+        let candidate = if index == 0 {
+            let candidate = self.window.pop_front()??;
             self.first_token += 1;
-        }
+            while matches!(self.window.front(), Some(None)) {
+                self.window.pop_front();
+                self.first_token += 1;
+            }
+            candidate
+        } else {
+            self.window[index].take()?
+        };
+        self.outstanding -= 1;
         Some(candidate)
     }
 
@@ -207,6 +214,87 @@ impl<C> PendingProposals<C> {
     const fn len(&self) -> usize {
         self.outstanding
     }
+}
+
+/// Truncates newly pushed pending proposals if `ask` unwinds mid-batch.
+struct PendingRollback<'a, C> {
+    /// Pending proposal window being appended to.
+    window: &'a mut VecDeque<Option<C>>,
+    /// Window length before the batch started.
+    original_len: usize,
+    /// Set once the entire batch has succeeded.
+    committed: bool,
+}
+
+impl<C> Drop for PendingRollback<'_, C> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.window.truncate(self.original_len);
+        }
+    }
+}
+
+/// Candidate identities already incorporated by `tell`.
+///
+/// Tracks a dense prefix `[0, contiguous_end)` in O(1) without hashing or
+/// allocating, spilling any out-of-prefix identities into `extra`.
+struct CompletedCandidates {
+    /// Exclusive upper bound of the dense completed prefix starting at zero.
+    contiguous_end: u64,
+    /// Completed identities at or above `contiguous_end`.
+    extra: FxHashSet<CandidateId>,
+}
+
+impl CompletedCandidates {
+    /// Creates an empty candidate set.
+    fn new() -> Self {
+        Self {
+            contiguous_end: 0,
+            extra: FxHashSet::default(),
+        }
+    }
+
+    /// Returns whether `candidate` has already been incorporated.
+    #[inline]
+    fn contains(&self, candidate: CandidateId) -> bool {
+        let value = candidate.value();
+        value < self.contiguous_end || (!self.extra.is_empty() && self.extra.contains(&candidate))
+    }
+
+    /// Records `candidate` as incorporated.
+    #[inline]
+    fn insert(&mut self, candidate: CandidateId) {
+        let value = candidate.value();
+        if value < self.contiguous_end {
+            return;
+        }
+        if value == self.contiguous_end {
+            if let Some(next) = self.contiguous_end.checked_add(1) {
+                self.contiguous_end = next;
+                if !self.extra.is_empty() {
+                    while let Some(advanced) = self.contiguous_end.checked_add(1) {
+                        if !self.extra.remove(&CandidateId::new(self.contiguous_end)) {
+                            break;
+                        }
+                        self.contiguous_end = advanced;
+                    }
+                }
+                return;
+            }
+        }
+        self.extra.insert(candidate);
+    }
+}
+
+/// Candidate-identity order observed across a validated `tell` batch.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BatchOrder {
+    /// Strictly ascending by `CandidateId` (already canonical).
+    Ascending,
+    /// Strictly descending by `CandidateId` (canonical when reversed).
+    Descending,
+    /// Neither strictly ascending nor strictly descending.
+    Unordered,
 }
 
 /// Seeded random search with independent per-token proposal streams.
@@ -265,7 +353,7 @@ pub struct SeededRandomSearch<C, S, P, G> {
     /// longer pending has already been told.
     pending: PendingProposals<C>,
     /// Candidate identities already incorporated by `tell`.
-    completed_candidates: FxHashSet<CandidateId>,
+    completed_candidates: CompletedCandidates,
     /// Current winner and its original selecting evidence.
     best: Option<SearchResult<C, S>>,
 }
@@ -302,7 +390,7 @@ where
             generator,
             policy,
             pending: PendingProposals::new(),
-            completed_candidates: FxHashSet::default(),
+            completed_candidates: CompletedCandidates::new(),
             best: None,
         }
     }
@@ -316,35 +404,80 @@ where
         self.best.as_ref()
     }
 
-    /// Validates an entire tell batch before state is mutated.
-    fn validate_tells(&self, evaluated: &[Told<S>]) -> Result<(), TellError> {
+    /// Validates an entire tell batch before state is mutated, returning its
+    /// candidate-identity order so monotonic batches skip sorting.
+    fn validate_tells(&self, evaluated: &[Told<S>]) -> Result<BatchOrder, TellError> {
+        let mut order = BatchOrder::Ascending;
+        let mut prev_candidate: Option<CandidateId> = None;
+
         if evaluated.len() <= SCANNED_TELL_BATCH {
             for (index, told) in evaluated.iter().enumerate() {
                 let earlier = &evaluated[..index];
                 self.validate_tell(
                     told,
-                    || earlier.iter().any(|other| other.token == told.token),
+                    |_| earlier.iter().any(|other| other.token == told.token),
                     || {
-                        earlier
-                            .iter()
-                            .any(|other| other.candidate == told.candidate)
+                        check_monotonic_candidate(
+                            told.candidate,
+                            index,
+                            prev_candidate,
+                            &mut order,
+                            || {
+                                earlier
+                                    .iter()
+                                    .any(|other| other.candidate == told.candidate)
+                            },
+                        )
                     },
                 )?;
+                prev_candidate = Some(told.candidate);
             }
         } else {
-            let mut batch_tokens =
-                FxHashSet::with_capacity_and_hasher(evaluated.len(), FxBuildHasher);
-            let mut batch_candidates =
-                FxHashSet::with_capacity_and_hasher(evaluated.len(), FxBuildHasher);
-            for told in evaluated {
+            let use_bitset = self.pending.window.len() <= STACK_TOKEN_BITSET_BITS;
+            let mut token_bits = [0_u64; STACK_TOKEN_BITSET_WORDS];
+            let mut batch_tokens = if use_bitset {
+                FxHashSet::default()
+            } else {
+                FxHashSet::with_capacity_and_hasher(evaluated.len(), FxBuildHasher)
+            };
+            let mut batch_candidates = FxHashSet::default();
+            for (index, told) in evaluated.iter().enumerate() {
                 self.validate_tell(
                     told,
-                    || !batch_tokens.insert(told.token),
-                    || !batch_candidates.insert(told.candidate),
+                    |slot| {
+                        if use_bitset {
+                            let mask = 1_u64 << (slot & 63);
+                            token_bits.get_mut(slot >> 6).is_some_and(|word| {
+                                let seen = (*word & mask) != 0;
+                                *word |= mask;
+                                seen
+                            })
+                        } else {
+                            !batch_tokens.insert(told.token)
+                        }
+                    },
+                    || {
+                        check_monotonic_candidate(
+                            told.candidate,
+                            index,
+                            prev_candidate,
+                            &mut order,
+                            || {
+                                if batch_candidates.is_empty() {
+                                    batch_candidates.reserve(evaluated.len());
+                                    for prior in &evaluated[..index] {
+                                        batch_candidates.insert(prior.candidate);
+                                    }
+                                }
+                                !batch_candidates.insert(told.candidate)
+                            },
+                        )
+                    },
                 )?;
+                prev_candidate = Some(told.candidate);
             }
         }
-        Ok(())
+        Ok(order)
     }
 
     /// Validates one tell in batch order. The callbacks report whether an
@@ -352,7 +485,7 @@ where
     fn validate_tell(
         &self,
         told: &Told<S>,
-        repeats_token: impl FnOnce() -> bool,
+        repeats_token: impl FnOnce(usize) -> bool,
         repeats_candidate: impl FnOnce() -> bool,
     ) -> Result<(), TellError> {
         if told.candidate != told.summary.candidate {
@@ -361,15 +494,17 @@ where
                 summary: told.summary.candidate,
             });
         }
-        let outstanding = self.pending.contains(told.token);
-        let completed = !outstanding && told.token.value() < self.next_token;
-        if completed || repeats_token() {
+        let Some(slot) = self.pending.pending_slot(told.token) else {
+            return if told.token.value() < self.next_token {
+                Err(TellError::DuplicateToken(told.token))
+            } else {
+                Err(TellError::UnknownToken(told.token))
+            };
+        };
+        if repeats_token(slot) {
             return Err(TellError::DuplicateToken(told.token));
         }
-        if !outstanding {
-            return Err(TellError::UnknownToken(told.token));
-        }
-        if self.completed_candidates.contains(&told.candidate) || repeats_candidate() {
+        if self.completed_candidates.contains(told.candidate) || repeats_candidate() {
             return Err(TellError::DuplicateCandidate(told.candidate));
         }
         Ok(())
@@ -386,12 +521,9 @@ where
     where
         S: 'a,
     {
-        let mut winner = self.batch_winner(canonical.clone()).and_then(|index| {
-            canonical
-                .clone()
-                .nth(index)
-                .map(|told| (index, told.summary.clone()))
-        });
+        let mut winner = self
+            .batch_winner(canonical.clone())
+            .map(|(index, told)| (index, told.summary.clone()));
         for (index, told) in canonical.enumerate() {
             let candidate = self
                 .pending
@@ -410,9 +542,12 @@ where
         Ok(())
     }
 
-    /// Returns the batch position that ends up as the winner, if any replaces
-    /// the current best when considered in canonical order.
-    fn batch_winner<'a>(&self, canonical: impl Iterator<Item = &'a Told<S>>) -> Option<usize>
+    /// Returns the batch position and entry that ends up as the winner, if any
+    /// replaces the current best when considered in canonical order.
+    fn batch_winner<'a>(
+        &self,
+        canonical: impl Iterator<Item = &'a Told<S>>,
+    ) -> Option<(usize, &'a Told<S>)>
     where
         S: 'a,
     {
@@ -434,10 +569,48 @@ where
             };
             if replace {
                 best = Some((&told.summary.statistics, told.candidate));
-                winner = Some(index);
+                winner = Some((index, told));
             }
         }
         winner
+    }
+}
+
+/// Checks intra-batch candidate uniqueness while tracking monotonic order.
+///
+/// Only invokes `check_unordered` once strict monotonicity breaks.
+#[inline]
+fn check_monotonic_candidate(
+    candidate: CandidateId,
+    index: usize,
+    prev_candidate: Option<CandidateId>,
+    order: &mut BatchOrder,
+    check_unordered: impl FnOnce() -> bool,
+) -> bool {
+    match (prev_candidate, *order) {
+        (None, _) => false,
+        (Some(prev), BatchOrder::Ascending) => match candidate.cmp(&prev) {
+            Ordering::Greater => false,
+            Ordering::Equal => true,
+            Ordering::Less => {
+                if index == 1 {
+                    *order = BatchOrder::Descending;
+                    false
+                } else {
+                    *order = BatchOrder::Unordered;
+                    check_unordered()
+                }
+            }
+        },
+        (Some(prev), BatchOrder::Descending) => match candidate.cmp(&prev) {
+            Ordering::Less => false,
+            Ordering::Equal => true,
+            Ordering::Greater => {
+                *order = BatchOrder::Unordered;
+                check_unordered()
+            }
+        },
+        (Some(_), BatchOrder::Unordered) => check_unordered(),
     }
 }
 
@@ -451,33 +624,41 @@ where
     fn ask(&mut self, limit: usize) -> Vec<Asked<C>> {
         let remaining = self.budget.saturating_sub(self.next_token);
         let count = usize::try_from(remaining).unwrap_or(usize::MAX).min(limit);
+        if count == 0 {
+            return Vec::new();
+        }
         let mut asked = Vec::with_capacity(count);
-        let mut issued = Vec::with_capacity(count);
+        self.pending.reserve(count);
+        // Roll back newly pushed proposals if the generator or `Clone` panics,
+        // leaving no outstanding tokens the caller never received.
+        let mut rollback = PendingRollback {
+            original_len: self.pending.window.len(),
+            window: &mut self.pending.window,
+            committed: false,
+        };
         for value in (self.next_token..).take(count) {
             let token = ProposalToken::new(value);
             let mut rng = self.deriver.proposal_seed(value).rng();
             let candidate = (self.generator)(&mut rng);
-            issued.push(candidate.clone());
+            rollback.window.push_back(Some(candidate.clone()));
             asked.push(Asked { token, candidate });
         }
-        // Issue tokens only after every generator and clone call returned, so a
-        // panic leaves no outstanding tokens the caller never received.
-        self.pending.reserve(count);
-        for candidate in issued {
-            self.pending.push(candidate);
-            self.next_token += 1;
-        }
+        rollback.committed = true;
+        drop(rollback);
+        self.pending.outstanding += count;
+        self.next_token += u64::try_from(count).unwrap_or(u64::MAX);
         asked
     }
 
     fn tell(&mut self, evaluated: &[Told<S>]) -> Result<(), TellError> {
-        self.validate_tells(evaluated)?;
-        if evaluated.is_sorted_by_key(|told| told.candidate) {
-            self.incorporate(evaluated.iter())?;
-        } else {
-            let mut canonical: Vec<_> = evaluated.iter().collect();
-            canonical.sort_by_key(|told| told.candidate);
-            self.incorporate(canonical.iter().copied())?;
+        match self.validate_tells(evaluated)? {
+            BatchOrder::Ascending => self.incorporate(evaluated.iter())?,
+            BatchOrder::Descending => self.incorporate(evaluated.iter().rev())?,
+            BatchOrder::Unordered => {
+                let mut canonical: Vec<_> = evaluated.iter().collect();
+                canonical.sort_by_key(|told| told.candidate);
+                self.incorporate(canonical.iter().copied())?;
+            }
         }
         Ok(())
     }
@@ -1753,5 +1934,96 @@ mod tests {
             }),
             sample_sobol(4, &too_many)
         );
+    }
+
+    #[test]
+    fn completed_candidates_handles_gaps_coalescing_and_u64_max() {
+        let mut set = CompletedCandidates::new();
+        for id in [2_u64, 0, u64::MAX, 1, 4, 3] {
+            let cid = CandidateId::new(id);
+            assert!(!set.contains(cid));
+            set.insert(cid);
+            assert!(set.contains(cid));
+        }
+        assert_eq!(set.contiguous_end, 5);
+        assert!(set.contains(CandidateId::new(u64::MAX)));
+        assert!(!set.contains(CandidateId::new(5)));
+    }
+
+    #[test]
+    fn descending_and_unordered_batches_validate_and_match_ascending_winner() {
+        for size in [4, SCANNED_TELL_BATCH + 4] {
+            let budget = u64::try_from(size).expect("small batch");
+            let mut asc = SeededRandomSearch::new(
+                MasterSeed::from_u64(7),
+                budget,
+                |rng| rng.next_u64() % 100,
+                MaxI32,
+            );
+            let mut desc = SeededRandomSearch::new(
+                MasterSeed::from_u64(7),
+                budget,
+                |rng| rng.next_u64() % 100,
+                MaxI32,
+            );
+            let mut unord = SeededRandomSearch::new(
+                MasterSeed::from_u64(7),
+                budget,
+                |rng| rng.next_u64() % 100,
+                MaxI32,
+            );
+
+            let asked_a = asc.ask(size);
+            let asked_d = desc.ask(size);
+            let asked_u = unord.ask(size);
+            let batch: Vec<Told<i32>> = asked_a
+                .iter()
+                .enumerate()
+                .map(|(i, p)| Told {
+                    token: p.token,
+                    candidate: CandidateId::new(i as u64),
+                    summary: summary(i as u64, 5),
+                })
+                .collect();
+
+            let mut rev_batch = batch.clone();
+            rev_batch.reverse();
+            for (t, p) in rev_batch.iter_mut().zip(asked_d.iter().rev()) {
+                t.token = p.token;
+            }
+            // Test duplicate candidate in descending batch rejects atomically.
+            let mut bad_desc = rev_batch.clone();
+            bad_desc[size - 1] = told(asked_d[0].token, (size - 1) as u64);
+            assert_eq!(
+                Err(TellError::DuplicateCandidate(CandidateId::new(
+                    (size - 1) as u64
+                ))),
+                desc.tell(&bad_desc)
+            );
+            assert_eq!(0, desc.status().told);
+
+            let mut unord_batch = batch.clone();
+            unord_batch.swap(0, size - 1);
+            unord_batch.swap(1, size - 2);
+            for (i, t) in unord_batch.iter_mut().enumerate() {
+                t.token = asked_u[i].token;
+            }
+            let mut bad_unord = unord_batch.clone();
+            bad_unord[size - 1] = told(asked_u[size - 1].token, unord_batch[1].candidate.value());
+            assert_eq!(
+                Err(TellError::DuplicateCandidate(unord_batch[1].candidate)),
+                unord.tell(&bad_unord)
+            );
+            assert_eq!(0, unord.status().told);
+
+            asc.tell(&batch).expect("asc");
+            desc.tell(&rev_batch).expect("desc");
+            unord.tell(&unord_batch).expect("unord");
+            assert_eq!(asc.best(), desc.best());
+            assert_eq!(
+                asc.best().map(|r| r.candidate_id),
+                unord.best().map(|r| r.candidate_id)
+            );
+        }
     }
 }
