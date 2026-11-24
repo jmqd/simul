@@ -1476,10 +1476,11 @@ fn collect_canonical<C>(
     limit: NonZeroUsize,
 ) -> Result<Vec<TrialSpec<C>>, RunError> {
     let trials = trials.into_iter();
-    let mut ordered = Vec::new();
+    let mut ordered: Vec<TrialSpec<C>> = Vec::new();
     ordered
         .try_reserve(trials.size_hint().0.min(limit.get()))
         .map_err(RunError::Allocation)?;
+    let mut strictly_sorted = true;
     for trial in trials {
         if ordered.len() == limit.get() {
             return Err(RunError::BatchLimitExceeded { limit: limit.get() });
@@ -1487,10 +1488,17 @@ fn collect_canonical<C>(
         if ordered.len() == ordered.capacity() {
             ordered.try_reserve(1).map_err(RunError::Allocation)?;
         }
+        if let Some(previous) = ordered.last() {
+            if previous.key >= trial.key {
+                strictly_sorted = false;
+            }
+        }
         ordered.push(trial);
     }
-    ordered.sort_unstable_by_key(TrialSpec::key);
-    ensure_unique(&ordered)?;
+    if !strictly_sorted {
+        ordered.sort_unstable_by_key(TrialSpec::key);
+        ensure_unique(&ordered)?;
+    }
     Ok(ordered)
 }
 
@@ -2270,13 +2278,19 @@ impl ScalarReducer {
     /// Returns [`ReduceError::ArithmeticOverflow`] when the count or Welford
     /// recurrence cannot be represented. Rejected observations leave the reducer
     /// unchanged.
+    #[inline]
+    pub fn observe(&mut self, value: f64) -> Result<(), ReduceError> {
+        let finite = FiniteValue::new(value).map_err(ReduceError::NonFinite)?;
+        self.observe_finite(finite.get())
+    }
+
+    /// Observes a pre-validated finite scalar value.
     //
     // Keep Welford's multiply and addition separate: contraction changes the
     // established floating-point reduction results.
+    #[inline]
     #[allow(clippy::suboptimal_flops)]
-    pub fn observe(&mut self, value: f64) -> Result<(), ReduceError> {
-        let finite = FiniteValue::new(value).map_err(ReduceError::NonFinite)?;
-        let value = finite.get();
+    pub(super) fn observe_finite(&mut self, value: f64) -> Result<(), ReduceError> {
         let count = self
             .count
             .checked_add(1)
@@ -2292,12 +2306,13 @@ impl ScalarReducer {
         let mean = self.mean + delta / count as f64;
         let delta_after = value - mean;
         let sum_squared_deviation = self.sum_squared_deviation + delta * delta_after;
-        if !delta.is_finite()
-            || !mean.is_finite()
-            || !delta_after.is_finite()
-            || !sum_squared_deviation.is_finite()
-            || sum_squared_deviation < 0.0
-        {
+        // Because `value` and `self.mean` are finite and `count >= 2`:
+        // - if `delta` overflows to ±inf, `mean = ±inf`, `delta_after = ∓inf`,
+        //   and `delta * delta_after = -inf`, making `sum_squared_deviation = -inf`;
+        // - if `delta` is finite, `mean` lies between `self.mean` and `value`
+        //   and `|delta_after| <= |delta|`, so both are finite and only
+        //   `sum_squared_deviation` can overflow or go negative.
+        if !(sum_squared_deviation.is_finite() && sum_squared_deviation >= 0.0) {
             return Err(ReduceError::ArithmeticOverflow);
         }
         self.count = count;
@@ -2636,7 +2651,7 @@ pub fn aggregate_scalar<O, E>(
             },
         );
         if let Some(value) = value {
-            reduction = reduction.and_then(|()| reducer.observe(value.get()));
+            reduction = reduction.and_then(|()| reducer.observe_finite(value.get()));
         }
     }
     if failed > 0 && matches!(failure_policy, FailurePolicy::RejectCandidate) {
