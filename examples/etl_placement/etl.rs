@@ -349,6 +349,7 @@ pub(crate) struct EtlAgent {
     writes: BTreeMap<u64, Write>,
     polls: Vec<(Tick, Request)>,
     completions: Vec<Completion>,
+    events_buf: Vec<NetEvent>,
 }
 
 impl EtlAgent {
@@ -390,6 +391,7 @@ impl EtlAgent {
             writes: BTreeMap::new(),
             polls: Vec::new(),
             completions: Vec::new(),
+            events_buf: Vec::new(),
             config,
             recorder,
         };
@@ -1679,16 +1681,22 @@ impl EtlAgent {
 impl Agent<Payload> for EtlAgent {
     fn on_message(&mut self, ctx: &mut AgentContext<'_, Payload>, message: &Message<Payload>) {
         let now = ctx.time();
-        let events = self
-            .net
-            .receive(message, now, &self.config.faults, &mut self.rng);
-        if !self.up {
-            return;
+        let mut events = std::mem::take(&mut self.events_buf);
+        self.net.receive_into(
+            message,
+            now,
+            &self.config.faults,
+            &mut self.rng,
+            &mut events,
+        );
+        if self.up {
+            for &event in &events {
+                self.on_event(event, now);
+            }
+            self.drain_completions(now);
         }
-        for event in events {
-            self.on_event(event, now);
-        }
-        self.drain_completions(now);
+        events.clear();
+        self.events_buf = events;
     }
 
     fn on_tick(&mut self, ctx: &mut AgentContext<'_, Payload>) {

@@ -106,6 +106,7 @@ pub(crate) struct PostgresAgent {
     copy_bytes_per_row: Vec<f64>,
     /// Commit time of the newest record visible to decoding.
     newest_commit: Tick,
+    events_buf: Vec<NetEvent>,
 }
 
 impl PostgresAgent {
@@ -142,6 +143,7 @@ impl PostgresAgent {
             next_resets: 0,
             copy_bytes_per_row,
             newest_commit: 0,
+            events_buf: Vec::new(),
         }
     }
 
@@ -575,10 +577,15 @@ impl PostgresAgent {
 impl Agent<Payload> for PostgresAgent {
     fn on_message(&mut self, ctx: &mut AgentContext<'_, Payload>, message: &Message<Payload>) {
         let now = ctx.time();
-        let events = self
-            .net
-            .receive(message, now, &self.config.faults, &mut self.network_rng);
-        for event in events {
+        let mut events = std::mem::take(&mut self.events_buf);
+        self.net.receive_into(
+            message,
+            now,
+            &self.config.faults,
+            &mut self.network_rng,
+            &mut events,
+        );
+        for &event in &events {
             match event {
                 NetEvent::Accepted(conn, kind) => {
                     debug_assert!(
@@ -610,6 +617,8 @@ impl Agent<Payload> for PostgresAgent {
                 NetEvent::Connected(_) => panic!("postgres opens no connections"),
             }
         }
+        events.clear();
+        self.events_buf = events;
     }
 
     fn on_tick(&mut self, ctx: &mut AgentContext<'_, Payload>) {

@@ -9,7 +9,7 @@
 
 use crate::rng::Rng;
 use crate::time::{Tick, secs, ticks, ticks_at_least_one};
-use crate::wire::{ConnId, ConnKind, FrameWriter, Payload, Unit, decode};
+use crate::wire::{ConnId, ConnKind, FrameWriter, HttpKind, Op, Payload, Unit, WalChunk, decode};
 use simul::agent::{AgentContext, AgentId};
 use simul::message::Message;
 use std::collections::VecDeque;
@@ -616,6 +616,127 @@ pub(crate) enum NetEvent {
     Closed(ConnId),
 }
 
+const OPS: [Op; 19] = [
+    Op::Begin,
+    Op::Commit,
+    Op::AdvisoryLock,
+    Op::UpsertCheckpoint,
+    Op::LoadCheckpoint,
+    Op::SetTableState,
+    Op::StoreSchema,
+    Op::Select,
+    Op::Migrations,
+    Op::GetSlot,
+    Op::CreateSlot,
+    Op::ExportSnapshot,
+    Op::SetSnapshot,
+    Op::LockTable,
+    Op::CommitSlotTransaction,
+    Op::DropSlot,
+    Op::StartReplication,
+    Op::StartCatchup,
+    Op::StartCopy,
+];
+
+const HTTP_KINDS: [HttpKind; 3] = [HttpKind::Insert, HttpKind::Poll, HttpKind::Ddl];
+
+#[inline]
+fn next_word(bytes: &mut &[u8]) -> Option<u64> {
+    let (chunk, rest) = bytes.split_first_chunk::<8>()?;
+    *bytes = rest;
+    Some(u64::from_le_bytes(*chunk))
+}
+
+#[inline]
+fn require_word(bytes: &mut &[u8], tag: u64) -> u64 {
+    next_word(bytes).unwrap_or_else(|| panic!("malformed frame with tag {tag}"))
+}
+
+fn decode_each(mut bytes: &[u8], mut on_frame: impl FnMut(ConnId, Unit)) {
+    while let Some(conn) = next_word(&mut bytes) {
+        let Some(tag) = next_word(&mut bytes) else {
+            panic!("trailing bytes in a frame payload");
+        };
+        let unit = match tag {
+            0 => {
+                let kind = match require_word(&mut bytes, tag) {
+                    0 => ConnKind::Replication,
+                    1 => ConnKind::Sql,
+                    2 => ConnKind::Http,
+                    other => panic!("unknown connection kind {other}"),
+                };
+                let one_way_us = require_word(&mut bytes, tag);
+                Unit::Syn { kind, one_way_us }
+            }
+            1 => Unit::Ping,
+            2 => Unit::Pong,
+            3 => Unit::Close,
+            4 => Unit::Reset,
+            5 => Unit::Credit {
+                consumed: require_word(&mut bytes, tag),
+            },
+            6 => {
+                let id = require_word(&mut bytes, tag);
+                let op_code = require_word(&mut bytes, tag);
+                let op = usize::try_from(op_code)
+                    .ok()
+                    .and_then(|index| OPS.get(index).copied())
+                    .unwrap_or_else(|| panic!("unknown op code {op_code}"));
+                let a = require_word(&mut bytes, tag);
+                let b = require_word(&mut bytes, tag);
+                Unit::Query { id, op, a, b }
+            }
+            7 => Unit::Reply {
+                id: require_word(&mut bytes, tag),
+                value: require_word(&mut bytes, tag),
+            },
+            8 => Unit::Wal(WalChunk {
+                table: require_word(&mut bytes, tag),
+                rows: require_word(&mut bytes, tag),
+                wire_bytes: require_word(&mut bytes, tag),
+                commits: require_word(&mut bytes, tag),
+                end_lsn: require_word(&mut bytes, tag),
+                commit_tick: require_word(&mut bytes, tag),
+            }),
+            9 => Unit::Keepalive {
+                wal_end: require_word(&mut bytes, tag),
+                reply: require_word(&mut bytes, tag) != 0,
+            },
+            10 => Unit::Status {
+                write: require_word(&mut bytes, tag),
+                flush: require_word(&mut bytes, tag),
+            },
+            11 => Unit::CopyData {
+                rows: require_word(&mut bytes, tag),
+                bytes: require_word(&mut bytes, tag),
+                done: require_word(&mut bytes, tag) != 0,
+            },
+            12 => {
+                let id = require_word(&mut bytes, tag);
+                let size = require_word(&mut bytes, tag);
+                let kind_code = require_word(&mut bytes, tag);
+                let kind = usize::try_from(kind_code)
+                    .ok()
+                    .and_then(|index| HTTP_KINDS.get(index).copied())
+                    .unwrap_or_else(|| panic!("unknown HTTP kind {kind_code}"));
+                let of = require_word(&mut bytes, tag);
+                Unit::HttpRequest {
+                    id,
+                    bytes: size,
+                    kind,
+                    of,
+                }
+            }
+            13 => Unit::HttpResponse {
+                id: require_word(&mut bytes, tag),
+                durable_at: require_word(&mut bytes, tag),
+            },
+            other => panic!("malformed frame with tag {other}"),
+        };
+        on_frame(conn, unit);
+    }
+}
+
 /// Sends on a connection the caller still tracks. Every agent drops a
 /// connection from its own state when its `Closed` event arrives, so a failed
 /// send here is a bookkeeping bug, not a network condition.
@@ -871,15 +992,39 @@ impl Endpoint {
         let Some(payload) = message.payload.as_deref() else {
             return Vec::new();
         };
-        let peer = message
-            .source
-            .and_then(|source| self.peers.iter().position(|peer| peer.id == Some(source)))
-            .unwrap_or_else(|| panic!("messages come from configured peers"));
+        let peer = self.source_peer(message);
         let mut events = Vec::new();
         for frame in decode(payload) {
             self.handle_frame(peer, frame, now, faults, rng, &mut events);
         }
         events
+    }
+
+    /// Streams decoded frames from a peer's message into a reusable `events`
+    /// buffer without intermediate `Vec` allocations.
+    pub(crate) fn receive_into(
+        &mut self,
+        message: &Message<Payload>,
+        now: Tick,
+        faults: &FaultPlan,
+        rng: &mut Rng,
+        events: &mut Vec<NetEvent>,
+    ) {
+        events.clear();
+        let Some(payload) = message.payload.as_deref() else {
+            return;
+        };
+        let peer = self.source_peer(message);
+        decode_each(payload, |conn, unit| {
+            self.handle_frame(peer, (conn, unit), now, faults, rng, events);
+        });
+    }
+
+    fn source_peer(&self, message: &Message<Payload>) -> usize {
+        message
+            .source
+            .and_then(|source| self.peers.iter().position(|peer| peer.id == Some(source)))
+            .unwrap_or_else(|| panic!("messages come from configured peers"))
     }
 
     fn handle_frame(
