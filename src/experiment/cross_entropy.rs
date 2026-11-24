@@ -361,22 +361,7 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         }
 
         let elite_samples = elite_count(valid_samples, self.elite_fraction);
-        if samples.len() <= FULL_SORT_POPULATION_THRESHOLD {
-            if valid_samples == samples.len() {
-                samples.sort_unstable_by(compare_valid_samples);
-            } else {
-                samples.sort_unstable_by(compare_samples);
-            }
-        } else {
-            if valid_samples == samples.len() {
-                let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_valid_samples);
-            } else {
-                let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
-            }
-            // Selection leaves elites in input-dependent order, and fitting
-            // sums them in order.
-            samples[..elite_samples].sort_unstable_by(compare_valid_samples);
-        }
+        select_and_order_elites(samples, valid_samples, elite_samples);
         let elites = &samples[..elite_samples];
         let generation_best = elites[0];
         let best = match self.best {
@@ -444,6 +429,7 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     }
 
     /// Fits and smooths distribution parameters using `elites`.
+    #[allow(clippy::suboptimal_flops)]
     fn fit(&mut self, elites: &[CrossEntropySample<N>]) {
         if self.learning_rate <= 0.0 {
             return;
@@ -451,18 +437,44 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
         let inverse_elite_count = 1.0 / elites.len() as f64;
         let retained_weight = 1.0 - self.learning_rate;
 
+        let mut linear_sums = [-0.0_f64; N];
+        for sample in elites {
+            for dimension in 0..N {
+                linear_sums[dimension] += sample.point[dimension];
+            }
+        }
+        let mut elite_means = [0.0_f64; N];
+        for dimension in 0..N {
+            elite_means[dimension] = match self.dimensions[dimension] {
+                CrossEntropyDimension::Linear => linear_sums[dimension] * inverse_elite_count,
+                CrossEntropyDimension::Circular => {
+                    circular_mean(elites, dimension, self.mean[dimension])
+                }
+            };
+        }
+
+        let mut sum_sq = [-0.0_f64; N];
+        for sample in elites {
+            for dimension in 0..N {
+                let diff = sample.point[dimension] - elite_means[dimension];
+                sum_sq[dimension] += diff * diff;
+            }
+        }
+        for dimension in 0..N {
+            if self.dimensions[dimension] == CrossEntropyDimension::Circular {
+                let mean = elite_means[dimension];
+                let mut circular_sum_sq = -0.0_f64;
+                for sample in elites {
+                    let diff = circular_delta(mean, sample.point[dimension]);
+                    circular_sum_sq += diff * diff;
+                }
+                sum_sq[dimension] = circular_sum_sq;
+            }
+        }
+
         for dimension in 0..N {
             let old_mean = self.mean[dimension];
-            let elite_mean = match self.dimensions[dimension] {
-                CrossEntropyDimension::Linear => {
-                    elites
-                        .iter()
-                        .map(|sample| sample.point[dimension])
-                        .sum::<f64>()
-                        * inverse_elite_count
-                }
-                CrossEntropyDimension::Circular => circular_mean(elites, dimension, old_mean),
-            };
+            let elite_mean = elite_means[dimension];
             let next_mean = match self.dimensions[dimension] {
                 CrossEntropyDimension::Linear => {
                     old_mean.mul_add(retained_weight, elite_mean * self.learning_rate)
@@ -475,40 +487,59 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
                     CrossEntropyDimension::Circular,
                 ),
             };
-            let differences = elites
-                .iter()
-                .map(|sample| match self.dimensions[dimension] {
-                    CrossEntropyDimension::Linear => sample.point[dimension] - elite_mean,
-                    CrossEntropyDimension::Circular => {
-                        circular_delta(elite_mean, sample.point[dimension])
-                    }
-                });
-            let elite_variance = differences
-                .clone()
-                .map(|difference| difference * difference)
-                .sum::<f64>()
-                * inverse_elite_count;
+            let elite_variance = sum_sq[dimension] * inverse_elite_count;
             let next_variance = self.standard_deviation[dimension]
                 .powi(2)
                 .mul_add(retained_weight, elite_variance * self.learning_rate);
             let next_standard_deviation = if next_variance.is_normal() {
                 next_variance.sqrt()
             } else {
-                // Work with deviations when squaring or weighting variances
-                // would overflow, underflow, or lose subnormal precision.
-                let elite_deviation = if elite_variance.is_normal() {
-                    elite_variance.sqrt()
-                } else {
-                    differences.fold(0.0, f64::hypot) * inverse_elite_count.sqrt()
-                };
-                (self.standard_deviation[dimension] * retained_weight.sqrt())
-                    .hypot(elite_deviation * self.learning_rate.sqrt())
+                self.fallback_standard_deviation(
+                    elites,
+                    dimension,
+                    elite_mean,
+                    elite_variance,
+                    inverse_elite_count,
+                    retained_weight,
+                )
             };
 
             self.mean[dimension] = next_mean;
             self.standard_deviation[dimension] =
                 next_standard_deviation.max(self.minimum_standard_deviation[dimension]);
         }
+    }
+
+    /// Computes smoothed standard deviation via `hypot` when squaring or
+    /// weighting variances would overflow, underflow, or lose subnormal
+    /// precision.
+    #[cold]
+    fn fallback_standard_deviation(
+        &self,
+        elites: &[CrossEntropySample<N>],
+        dimension: usize,
+        elite_mean: f64,
+        elite_variance: f64,
+        inverse_elite_count: f64,
+        retained_weight: f64,
+    ) -> f64 {
+        let elite_deviation = if elite_variance.is_normal() {
+            elite_variance.sqrt()
+        } else {
+            let geometry = self.dimensions[dimension];
+            elites
+                .iter()
+                .map(|sample| match geometry {
+                    CrossEntropyDimension::Linear => sample.point[dimension] - elite_mean,
+                    CrossEntropyDimension::Circular => {
+                        circular_delta(elite_mean, sample.point[dimension])
+                    }
+                })
+                .fold(0.0, f64::hypot)
+                * inverse_elite_count.sqrt()
+        };
+        (self.standard_deviation[dimension] * retained_weight.sqrt())
+            .hypot(elite_deviation * self.learning_rate.sqrt())
     }
 }
 
@@ -553,24 +584,92 @@ fn validate_config<const N: usize>(
     Ok(())
 }
 
+/// Places the `elite_samples` best entries of `samples` at the front in
+/// canonical descending-score order.
+fn select_and_order_elites<const N: usize>(
+    samples: &mut [CrossEntropySample<N>],
+    valid_samples: usize,
+    elite_samples: usize,
+) {
+    let all_valid = valid_samples == samples.len();
+    if elite_samples == 1 {
+        let mut best_index = 0;
+        if all_valid {
+            for index in 1..samples.len() {
+                if compare_valid_samples(&samples[index], &samples[best_index]).is_lt() {
+                    best_index = index;
+                }
+            }
+        } else {
+            for index in 1..samples.len() {
+                if compare_samples(&samples[index], &samples[best_index]).is_lt() {
+                    best_index = index;
+                }
+            }
+        }
+        samples.swap(0, best_index);
+    } else if samples.len() <= FULL_SORT_POPULATION_THRESHOLD || elite_samples == samples.len() {
+        if all_valid {
+            samples.sort_unstable_by(compare_valid_samples);
+        } else {
+            samples.sort_unstable_by(compare_samples);
+        }
+    } else {
+        if all_valid {
+            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_valid_samples);
+        } else {
+            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_samples);
+        }
+        // `samples[elite_samples - 1]` is already at its final sorted position;
+        // sort the remaining elites so fitting sums them in deterministic order.
+        if elite_samples > 2 {
+            samples[..elite_samples - 1].sort_unstable_by(compare_valid_samples);
+        }
+    }
+}
+
+/// Returns the first invalid dimension index for `point`, if any.
+#[cold]
+fn first_invalid_dimension<const N: usize>(
+    point: &[f64; N],
+    dimensions: &[CrossEntropyDimension; N],
+) -> Option<usize> {
+    dimensions
+        .iter()
+        .copied()
+        .enumerate()
+        .find_map(|(dimension, geometry)| {
+            (!valid_coordinate(point[dimension], geometry)).then_some(dimension)
+        })
+}
+
 /// Validates points that could influence a distribution update and returns the
 /// number of samples with non-NaN scores.
+#[allow(clippy::manual_range_contains)]
 fn validate_samples<const N: usize>(
     samples: &[CrossEntropySample<N>],
     dimensions: &[CrossEntropyDimension; N],
 ) -> Result<usize, CrossEntropyError> {
+    let upper_bounds: [f64; N] = std::array::from_fn(|dimension| match dimensions[dimension] {
+        CrossEntropyDimension::Linear => 1.0,
+        CrossEntropyDimension::Circular => MAX_CIRCULAR_COORDINATE,
+    });
     let mut valid = 0;
     for (sample_index, sample) in samples.iter().enumerate() {
         if sample.score.is_nan() {
             continue;
         }
-        for (dimension, geometry) in dimensions.iter().copied().enumerate() {
-            if !valid_coordinate(sample.point[dimension], geometry) {
-                return Err(CrossEntropyError::InvalidSamplePoint {
-                    sample: sample_index,
-                    dimension,
-                });
-            }
+        let mut ok = true;
+        for dimension in 0..N {
+            let value = sample.point[dimension];
+            ok &= value >= 0.0 && value <= upper_bounds[dimension];
+        }
+        if !ok {
+            let dimension = first_invalid_dimension(&sample.point, dimensions).unwrap_or(0);
+            return Err(CrossEntropyError::InvalidSamplePoint {
+                sample: sample_index,
+                dimension,
+            });
         }
         valid += 1;
     }
@@ -605,10 +704,10 @@ fn compare_samples<const N: usize>(
     }
 }
 
-/// Orders two known-valid scores from greatest to least, then points
-/// lexicographically, so equal-scored samples have one fixed order.
-#[inline]
-fn compare_valid_samples<const N: usize>(
+/// Breaks ties between equal-scored valid samples via total score order
+/// (distinguishing `-0.0` from `+0.0`) and then lexicographical point order.
+#[cold]
+fn compare_valid_tie<const N: usize>(
     left: &CrossEntropySample<N>,
     right: &CrossEntropySample<N>,
 ) -> Ordering {
@@ -620,6 +719,22 @@ fn compare_valid_samples<const N: usize>(
             .find(|ordering| ordering.is_ne())
             .unwrap_or(Ordering::Equal)
     })
+}
+
+/// Orders two known-valid scores from greatest to least, then points
+/// lexicographically, so equal-scored samples have one fixed order.
+#[inline]
+fn compare_valid_samples<const N: usize>(
+    left: &CrossEntropySample<N>,
+    right: &CrossEntropySample<N>,
+) -> Ordering {
+    if left.score > right.score {
+        Ordering::Less
+    } else if left.score < right.score {
+        Ordering::Greater
+    } else {
+        compare_valid_tie(left, right)
+    }
 }
 
 /// Computes the ceiling of the elite fraction in constant time.
@@ -651,11 +766,17 @@ fn circular_mean<const N: usize>(
     fallback: f64,
 ) -> f64 {
     let reference = elites[0].point[dimension];
-    let (sine_sum, cosine_sum) = elites.iter().fold((0.0, 0.0), |(sines, cosines), sample| {
-        let offset = circular_delta(reference, sample.point[dimension]);
-        let (sine, cosine) = (offset * TAU).sin_cos();
-        (sines + sine, cosines + cosine)
-    });
+    if elites.len() == 1 {
+        return normalize(reference + 0.0, CrossEntropyDimension::Circular);
+    }
+    // `elites[0]` has offset 0 -> `(sin(0), cos(0)) = (0.0, 1.0)`.
+    let (sine_sum, cosine_sum) = elites[1..]
+        .iter()
+        .fold((0.0, 1.0), |(sines, cosines), sample| {
+            let offset = circular_delta(reference, sample.point[dimension]);
+            let (sine, cosine) = (offset * TAU).sin_cos();
+            (sines + sine, cosines + cosine)
+        });
     if sine_sum.hypot(cosine_sum) <= f64::EPSILON * elites.len() as f64 {
         fallback
     } else {
@@ -1392,6 +1513,21 @@ mod tests {
                 normalize(value, CrossEntropyDimension::Circular).to_bits(),
                 "circular mismatch for {value:?}"
             );
+        }
+    }
+
+    #[test]
+    fn negative_zero_elites_preserve_ieee_sum_sign() {
+        for count in [1_usize, 2] {
+            let mut search = optimizer(
+                CrossEntropyConfig::new([-0.0; 2], [0.2; 2])
+                    .with_elite_fraction(1.0)
+                    .with_learning_rate(1.0),
+            );
+            let mut samples = vec![CrossEntropySample::new([-0.0, -0.0], 1.0); count];
+            assert!(matches!(search.tell(&mut samples), Ok(Some(_))));
+            assert_eq!((-0.0_f64).to_bits(), search.mean()[0].to_bits());
+            assert_eq!((-0.0_f64).to_bits(), search.mean()[1].to_bits());
         }
     }
 }
