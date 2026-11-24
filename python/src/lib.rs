@@ -2339,10 +2339,20 @@ impl PyParetoArchive {
         &mut self,
         candidate_id: u64,
         payload: Py<PyAny>,
-        objectives: Vec<f64>,
+        objectives: &Bound<'_, PyAny>,
     ) -> PyResult<bool> {
+        let cap = if objectives.is_instance_of::<PyString>() {
+            0
+        } else {
+            objectives.len().unwrap_or(0)
+        };
+        let mut objs = Vec::with_capacity(cap);
+        for_each_py_f64(objectives, |v| {
+            objs.push(v);
+            Ok(())
+        })?;
         self.inner
-            .insert(CandidateId::new(candidate_id), payload, objectives)
+            .insert(CandidateId::new(candidate_id), payload, objs)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
@@ -2351,16 +2361,23 @@ impl PyParetoArchive {
     }
 
     /// Returns frontier entries as list of dicts `{"candidate_id", "payload", "objectives"}`.
-    fn frontier(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
-        let mut out = Vec::with_capacity(self.inner.len());
-        for entry in self.inner.frontier() {
-            let dict = PyDict::new(py);
-            dict.set_item("candidate_id", entry.candidate.value())?;
-            dict.set_item("payload", entry.payload.clone_ref(py))?;
-            dict.set_item("objectives", entry.objectives.clone())?;
-            out.push(dict.unbind());
-        }
-        Ok(out)
+    fn frontier(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        let k_id = pyo3::intern!(py, "candidate_id");
+        let k_payload = pyo3::intern!(py, "payload");
+        let k_objectives = pyo3::intern!(py, "objectives");
+        let list = PyList::new(
+            py,
+            self.inner.frontier().iter().map(|entry| {
+                PyFallible((|| {
+                    let dict = PyDict::new(py);
+                    dict.set_item(k_id, entry.candidate.value())?;
+                    dict.set_item(k_payload, entry.payload.bind(py))?;
+                    dict.set_item(k_objectives, PyList::new(py, &entry.objectives)?)?;
+                    Ok(dict)
+                })())
+            }),
+        )?;
+        Ok(list.unbind())
     }
 
     fn crowding_distances(&self) -> Vec<f64> {
