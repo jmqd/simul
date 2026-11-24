@@ -13,8 +13,8 @@ use simul::agent::{Agent, AgentContext, AgentId, AgentInitializer, TimerId};
 use simul::experiment::{
     CandidateId, FailurePolicy, FixedReplications, MasterSeed, MixedCrossEntropyConfig,
     MixedCrossEntropyOptimizer, MixedCrossEntropySample, MixedDimension, NonFinitePolicy,
-    ObjectiveDirection, ParetoArchive, Probability, SeedDeriver, TrialContext, aggregate_quantiles,
-    compare_paired_candidates, run_serial,
+    ObjectiveDirection, ParetoArchive, Probability, SeedDeriver, TrialContext, TrialRecord,
+    TrialSpec, aggregate_quantiles, compare_paired_candidates,
 };
 use simul::message::Message;
 use simul::trace::{ReplayWindow, forensic_replay_trial_with_payloads};
@@ -476,6 +476,33 @@ fn evaluate_policy(policy: &Policy, ctx: &TrialContext) -> Result<StormOutcome, 
     })
 }
 
+/// Runs a batch of trials using `run_parallel` when the `parallel` feature is
+/// enabled, or `run_serial` otherwise, returning records in canonical order.
+fn run_batch(
+    seed: MasterSeed,
+    trials: impl IntoIterator<Item = TrialSpec<Policy>>,
+) -> Result<Vec<TrialRecord<StormOutcome, SimulationError>>, Box<dyn std::error::Error>> {
+    #[cfg(feature = "parallel")]
+    {
+        use std::num::NonZeroUsize;
+        let workers = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+        let config = simul::experiment::ParallelConfig::new(workers, NonZeroUsize::MAX);
+        let records = simul::experiment::run_parallel(
+            seed,
+            trials,
+            config,
+            || Ok::<(), std::convert::Infallible>(()),
+            |_ws, policy, ctx| evaluate_policy(policy, ctx),
+        )?;
+        Ok(records)
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let records = simul::experiment::run_serial(seed, trials, evaluate_policy)?;
+        Ok(records)
+    }
+}
+
 /// Compares the naive and resilient policies using paired CRN statistics and
 /// replays a forensic trace of the worst naive trial around the fault window.
 fn compare_and_forensic(seed: MasterSeed) -> Result<(), Box<dyn std::error::Error>> {
@@ -497,7 +524,7 @@ fn compare_and_forensic(seed: MasterSeed) -> Result<(), Box<dyn std::error::Erro
     let trials = schedule
         .trials(CandidateId::new(0), naive)
         .chain(schedule.trials(CandidateId::new(1), resilient));
-    let records = run_serial(seed, trials, evaluate_policy)?;
+    let records = run_batch(seed, trials)?;
 
     let (naive_records, resilient_records) = records.split_at(reps as usize);
     let naive_p99 = aggregate_quantiles(
@@ -599,12 +626,15 @@ fn optimize_pareto(seed: MasterSeed) -> Result<(), Box<dyn std::error::Error>> {
         ObjectiveDirection::Minimize,
         ObjectiveDirection::Maximize,
     ])?;
+    let eval_reps = 4_usize;
     let eval_schedule = FixedReplications::new(4, 2);
     let mut next_candidate = 100_u64;
 
     for _ in 0..4 {
-        let mut batch = Vec::new();
-        for pt in optimizer.ask_batch(&mut opt_rng, 12) {
+        let points = optimizer.ask_batch(&mut opt_rng, 12);
+        let mut decoded = Vec::with_capacity(points.len());
+        let mut trials = Vec::with_capacity(points.len() * eval_reps);
+        for pt in points {
             let policy = Policy {
                 backoff: if pt[0].as_category() == Some(1) {
                     BackoffKind::ExponentialJitter
@@ -618,8 +648,13 @@ fn optimize_pareto(seed: MasterSeed) -> Result<(), Box<dyn std::error::Error>> {
             };
             let cid = CandidateId::new(next_candidate);
             next_candidate += 1;
-            let cand_records =
-                run_serial(seed, eval_schedule.trials(cid, policy), evaluate_policy)?;
+            trials.extend(eval_schedule.trials(cid, policy));
+            decoded.push((cid, policy, pt));
+        }
+        let gen_records = run_batch(seed, trials)?;
+        let mut batch = Vec::with_capacity(decoded.len());
+        for (idx, (cid, policy, pt)) in decoded.into_iter().enumerate() {
+            let cand_records = &gen_records[idx * eval_reps..(idx + 1) * eval_reps];
             let avg_success = cand_records
                 .iter()
                 .filter_map(|r| r.result.as_ref().ok().map(|o| o.recovery_success_rate))
@@ -688,7 +723,7 @@ mod tests {
         let trials = schedule
             .trials(CandidateId::new(0), naive)
             .chain(schedule.trials(CandidateId::new(1), resilient));
-        let records = run_serial(seed, trials, evaluate_policy).expect("run");
+        let records = simul::experiment::run_serial(seed, trials, evaluate_policy).expect("run");
         let paired_p99 = compare_paired_candidates(
             &records,
             CandidateId::new(0),
