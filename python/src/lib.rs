@@ -6,12 +6,14 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyDict, PyList, PyString, PyTuple};
 use rustc_hash::FxHashMap;
 
 use simul_core::agent::{
-    Agent, AgentContext, AgentId, AgentInitializer, MessageDrain, MessageProcessingStatus, TimerId,
-    geometric_consumer, geometric_producer, periodic_consumer, periodic_producer,
+    Agent, AgentContext, AgentId, AgentInitializer, MessageDrain, MessageProcessingStatus,
+    SimulationAgent, TimerId, geometric_consumer, geometric_producer, periodic_consumer,
+    periodic_producer,
 };
 use simul_core::experiment::{
     AgentStreams, BernoulliReducer, BernoulliSummary, CandidateId, FailurePolicy, MasterSeed,
@@ -330,22 +332,30 @@ impl fmt::Debug for PyCustomAgent {
     }
 }
 
+/// Cached handle to Python's `copy.deepcopy` function.
+static PY_DEEPCOPY: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
 impl Clone for PyCustomAgent {
     fn clone(&self) -> Self {
-        let cloned_obj = Python::attach(|py| {
-            let deepcopy = py
-                .import("copy")
-                .and_then(|m| m.getattr("deepcopy"))
-                .and_then(|f| f.call1((self.obj.bind(py),)));
-            match deepcopy {
+        let (cloned_obj, cloned_py_name) = Python::attach(|py| {
+            let deepcopy = PY_DEEPCOPY
+                .get_or_try_init(py, || {
+                    py.import(pyo3::intern!(py, "copy"))?
+                        .getattr(pyo3::intern!(py, "deepcopy"))
+                        .map(Bound::unbind)
+                })
+                .and_then(|f| f.bind(py).call1((self.obj.bind(py),)));
+            let obj = match deepcopy {
                 Ok(val) => val.unbind(),
                 Err(_) => self.obj.clone_ref(py),
-            }
+            };
+            let py_name = self.py_name.as_ref().map(|s| s.clone_ref(py));
+            (obj, py_name)
         });
         Self {
             obj: cloned_obj,
             name: Arc::clone(&self.name),
-            py_name: None,
+            py_name: cloned_py_name,
             peer_ids: Arc::clone(&self.peer_ids),
             seed_slot: Arc::new(AtomicU64::new(self.seed_slot.load(Ordering::Relaxed))),
             cached_streams: self.cached_streams,
@@ -727,6 +737,7 @@ struct PySimulation {
     strict_routing: bool,
     pending: Vec<PendingAgentSpec>,
     built: Option<Simulation<PyPayload>>,
+    agent_py_names: Option<Vec<Py<PyString>>>,
     error_slot: Arc<Mutex<Option<PyErr>>>,
 }
 
@@ -832,6 +843,9 @@ fn build_agent_initializer(
     Ok(init)
 }
 
+/// Borrowed simulation agents paired with their cached Python `str` names.
+type AgentsWithNames<'a> = (&'a [SimulationAgent<PyPayload>], &'a [Py<PyString>]);
+
 impl PySimulation {
     /// Materializes the underlying Rust `Simulation` on first run or inspection.
     fn ensure_built(&mut self) -> PyResult<&mut Simulation<PyPayload>> {
@@ -892,6 +906,23 @@ impl PySimulation {
         }
         Ok(())
     }
+
+    /// Ensures the simulation is built and returns the agent slice paired with
+    /// cached Python `str` keys for direct statistics dictionary population.
+    fn agents_with_py_names(&mut self, py: Python<'_>) -> PyResult<AgentsWithNames<'_>> {
+        let _ = self.ensure_built()?;
+        let sim = self
+            .built
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("simulation failed to initialize"))?;
+        let names = self.agent_py_names.get_or_insert_with(|| {
+            sim.agents()
+                .iter()
+                .map(|agent| PyString::new(py, agent.name()).unbind())
+                .collect()
+        });
+        Ok((sim.agents(), names.as_slice()))
+    }
 }
 
 #[pymethods]
@@ -908,6 +939,7 @@ impl PySimulation {
             strict_routing,
             pending: Vec::new(),
             built: None,
+            agent_py_names: None,
             error_slot: Arc::new(Mutex::new(None)),
         }
     }
@@ -1054,18 +1086,15 @@ impl PySimulation {
         // Attach fresh error and seed slots so branches evolve independently.
         let fresh_error_slot = Arc::new(Mutex::new(None));
         let fresh_seed_slot = Arc::new(AtomicU64::new(self.seed));
-        for agent in cloned
-            .agents()
-            .iter()
-            .map(|a| a.name().to_string())
-            .collect::<Vec<_>>()
-        {
-            if let Some(custom) = cloned
-                .find_by_name_mut(&agent)
-                .and_then(|a| a.downcast_mut::<PyCustomAgent>())
-            {
-                custom.error_slot = Arc::clone(&fresh_error_slot);
-                custom.seed_slot = Arc::clone(&fresh_seed_slot);
+        for index in 0..cloned.agents().len() {
+            if let Ok(idx) = u32::try_from(index) {
+                if let Some(custom) = cloned
+                    .agent_mut(AgentId::new(idx))
+                    .and_then(|a| a.downcast_mut::<PyCustomAgent>())
+                {
+                    custom.error_slot = Arc::clone(&fresh_error_slot);
+                    custom.seed_slot = Arc::clone(&fresh_seed_slot);
+                }
             }
         }
         Ok(Self {
@@ -1076,6 +1105,7 @@ impl PySimulation {
             strict_routing: self.strict_routing,
             pending: Vec::new(),
             built: Some(cloned),
+            agent_py_names: None,
             error_slot: fresh_error_slot,
         })
     }
@@ -1156,36 +1186,42 @@ impl PySimulation {
 
     /// Consumed message counts by agent name.
     fn consumed_counts(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let (agents, py_names) = self.agents_with_py_names(py)?;
         let dict = PyDict::new(py);
-        for (k, v) in self.ensure_built()?.calc_consumed_len_statistics() {
-            dict.set_item(k, v)?;
+        for (name, agent) in py_names.iter().zip(agents.iter()) {
+            dict.set_item(name.bind(py), agent.consumed_count())?;
         }
         Ok(dict.unbind())
     }
 
     /// Produced message counts by agent name.
     fn produced_counts(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let (agents, py_names) = self.agents_with_py_names(py)?;
         let dict = PyDict::new(py);
-        for (k, v) in self.ensure_built()?.calc_produced_len_statistics() {
-            dict.set_item(k, v)?;
+        for (name, agent) in py_names.iter().zip(agents.iter()) {
+            dict.set_item(name.bind(py), agent.produced_count())?;
         }
         Ok(dict.unbind())
     }
 
     /// Current queue depths by agent name.
     fn queue_lengths(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let (agents, py_names) = self.agents_with_py_names(py)?;
         let dict = PyDict::new(py);
-        for (k, v) in self.ensure_built()?.calc_queue_len_statistics() {
-            dict.set_item(k, v)?;
+        for (name, agent) in py_names.iter().zip(agents.iter()) {
+            dict.set_item(name.bind(py), agent.state.queue.len())?;
         }
         Ok(dict.unbind())
     }
 
     /// Mean message wait durations by agent name.
     fn avg_wait_times(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let (agents, py_names) = self.agents_with_py_names(py)?;
         let dict = PyDict::new(py);
-        for (k, v) in self.ensure_built()?.calc_avg_wait_statistics() {
-            dict.set_item(k, v)?;
+        for (name, agent) in py_names.iter().zip(agents.iter()) {
+            if let Some(wait) = agent.avg_wait() {
+                dict.set_item(name.bind(py), wait)?;
+            }
         }
         Ok(dict.unbind())
     }
