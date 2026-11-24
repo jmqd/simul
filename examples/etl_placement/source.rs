@@ -20,6 +20,47 @@ pub(crate) const NAME: &str = "postgres";
 /// keeping commit times within 1 ms.
 const AGGREGATION_TICKS: Tick = 10;
 
+/// Uniform bins over `[0, 1)` for exact-region geometric sampling without `ln`.
+const GEO_LUT_LEN: usize = 512;
+
+/// Builds a lookup table mapping uniform `u` bins `[b/N, (b+1)/N)` to their
+/// guaranteed `1 + floor(ln(1 - u) / ln_failure)` value, or `0` for bins that
+/// straddle (or sit within `1e-11` of) an integer boundary.
+fn build_geo_lut(ln_failure: f64) -> [u8; GEO_LUT_LEN] {
+    let mut lut = [0_u8; GEO_LUT_LEN];
+    if ln_failure >= 0.0 {
+        return lut;
+    }
+    let scale = GEO_LUT_LEN as f64;
+    for (bin, slot) in lut.iter_mut().enumerate() {
+        let lo_x = 1.0 - (bin + 1) as f64 / scale;
+        let hi_x = 1.0 - bin as f64 / scale;
+        if lo_x <= 0.0 {
+            continue;
+        }
+        let lo_val = (lo_x * (1.0 - 1e-11)).ln() / ln_failure;
+        let k_hi = if bin == 0 {
+            0
+        } else {
+            let hi_val = (hi_x * (1.0 + 1e-11)).min(1.0).ln() / ln_failure;
+            if hi_val < 0.0 {
+                continue;
+            }
+            to_u64(hi_val.floor())
+        };
+        if lo_val < 0.0 {
+            continue;
+        }
+        let k_lo = to_u64(lo_val.floor());
+        if k_lo == k_hi {
+            if let Ok(rows) = u8::try_from(k_lo + 1) {
+                *slot = rows;
+            }
+        }
+    }
+    lut
+}
+
 /// Rows of one table committed within one aggregation window.
 #[derive(Clone, Copy, Debug)]
 struct Record {
@@ -99,6 +140,7 @@ pub(crate) struct PostgresAgent {
     current_tx_per_tick: f64,
     poisson_limit: f64,
     geo_ln_failure: f64,
+    wal_bytes_per_row_int: Option<u64>,
     decode_rows_per_tick: f64,
     copy_bytes_per_tick: f64,
     wal_sender_timeout_ticks: Tick,
@@ -129,6 +171,7 @@ pub(crate) struct PostgresAgent {
     newest_commit: Tick,
     last_reported_cross_region: f64,
     events_buf: Vec<NetEvent>,
+    geo_lut: Box<[u8; GEO_LUT_LEN]>,
 }
 
 impl PostgresAgent {
@@ -160,6 +203,12 @@ impl PostgresAgent {
         } else {
             0.0
         };
+        let geo_lut = build_geo_lut(geo_ln_failure);
+        let wal_bytes = config.source.wal_bytes_per_row;
+        let wal_bytes_per_row_int = (0.0..=1e6)
+            .contains(&wal_bytes)
+            .then(|| to_u64(wal_bytes))
+            .filter(|&n| (n as f64).to_bits() == wal_bytes.to_bits());
         let decode_rows_per_tick = per_tick(config.source.decode_rows_per_s);
         let copy_bytes_per_tick = per_tick(config.source.copy_bytes_per_s);
         let wal_sender_timeout_ticks = ticks(config.source.wal_sender_timeout_s);
@@ -184,6 +233,7 @@ impl PostgresAgent {
             current_tx_per_tick,
             poisson_limit,
             geo_ln_failure,
+            wal_bytes_per_row_int,
             decode_rows_per_tick,
             copy_bytes_per_tick,
             wal_sender_timeout_ticks,
@@ -203,6 +253,7 @@ impl PostgresAgent {
             newest_commit: 0,
             last_reported_cross_region: 0.0,
             events_buf: Vec::new(),
+            geo_lut: Box::new(geo_lut),
         }
     }
 
@@ -267,6 +318,12 @@ impl PostgresAgent {
         self.poisson_limit = (-self.current_tx_per_tick).exp();
     }
 
+    #[cold]
+    #[inline(never)]
+    fn geometric_fallback(&self, u: f64) -> u64 {
+        1 + to_u64(((1.0 - u).ln() / self.geo_ln_failure).floor())
+    }
+
     fn generate(&mut self, now: Tick) {
         if now >= self.burst_switch_at {
             self.switch_burst(now);
@@ -297,18 +354,30 @@ impl PostgresAgent {
             let workload = &self.config.workload;
             let tables = workload.tables as u64;
             let wal_bytes_per_row = self.config.source.wal_bytes_per_row;
+            let wal_bytes_int = self.wal_bytes_per_row_int;
             let offset = now % AGGREGATION_TICKS;
             for _ in 0..count {
                 let rows = if self.geo_ln_failure >= 0.0 {
                     self.workload_rng
                         .geometric(workload.mean_rows_per_transaction)
                 } else {
-                    1 + to_u64(
-                        ((1.0 - self.workload_rng.unit()).ln() / self.geo_ln_failure).floor(),
-                    )
+                    let u = self.workload_rng.unit();
+                    let bin = usize::try_from(to_u64(u * GEO_LUT_LEN as f64))
+                        .unwrap_or(GEO_LUT_LEN - 1)
+                        .min(GEO_LUT_LEN - 1);
+                    let cached = self.geo_lut[bin];
+                    if cached != 0 {
+                        u64::from(cached)
+                    } else {
+                        self.geometric_fallback(u)
+                    }
                 };
                 let table = self.workload_rng.below(tables);
-                self.lsn += to_u64(rows as f64 * wal_bytes_per_row) + 100;
+                let wal_bytes = wal_bytes_int.map_or_else(
+                    || to_u64(rows as f64 * wal_bytes_per_row),
+                    |per_row| rows * per_row,
+                );
+                self.lsn += wal_bytes + 100;
                 let slot = &mut self.open[usize::try_from(table).unwrap_or(0)];
                 slot.rows += rows;
                 slot.commits += 1;
