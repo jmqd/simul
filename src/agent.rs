@@ -565,6 +565,38 @@ impl AgentStreamCache {
     }
 }
 
+/// Read-only per-tick metadata shared across every agent callback.
+pub(crate) struct TickMeta<'a> {
+    /// The current simulation time.
+    pub(crate) time: DiscreteTime,
+    /// Identifies the agent layout, which validates cached target identities.
+    pub(crate) layout: u64,
+    /// Number of agents, which bounds valid identities.
+    pub(crate) agent_count: usize,
+    /// Maps agent names to identities when `peers` is absent.
+    pub(crate) agent_name_handle_map: &'a FxHashMap<String, AgentId>,
+}
+
+/// Mutable per-simulation state accessed infrequently by callbacks through
+/// [`AgentContext`].
+#[derive(Clone, Debug)]
+pub(crate) struct TickState {
+    /// Lazily derived stream roots for this simulation.
+    pub(crate) agent_streams: AgentStreamCache,
+    /// Monotonic send-order sequence for delayed messages.
+    pub(crate) next_in_flight: u64,
+}
+
+impl TickState {
+    /// Creates initial tick state for `seed`.
+    pub(crate) const fn new(seed: MasterSeed) -> Self {
+        Self {
+            agent_streams: AgentStreamCache::new(seed),
+            next_in_flight: 0,
+        }
+    }
+}
+
 /// The capability for agents to act on the world.
 ///
 /// Identity, name, time, and state are read-only to callbacks.
@@ -576,49 +608,40 @@ impl AgentStreamCache {
 /// }
 /// ```
 pub struct AgentContext<'a, M = ()> {
-    /// The identity of the Agent.
-    pub(crate) id: AgentId,
+    /// Read-only tick metadata shared by every visit in the tick.
+    pub(crate) meta: &'a TickMeta<'a>,
+
+    /// Internal buffer for messages and halt requests.
+    pub(crate) commands: &'a mut CommandBuffer<M>,
+
+    /// Mutable stream cache and delayed-message sequence counter.
+    pub(crate) tick_state: &'a mut TickState,
+
+    /// The agent's mode and queue as of this callback.
+    pub(crate) state: &'a AgentState<M>,
 
     /// The name of the Agent, which small simulations also use to recognize
     /// sends to itself.
     pub(crate) name: &'a str,
 
-    /// The current simulation time.
-    pub(crate) time: DiscreteTime,
-
-    /// Internal buffer for messages and halt requests.
-    pub(crate) commands: &'a mut CommandBuffer<M>,
-
-    /// Sleep requested by the agent during the current tick.
-    pub(crate) requested_sleep_until: &'a mut Option<DiscreteTime>,
-
     /// Agents before and after the caller, which small simulations scan to
     /// route messages instead of hashing every target.
-    pub(crate) peers: Option<Peers<'a, M>>,
+    pub(crate) peers: Option<&'a Peers<'a, M>>,
 
-    /// Maps agent names to identities when `peers` is absent.
-    pub(crate) agent_name_handle_map: &'a FxHashMap<String, AgentId>,
-
-    /// Number of agents, which bounds valid identities.
-    pub(crate) agent_count: usize,
-
-    /// Identifies the agent layout, which validates cached target identities.
-    pub(crate) layout: u64,
-
-    /// The agent's mode and queue as of this callback.
-    pub(crate) state: &'a AgentState<M>,
-
-    /// Whether the current message finished or stays queued.
-    pub(crate) message_processing_status: MessageProcessingStatus,
-
-    /// Lazily derived stream roots for this simulation.
-    pub(crate) agent_streams: &'a mut AgentStreamCache,
+    /// Wake time requested via [`Self::sleep_for`] when `sleep_requested` is true.
+    pub(crate) sleep_until: DiscreteTime,
 
     /// Number of streams handed out during this visit.
     pub(crate) calls: u64,
 
-    /// Monotonic send-order sequence for delayed messages.
-    pub(crate) next_in_flight: &'a mut u64,
+    /// The identity of the Agent.
+    pub(crate) id: AgentId,
+
+    /// Whether the current message finished or stays queued.
+    pub(crate) message_processing_status: MessageProcessingStatus,
+
+    /// Whether the agent called [`Self::sleep_for`] during this visit.
+    pub(crate) sleep_requested: bool,
 }
 
 impl<'a, M> AgentContext<'a, M> {
@@ -626,6 +649,16 @@ impl<'a, M> AgentContext<'a, M> {
     #[must_use]
     pub const fn id(&self) -> AgentId {
         self.id
+    }
+
+    /// Returns the wake time requested during this visit, if any.
+    #[inline]
+    pub(crate) const fn requested_sleep(&self) -> Option<DiscreteTime> {
+        if self.sleep_requested {
+            Some(self.sleep_until)
+        } else {
+            None
+        }
     }
 
     /// Returns a new random stream for this agent and tick.
@@ -639,12 +672,14 @@ impl<'a, M> AgentContext<'a, M> {
     /// rather than calling this per draw.
     #[must_use]
     pub fn rng(&mut self) -> TrialRng {
-        let root = self
-            .agent_streams
-            .get_or_derive(self.id.index(), self.agent_count, self.name);
+        let root = self.tick_state.agent_streams.get_or_derive(
+            self.id.index(),
+            self.meta.agent_count,
+            self.name,
+        );
         let call = self.calls;
         self.calls += 1;
-        root.rng(self.time, call)
+        root.rng(self.meta.time, call)
     }
 
     /// Returns the agent's name.
@@ -659,7 +694,7 @@ impl<'a, M> AgentContext<'a, M> {
     /// [`Self::sleep_for`] and [`Self::send_after`] count forward from it.
     #[must_use]
     pub const fn time(&self) -> DiscreteTime {
-        self.time
+        self.meta.time
     }
 
     /// Returns the agent's state as of this callback. During `on_message`, the
@@ -687,7 +722,7 @@ impl<'a, M> AgentContext<'a, M> {
     /// simulation is recorded like an unknown name.
     #[inline]
     pub fn send_to(&mut self, target: AgentId, payload: M) {
-        let destination = (target.index() < self.agent_count).then_some(target);
+        let destination = (target.index() < self.meta.agent_count).then_some(target);
         self.queue_message(destination, payload);
     }
 
@@ -746,13 +781,13 @@ impl<'a, M> AgentContext<'a, M> {
     #[inline]
     pub fn send_after(&mut self, delay: DiscreteTime, target: AgentId, payload: M) -> TimerId {
         assert!(delay > 0, "a message cannot arrive in the tick it is sent");
-        let Some(arrival) = self.time.checked_add(delay) else {
+        let Some(arrival) = self.meta.time.checked_add(delay) else {
             panic!("message arrival exceeds u64::MAX");
         };
-        let sequence = *self.next_in_flight;
-        *self.next_in_flight += 1;
+        let sequence = self.tick_state.next_in_flight;
+        self.tick_state.next_in_flight += 1;
         let timer = TimerId { arrival, sequence };
-        let destination = (target.index() < self.agent_count).then_some(target);
+        let destination = (target.index() < self.meta.agent_count).then_some(target);
         let message = Message::sent(arrival - 1, self.id, destination, payload);
         self.commands.push_special(SpecialCommand::SendDelayed {
             sender: self.id,
@@ -786,7 +821,7 @@ impl<'a, M> AgentContext<'a, M> {
     #[inline]
     pub fn agent_id(&self, name: &str) -> Option<AgentId> {
         match self.peers {
-            Some((before, after)) => {
+            Some(&(before, after)) => {
                 if self.name == name {
                     Some(self.id)
                 } else {
@@ -802,7 +837,7 @@ impl<'a, M> AgentContext<'a, M> {
                         .map(AgentId::from_handle)
                 }
             }
-            None => self.agent_name_handle_map.get(name).copied(),
+            None => self.meta.agent_name_handle_map.get(name).copied(),
         }
     }
 
@@ -817,10 +852,10 @@ impl<'a, M> AgentContext<'a, M> {
     #[inline]
     fn send_cached(&mut self, target: &mut CachedTarget, payload: M) {
         let destination = match target.resolved {
-            Some((layout, destination)) if layout == self.layout => destination,
+            Some((layout, destination)) if layout == self.meta.layout => destination,
             _ => {
                 let destination = self.agent_id(&target.name);
-                target.resolved = Some((self.layout, destination));
+                target.resolved = Some((self.meta.layout, destination));
                 destination
             }
         };
@@ -870,10 +905,11 @@ impl<'a, M> AgentContext<'a, M> {
     /// Panics before changing the sleep request if the wake time exceeds `u64::MAX`.
     #[inline]
     pub const fn sleep_for(&mut self, ticks: DiscreteTime) {
-        let Some(wake_time) = self.time.checked_add(ticks) else {
+        let Some(wake_time) = self.meta.time.checked_add(ticks) else {
             panic!("agent wake time exceeds u64::MAX");
         };
-        *self.requested_sleep_until = Some(wake_time);
+        self.sleep_until = wake_time;
+        self.sleep_requested = true;
     }
 
     /// Marks the message being handled as [`MessageProcessingStatus::Done`]
@@ -889,7 +925,7 @@ impl<M: fmt::Debug> fmt::Debug for AgentContext<'_, M> {
         f.debug_struct("AgentContext")
             .field("id", &self.id)
             .field("name", &self.name)
-            .field("time", &self.time)
+            .field("time", &self.meta.time)
             .field("state", &self.state)
             .field("message_processing_status", &self.message_processing_status)
             .finish_non_exhaustive()

@@ -110,7 +110,8 @@ struct ReadmeDoctests;
 use agent::{
     AgentContext, AgentId, AgentInitializer, AgentMetadata, AgentMode, AgentState,
     AgentStreamCache, CommandBuffer, MessageDrain, MessageHistory, MessageProcessingStatus, Peers,
-    PendingSend, QueueDepthChange, SimulationAgent, SpecialCommand, TimerId, WakeMode,
+    PendingSend, QueueDepthChange, SimulationAgent, SpecialCommand, TickMeta, TickState, TimerId,
+    WakeMode,
 };
 use experiment::{
     CandidateId, FixedReplications, MasterSeed, RunError, TrialContext, TrialRecord, TrialStream,
@@ -211,9 +212,8 @@ pub struct Simulation<M = ()> {
     /// the layout and its token; every constructed simulation gets a new one.
     layout: u64,
 
-    /// Each agent's stream root, derived on first `rng()` call; names never
-    /// change, so neither do these.
-    agent_streams: AgentStreamCache,
+    /// Lazily derived stream roots and delayed-message send sequence.
+    tick_state: TickState,
 
     /// The reason given by the interrupt that ended the latest run, if any.
     halt_reason: Option<String>,
@@ -226,9 +226,6 @@ pub struct Simulation<M = ()> {
 
     /// Earliest arrival tick in `in_flight`, or `DiscreteTime::MAX` when empty.
     next_arrival: DiscreteTime,
-
-    /// Send-order number of the next delayed message.
-    next_in_flight: u64,
 
     /// How messages with unknown or out-of-range destinations are handled.
     unknown_destination_policy: UnknownDestinationPolicy,
@@ -472,26 +469,18 @@ impl std::error::Error for SimulationError {}
 
 /// Per-tick inputs shared by every agent visit.
 struct Tick<'a, M> {
-    /// The current simulation time.
-    time: DiscreteTime,
-    /// The simulation's agent layout token.
-    layout: u64,
-    /// Number of agents, which bounds valid identities.
-    agent_count: usize,
+    /// Read-only tick metadata borrowed by every [`AgentContext`].
+    meta: TickMeta<'a>,
     /// Whether callbacks route by scanning names instead of the name index.
     scan_names: bool,
     /// Whether every visit records the queue depth.
     queue_depth_metric: bool,
     /// Whether visits to sleeping agents count asleep cycles.
     asleep_cycles_metric: bool,
-    /// Name index for simulations too large to scan names.
-    agent_name_handle_map: &'a FxHashMap<String, AgentId>,
     /// Commands issued during the tick, applied at its end.
     commands: &'a mut CommandBuffer<M>,
-    /// Lazily derived stream roots by handle.
-    agent_streams: &'a mut AgentStreamCache,
-    /// Monotonic send-order sequence for delayed messages.
-    next_in_flight: &'a mut u64,
+    /// Lazily derived stream roots and delayed-message send sequence.
+    state: &'a mut TickState,
     /// Active structured trace sink, if tracing is enabled.
     trace: Option<&'a mut SimulationTrace>,
 }
@@ -747,6 +736,150 @@ fn push_trace_event(
     trace.push(time, AgentId::from_handle(handle), kind);
 }
 
+/// Checks whether `agent` can act at `tick.meta.time`, waking it when due and
+/// counting an asleep cycle otherwise. Returns `None` when no callback runs.
+#[allow(
+    clippy::inline_always,
+    reason = "per-agent hot path shared by dense and sparse tick loops"
+)]
+#[inline(always)]
+fn check_or_wake_agent<M>(
+    agent: &mut SimulationAgent<M>,
+    handle: usize,
+    tick: &mut Tick<'_, M>,
+) -> Option<WakeMode> {
+    match agent.state.mode {
+        AgentMode::Proactive => Some(WakeMode::Proactive),
+        AgentMode::Reactive => (!agent.state.queue.is_empty()).then_some(WakeMode::Reactive),
+        AgentMode::AsleepUntil { until, then } => {
+            if tick.meta.time < until {
+                if tick.asleep_cycles_metric {
+                    agent.metadata.asleep_cycle_count += 1;
+                }
+                return None;
+            }
+            agent.state.mode = then.into();
+            if let Some(trace) = tick.trace.as_deref_mut() {
+                push_trace_event(trace, tick.meta.time, handle, TraceEventKind::AgentWoke);
+            }
+            if then == WakeMode::Reactive && agent.state.queue.is_empty() {
+                None
+            } else {
+                Some(then)
+            }
+        }
+        AgentMode::Dead => None,
+    }
+}
+
+/// Applies an optional sleep request to `agent` and records any trace event.
+#[allow(clippy::inline_always, reason = "tail of per-agent callback hot path")]
+#[inline(always)]
+fn apply_requested_sleep<M>(
+    agent: &mut SimulationAgent<M>,
+    handle: usize,
+    wake_mode: WakeMode,
+    sleep_until: Option<DiscreteTime>,
+    tick: &mut Tick<'_, M>,
+) {
+    if let Some(until) = sleep_until {
+        if let Some(trace) = tick.trace.as_deref_mut() {
+            push_trace_event(
+                trace,
+                tick.meta.time,
+                handle,
+                TraceEventKind::AgentSlept { until },
+            );
+        }
+        agent.state.mode = AgentMode::AsleepUntil {
+            until,
+            then: wake_mode,
+        };
+    }
+}
+
+/// Runs callbacks for an awake, runnable agent and applies any requested sleep.
+#[allow(
+    clippy::inline_always,
+    reason = "per-agent hot path shared by dense and sparse tick loops"
+)]
+#[inline(always)]
+fn visit_awake_agent<M>(
+    agent: &mut SimulationAgent<M>,
+    peers: Option<&Peers<'_, M>>,
+    handle: usize,
+    wake_mode: WakeMode,
+    tick: &mut Tick<'_, M>,
+) -> (bool, Option<DiscreteTime>) {
+    if agent.message_drain != MessageDrain::One {
+        return visit_agent_multi_drain(agent, peers, handle, wake_mode, tick);
+    }
+    let proactive = wake_mode == WakeMode::Proactive;
+    if agent.state.queue.is_empty() {
+        let mut ctx = AgentContext {
+            meta: &tick.meta,
+            commands: &mut *tick.commands,
+            tick_state: &mut *tick.state,
+            state: &agent.state,
+            name: &agent.name,
+            peers,
+            sleep_until: 0,
+            calls: 0,
+            id: AgentId::from_handle(handle),
+            message_processing_status: MessageProcessingStatus::Done,
+            sleep_requested: false,
+        };
+        agent.agent.on_tick(&mut ctx);
+        let requested_sleep = ctx.requested_sleep();
+        apply_requested_sleep(agent, handle, wake_mode, requested_sleep, tick);
+        return (true, requested_sleep);
+    }
+
+    let Some(msg) = agent.state.queue.pop_front() else {
+        return (false, None);
+    };
+    if tick.queue_depth_metric {
+        agent.record_queue_depth(tick.meta.time);
+    }
+    let mut ctx = AgentContext {
+        meta: &tick.meta,
+        commands: &mut *tick.commands,
+        tick_state: &mut *tick.state,
+        state: &agent.state,
+        name: &agent.name,
+        peers,
+        sleep_until: 0,
+        calls: 0,
+        id: AgentId::from_handle(handle),
+        message_processing_status: MessageProcessingStatus::Done,
+        sleep_requested: false,
+    };
+    agent.agent.on_message(&mut ctx, &msg);
+    let status = ctx.message_processing_status;
+    if proactive {
+        ctx.message_processing_status = MessageProcessingStatus::Done;
+        agent.agent.on_tick(&mut ctx);
+    }
+    let requested_sleep = ctx.requested_sleep();
+    match status {
+        MessageProcessingStatus::InProgress => {
+            agent.state.queue.push_front(msg);
+            if tick.queue_depth_metric {
+                // The message is back in the queue from the next tick on.
+                agent.record_queue_depth(tick.meta.time.saturating_add(1));
+            }
+        }
+        MessageProcessingStatus::Done => {
+            if let Some(trace) = tick.trace.as_deref_mut() {
+                push_trace_consumed(trace, tick.meta.time, handle, &msg, agent.state.queue.len());
+            }
+            agent.record_consumed(msg, tick.meta.time);
+        }
+    }
+    apply_requested_sleep(agent, handle, wake_mode, requested_sleep, tick);
+    (true, requested_sleep)
+}
+
 /// Visits one agent in handle order: wakes it when due, runs its callback, and
 /// applies the sleep it requested. Returns whether a callback ran and the
 /// requested wake time.
@@ -758,110 +891,15 @@ fn push_trace_event(
 )]
 #[inline(always)]
 fn visit_agent<M>(
-    agents: &mut [SimulationAgent<M>],
+    agent: &mut SimulationAgent<M>,
+    peers: Option<&Peers<'_, M>>,
     handle: usize,
     tick: &mut Tick<'_, M>,
 ) -> (bool, Option<DiscreteTime>) {
-    // Only small simulations split the slice, since every visit pays for it,
-    // including visits to sleeping agents.
-    let (agent, peers) = if tick.scan_names {
-        let (before, rest) = agents.split_at_mut(handle);
-        let Some((agent, after)) = rest.split_first_mut() else {
-            return (false, None);
-        };
-        (agent, Some((&*before, &*after)))
-    } else {
-        (&mut agents[handle], None)
-    };
-    let wake_mode = match agent.state.mode {
-        AgentMode::Proactive => WakeMode::Proactive,
-        AgentMode::Reactive => WakeMode::Reactive,
-        AgentMode::AsleepUntil { until, then } => {
-            if tick.time < until {
-                // A sleeping agent pops no message, runs no callback, and
-                // requests no sleep; only the optional asleep count changes.
-                if tick.asleep_cycles_metric {
-                    agent.metadata.asleep_cycle_count += 1;
-                }
-                return (false, None);
-            }
-            agent.state.mode = then.into();
-            if let Some(trace) = tick.trace.as_deref_mut() {
-                push_trace_event(trace, tick.time, handle, TraceEventKind::AgentWoke);
-            }
-            then
-        }
-        AgentMode::Dead => return (false, None),
-    };
-    if agent.message_drain != MessageDrain::One {
-        return visit_agent_multi_drain(agent, peers, handle, wake_mode, tick);
-    }
-    let proactive = wake_mode == WakeMode::Proactive;
-    let message = agent.state.queue.pop_front();
-    if tick.queue_depth_metric && message.is_some() {
-        agent.record_queue_depth(tick.time);
-    }
-    if !proactive && message.is_none() {
+    let Some(wake_mode) = check_or_wake_agent(agent, handle, tick) else {
         return (false, None);
-    }
-
-    let mut requested_sleep_until = None;
-    let mut ctx = AgentContext {
-        id: AgentId::from_handle(handle),
-        name: &agent.name,
-        time: tick.time,
-        commands: &mut *tick.commands,
-        requested_sleep_until: &mut requested_sleep_until,
-        peers,
-        agent_name_handle_map: tick.agent_name_handle_map,
-        agent_count: tick.agent_count,
-        layout: tick.layout,
-        state: &agent.state,
-        message_processing_status: MessageProcessingStatus::Done,
-        agent_streams: &mut *tick.agent_streams,
-        calls: 0,
-        next_in_flight: &mut *tick.next_in_flight,
     };
-    // Every awake agent handles at most one queued message per tick; proactive
-    // agents then also tick.
-    if let Some(msg) = &message {
-        agent.agent.on_message(&mut ctx, msg);
-    }
-    let status = std::mem::replace(
-        &mut ctx.message_processing_status,
-        MessageProcessingStatus::Done,
-    );
-    if proactive {
-        agent.agent.on_tick(&mut ctx);
-    }
-    if let Some(msg) = message {
-        match status {
-            MessageProcessingStatus::InProgress => {
-                agent.state.queue.push_front(msg);
-                if tick.queue_depth_metric {
-                    // The message is back in the queue from the next tick on.
-                    agent.record_queue_depth(tick.time.saturating_add(1));
-                }
-            }
-            MessageProcessingStatus::Done => {
-                if let Some(trace) = tick.trace.as_deref_mut() {
-                    push_trace_consumed(trace, tick.time, handle, &msg, agent.state.queue.len());
-                }
-                agent.record_consumed(msg, tick.time);
-            }
-        }
-    }
-    if let Some(sleep_until) = requested_sleep_until {
-        if let Some(trace) = tick.trace.as_deref_mut() {
-            let kind = TraceEventKind::AgentSlept { until: sleep_until };
-            push_trace_event(trace, tick.time, handle, kind);
-        }
-        agent.state.mode = AgentMode::AsleepUntil {
-            until: sleep_until,
-            then: wake_mode,
-        };
-    }
-    (true, requested_sleep_until)
+    visit_awake_agent(agent, peers, handle, wake_mode, tick)
 }
 
 /// Outlined visit path for agents configured with [`MessageDrain::UpTo`] or
@@ -869,7 +907,7 @@ fn visit_agent<M>(
 #[inline(never)]
 fn visit_agent_multi_drain<M>(
     agent: &mut SimulationAgent<M>,
-    peers: Option<Peers<'_, M>>,
+    peers: Option<&Peers<'_, M>>,
     handle: usize,
     wake_mode: WakeMode,
     tick: &mut Tick<'_, M>,
@@ -883,7 +921,7 @@ fn visit_agent_multi_drain<M>(
         MessageDrain::UpTo(max) => max.get(),
         MessageDrain::All => usize::MAX,
     };
-    let mut requested_sleep_until = None;
+    let mut requested_sleep_until: Option<DiscreteTime> = None;
     let mut calls = 0_u64;
     let mut handled = 0_usize;
     while handled < limit && requested_sleep_until.is_none() {
@@ -891,39 +929,39 @@ fn visit_agent_multi_drain<M>(
             break;
         };
         if tick.queue_depth_metric {
-            agent.record_queue_depth(tick.time);
+            agent.record_queue_depth(tick.meta.time);
         }
         let mut ctx = AgentContext {
-            id: AgentId::from_handle(handle),
-            name: &agent.name,
-            time: tick.time,
+            meta: &tick.meta,
             commands: &mut *tick.commands,
-            requested_sleep_until: &mut requested_sleep_until,
-            peers,
-            agent_name_handle_map: tick.agent_name_handle_map,
-            agent_count: tick.agent_count,
-            layout: tick.layout,
+            tick_state: &mut *tick.state,
             state: &agent.state,
-            message_processing_status: MessageProcessingStatus::Done,
-            agent_streams: &mut *tick.agent_streams,
+            name: &agent.name,
+            peers,
+            sleep_until: 0,
             calls,
-            next_in_flight: &mut *tick.next_in_flight,
+            id: AgentId::from_handle(handle),
+            message_processing_status: MessageProcessingStatus::Done,
+            sleep_requested: false,
         };
         agent.agent.on_message(&mut ctx, &msg);
         calls = ctx.calls;
+        if ctx.sleep_requested {
+            requested_sleep_until = Some(ctx.sleep_until);
+        }
         let status = ctx.message_processing_status;
         match status {
             MessageProcessingStatus::InProgress => {
                 agent.state.queue.push_front(msg);
                 if tick.queue_depth_metric {
-                    agent.record_queue_depth(tick.time.saturating_add(1));
+                    agent.record_queue_depth(tick.meta.time.saturating_add(1));
                 }
                 break;
             }
             MessageProcessingStatus::Done => {
                 if let Some(trace) = tick.trace.as_deref_mut() {
                     trace.push(
-                        tick.time,
+                        tick.meta.time,
                         AgentId::from_handle(handle),
                         TraceEventKind::MessageConsumed {
                             source: msg.source,
@@ -932,43 +970,31 @@ fn visit_agent_multi_drain<M>(
                         },
                     );
                 }
-                agent.record_consumed(msg, tick.time);
+                agent.record_consumed(msg, tick.meta.time);
                 handled += 1;
             }
         }
     }
     if proactive {
         let mut ctx = AgentContext {
-            id: AgentId::from_handle(handle),
-            name: &agent.name,
-            time: tick.time,
+            meta: &tick.meta,
             commands: &mut *tick.commands,
-            requested_sleep_until: &mut requested_sleep_until,
-            peers,
-            agent_name_handle_map: tick.agent_name_handle_map,
-            agent_count: tick.agent_count,
-            layout: tick.layout,
+            tick_state: &mut *tick.state,
             state: &agent.state,
-            message_processing_status: MessageProcessingStatus::Done,
-            agent_streams: &mut *tick.agent_streams,
+            name: &agent.name,
+            peers,
+            sleep_until: requested_sleep_until.unwrap_or(0),
             calls,
-            next_in_flight: &mut *tick.next_in_flight,
+            id: AgentId::from_handle(handle),
+            message_processing_status: MessageProcessingStatus::Done,
+            sleep_requested: requested_sleep_until.is_some(),
         };
         agent.agent.on_tick(&mut ctx);
-    }
-    if let Some(sleep_until) = requested_sleep_until {
-        if let Some(trace) = tick.trace.as_deref_mut() {
-            trace.push(
-                tick.time,
-                AgentId::from_handle(handle),
-                TraceEventKind::AgentSlept { until: sleep_until },
-            );
+        if ctx.sleep_requested {
+            requested_sleep_until = Some(ctx.sleep_until);
         }
-        agent.state.mode = AgentMode::AsleepUntil {
-            until: sleep_until,
-            then: wake_mode,
-        };
     }
+    apply_requested_sleep(agent, handle, wake_mode, requested_sleep_until, tick);
     (true, requested_sleep_until)
 }
 
@@ -1077,12 +1103,11 @@ impl<M> Simulation<M> {
             enable_agent_asleep_cycles_metric: parameters.asleep_cycles_metric,
             agent_name_handle_map,
             layout: NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed),
-            agent_streams: AgentStreamCache::new(parameters.seed),
+            tick_state: TickState::new(parameters.seed),
             halt_reason: None,
             yield_point: None,
             in_flight: BTreeMap::new(),
             next_arrival: DiscreteTime::MAX,
-            next_in_flight: 0,
             unknown_destination_policy: parameters.unknown_destination_policy,
             unknown_destination_count: 0,
             trace,
@@ -1413,7 +1438,7 @@ impl<M> Simulation<M> {
     /// Use this on a cloned, paused simulation to evaluate multiple stochastic
     /// future rollouts from one shared decision-point prefix.
     pub fn reseed(&mut self, seed: MasterSeed) {
-        self.agent_streams = AgentStreamCache::new(seed);
+        self.tick_state.agent_streams = AgentStreamCache::new(seed);
     }
 
     /// Evaluates each candidate action in `branches` from this paused snapshot:
@@ -1564,16 +1589,17 @@ impl<M> Simulation<M> {
             .filter(|recorder| recorder.enabled)
             .map(|recorder| &mut recorder.trace);
         let tick = Tick {
-            time: self.time,
-            layout: self.layout,
-            agent_count,
+            meta: TickMeta {
+                time: self.time,
+                layout: self.layout,
+                agent_count,
+                agent_name_handle_map: &self.agent_name_handle_map,
+            },
             scan_names: agent_count <= LINEAR_NAME_SCAN_LIMIT,
             queue_depth_metric: self.enable_queue_depth_metric,
             asleep_cycles_metric: self.enable_agent_asleep_cycles_metric,
-            agent_streams: &mut self.agent_streams,
-            agent_name_handle_map: &self.agent_name_handle_map,
             commands,
-            next_in_flight: &mut self.next_in_flight,
+            state: &mut self.tick_state,
             trace,
         };
         (&mut self.agents, tick)
@@ -1583,9 +1609,25 @@ impl<M> Simulation<M> {
     fn run_dense_tick(&mut self, commands: &mut CommandBuffer<M>) -> usize {
         let (agents, mut tick) = self.split_tick(commands);
         let mut callbacks = 0;
-        for handle in 0..agents.len() {
-            let (ran, _) = visit_agent(agents, handle, &mut tick);
-            callbacks += usize::from(ran);
+        if tick.scan_names {
+            for handle in 0..agents.len() {
+                let Some(wake_mode) = check_or_wake_agent(&mut agents[handle], handle, &mut tick)
+                else {
+                    continue;
+                };
+                let (before, rest) = agents.split_at_mut(handle);
+                let Some((agent, after)) = rest.split_first_mut() else {
+                    break;
+                };
+                let peers = (&*before, &*after);
+                let (ran, _) = visit_awake_agent(agent, Some(&peers), handle, wake_mode, &mut tick);
+                callbacks += usize::from(ran);
+            }
+        } else {
+            for (handle, agent) in agents.iter_mut().enumerate() {
+                let (ran, _) = visit_agent(agent, None, handle, &mut tick);
+                callbacks += usize::from(ran);
+            }
         }
         callbacks
     }
@@ -1604,7 +1646,8 @@ impl<M> Simulation<M> {
         let mut cursor = 0;
         while let Some(handle) = schedule.next(cursor) {
             cursor = handle + 1;
-            let (ran, requested_sleep_until) = visit_agent(agents, handle, &mut tick);
+            let (ran, requested_sleep_until) =
+                visit_agent(&mut agents[handle], None, handle, &mut tick);
             callbacks += usize::from(ran);
             match requested_sleep_until {
                 Some(deadline) => schedule.sleep(handle, deadline),
