@@ -1878,6 +1878,91 @@ impl PyMixedDimension {
     }
 }
 
+/// Adapter converting [`MixedValue`] directly into a Python `float` or `int`.
+#[derive(Clone, Copy)]
+struct MixedValPy(MixedValue);
+
+impl<'py> IntoPyObject<'py> for MixedValPy {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    type Error = std::convert::Infallible;
+
+    #[inline]
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(match self.0 {
+            MixedValue::Continuous(v) => v.into_pyobject(py)?.into_any(),
+            MixedValue::Category(c) => c.into_pyobject(py)?.into_any(),
+            MixedValue::Integer(i) => i.into_pyobject(py)?.into_any(),
+        })
+    }
+}
+
+/// Adapter letting `PyList::new` consume fallible element producers directly.
+struct PyFallible<T>(PyResult<T>);
+
+impl<'py, T> IntoPyObject<'py> for PyFallible<T>
+where
+    T: IntoPyObject<'py>,
+    PyErr: From<T::Error>,
+{
+    type Target = T::Target;
+    type Output = T::Output;
+    type Error = PyErr;
+
+    #[inline]
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        self.0?.into_pyobject(py).map_err(Into::into)
+    }
+}
+
+/// Extracts a `usize` from a borrowed `PyObject` pointer when it is an exact `PyLong`.
+#[inline]
+fn extract_borrowed_usize(
+    py: Python<'_>,
+    item: *mut ffi::PyObject,
+    long_type: *mut ffi::PyTypeObject,
+) -> PyResult<Option<usize>> {
+    // SAFETY: Caller holds the GIL and `item` is a valid borrowed `PyObject` pointer.
+    // For exact `PyLong`, `PyLong_AsSize_t` executes no Python code.
+    unsafe {
+        if ffi::Py_TYPE(item) == long_type {
+            let v = ffi::PyLong_AsSize_t(item);
+            if v == usize::MAX {
+                if let Some(err) = PyErr::take(py) {
+                    return Err(err);
+                }
+            }
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Extracts an `i64` from a borrowed `PyObject` pointer when it is an exact `PyLong`.
+#[inline]
+fn extract_borrowed_i64(
+    py: Python<'_>,
+    item: *mut ffi::PyObject,
+    long_type: *mut ffi::PyTypeObject,
+) -> PyResult<Option<i64>> {
+    // SAFETY: Caller holds the GIL and `item` is a valid borrowed `PyObject` pointer.
+    // For exact `PyLong`, `PyLong_AsLongLong` executes no Python code.
+    unsafe {
+        if ffi::Py_TYPE(item) == long_type {
+            let v = ffi::PyLong_AsLongLong(item);
+            if v == -1 {
+                if let Some(err) = PyErr::take(py) {
+                    return Err(err);
+                }
+            }
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 /// Mixed continuous/circular/integer/categorical cross-entropy optimizer.
 #[pyclass(name = "MixedCrossEntropyOptimizer")]
 struct PyMixedCrossEntropyOptimizer {
@@ -1886,43 +1971,237 @@ struct PyMixedCrossEntropyOptimizer {
 }
 
 impl PyMixedCrossEntropyOptimizer {
-    /// Converts a Rust `Vec<MixedValue>` into a Python list.
+    /// Converts a Rust slice of [`MixedValue`] into an exact-sized Python list.
     fn point_to_py(py: Python<'_>, point: &[MixedValue]) -> PyResult<Py<PyList>> {
-        let list = PyList::empty(py);
-        for val in point {
-            match *val {
-                MixedValue::Continuous(v) => list.append(v)?,
-                MixedValue::Category(c) => list.append(c)?,
-                MixedValue::Integer(i) => list.append(i)?,
-            }
-        }
-        Ok(list.unbind())
+        Ok(PyList::new(py, point.iter().copied().map(MixedValPy))?.unbind())
     }
 
-    /// Converts a Python sequence into a `Vec<MixedValue>` matching `self.kinds`.
-    fn py_to_point(&self, seq: &Bound<'_, PyAny>) -> PyResult<Vec<MixedValue>> {
-        let items: Vec<Bound<'_, PyAny>> = seq.extract()?;
-        if items.len() != self.kinds.len() {
+    /// Extracts one coordinate matching `spec` from a borrowed `PyObject` pointer,
+    /// returning `Ok(None)` when the element requires generic Python extraction.
+    #[inline]
+    fn extract_borrowed_coord(
+        py: Python<'_>,
+        item: *mut ffi::PyObject,
+        spec: MixedDimension,
+        float_type: *mut ffi::PyTypeObject,
+        long_type: *mut ffi::PyTypeObject,
+    ) -> PyResult<Option<MixedValue>> {
+        match spec {
+            MixedDimension::Continuous { .. } | MixedDimension::Circular { .. } => {
+                Ok(extract_borrowed_f64(item, float_type).map(MixedValue::Continuous))
+            }
+            MixedDimension::Categorical { .. } => {
+                Ok(extract_borrowed_usize(py, item, long_type)?.map(MixedValue::Category))
+            }
+            MixedDimension::Integer { .. } => {
+                Ok(extract_borrowed_i64(py, item, long_type)?.map(MixedValue::Integer))
+            }
+        }
+    }
+
+    /// Extracts one coordinate matching `spec` from an owned Python object.
+    #[inline]
+    fn extract_coord(item: &Bound<'_, PyAny>, spec: MixedDimension) -> PyResult<MixedValue> {
+        match spec {
+            MixedDimension::Continuous { .. } | MixedDimension::Circular { .. } => {
+                Ok(MixedValue::Continuous(item.extract::<f64>()?))
+            }
+            MixedDimension::Categorical { .. } => {
+                Ok(MixedValue::Category(item.extract::<usize>()?))
+            }
+            MixedDimension::Integer { .. } => Ok(MixedValue::Integer(item.extract::<i64>()?)),
+        }
+    }
+
+    /// Fast-path extraction from an exact Python `list` without allocating a
+    /// temporary `Vec<Bound<PyAny>>` or bumping element refcounts.
+    fn py_list_to_point(
+        &self,
+        py: Python<'_>,
+        list: &Bound<'_, PyList>,
+    ) -> PyResult<Vec<MixedValue>> {
+        let expected = self.kinds.len();
+        let len = list.len();
+        if len != expected {
             return Err(PyValueError::new_err(format!(
-                "expected {} coordinates, got {}",
-                self.kinds.len(),
-                items.len()
+                "expected {expected} coordinates, got {len}"
             )));
         }
-        let mut out = Vec::with_capacity(items.len());
-        for (item, spec) in items.iter().zip(&self.kinds) {
-            let val = match spec {
-                MixedDimension::Continuous { .. } | MixedDimension::Circular { .. } => {
-                    MixedValue::Continuous(item.extract::<f64>()?)
-                }
-                MixedDimension::Categorical { .. } => {
-                    MixedValue::Category(item.extract::<usize>()?)
-                }
-                MixedDimension::Integer { .. } => MixedValue::Integer(item.extract::<i64>()?),
+        let float_type = &raw mut ffi::PyFloat_Type;
+        let long_type = &raw mut ffi::PyLong_Type;
+        let mut out = Vec::with_capacity(expected);
+        for (i, &spec) in self.kinds.iter().enumerate() {
+            let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+                break;
+            };
+            // SAFETY: `list` is live, GIL is held; length checked before loop and on fallback.
+            let item = if i < list.len() {
+                unsafe { ffi::PyList_GetItem(list.as_ptr(), idx) }
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "expected {expected} coordinates, got {}",
+                    list.len()
+                )));
+            };
+            let val = if let Some(v) =
+                Self::extract_borrowed_coord(py, item, spec, float_type, long_type)?
+            {
+                v
+            } else {
+                Self::extract_coord(&list.get_item(i)?, spec)?
             };
             out.push(val);
         }
         Ok(out)
+    }
+
+    /// Converts a Python sequence into a `Vec<MixedValue>` matching `self.kinds`.
+    fn py_to_point(&self, py: Python<'_>, seq: &Bound<'_, PyAny>) -> PyResult<Vec<MixedValue>> {
+        if let Ok(list) = seq.cast_exact::<PyList>() {
+            return self.py_list_to_point(py, list);
+        }
+        if let Ok(tuple) = seq.cast_exact::<PyTuple>() {
+            let expected = self.kinds.len();
+            let len = tuple.len();
+            if len != expected {
+                return Err(PyValueError::new_err(format!(
+                    "expected {expected} coordinates, got {len}"
+                )));
+            }
+            let float_type = &raw mut ffi::PyFloat_Type;
+            let long_type = &raw mut ffi::PyLong_Type;
+            let mut out = Vec::with_capacity(expected);
+            for (i, &spec) in self.kinds.iter().enumerate() {
+                let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+                    break;
+                };
+                // SAFETY: `tuple` is immutable and live while GIL is held, and `i < len`.
+                let item = unsafe { ffi::PyTuple_GetItem(tuple.as_ptr(), idx) };
+                let val = if let Some(v) =
+                    Self::extract_borrowed_coord(py, item, spec, float_type, long_type)?
+                {
+                    v
+                } else {
+                    Self::extract_coord(&tuple.get_item(i)?, spec)?
+                };
+                out.push(val);
+            }
+            return Ok(out);
+        }
+        validate_py_sequence(seq)?;
+        let expected = self.kinds.len();
+        let mut out = Vec::with_capacity(expected);
+        let mut count = 0_usize;
+        for item in seq.try_iter()? {
+            let item = item?;
+            if let Some(&spec) = self.kinds.get(count) {
+                out.push(Self::extract_coord(&item, spec)?);
+            }
+            count += 1;
+        }
+        if count != expected {
+            return Err(PyValueError::new_err(format!(
+                "expected {expected} coordinates, got {count}"
+            )));
+        }
+        Ok(out)
+    }
+
+    /// Fast-path extraction of `tell(points, scores)` when both inputs are exact `list`s.
+    fn extract_tell_lists(
+        &self,
+        py: Python<'_>,
+        pts_list: &Bound<'_, PyList>,
+        sc_list: &Bound<'_, PyList>,
+    ) -> PyResult<Vec<MixedCrossEntropySample>> {
+        let mut len = pts_list.len();
+        if len != sc_list.len() {
+            return Err(PyValueError::new_err(
+                "points and scores must have equal length",
+            ));
+        }
+        let float_type = &raw mut ffi::PyFloat_Type;
+        let long_type = &raw mut ffi::PyLong_Type;
+        let list_type = &raw mut ffi::PyList_Type;
+        let expected = self.kinds.len();
+        let mut samples = Vec::with_capacity(len);
+        let mut i = 0;
+        while i < len {
+            let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+                break;
+            };
+            // SAFETY: `sc_list` is live, GIL is held, and `i < len == sc_list.len()`.
+            let sc_ptr = unsafe { ffi::PyList_GetItem(sc_list.as_ptr(), idx) };
+            let score = if let Some(v) = extract_borrowed_f64(sc_ptr, float_type) {
+                v
+            } else {
+                let v = sc_list.get_item(i)?.extract::<f64>()?;
+                len = pts_list.len();
+                if len != sc_list.len() {
+                    return Err(PyValueError::new_err(
+                        "points and scores must have equal length",
+                    ));
+                }
+                if i >= len {
+                    break;
+                }
+                v
+            };
+            // SAFETY: `pts_list` is live, GIL is held, and `i < len == pts_list.len()`.
+            let pt_ptr = unsafe { ffi::PyList_GetItem(pts_list.as_ptr(), idx) };
+            // Fast path when inner point is also an exact `PyList` of primitive floats/ints.
+            // SAFETY: `pt_ptr` is a valid borrowed `PyObject` from `pts_list`.
+            let pt = if unsafe { ffi::Py_TYPE(pt_ptr) } == list_type {
+                // SAFETY: `pt_ptr` is an exact `PyList`.
+                let inner_len = unsafe { ffi::PyList_Size(pt_ptr) };
+                if usize::try_from(inner_len) != Ok(expected) {
+                    return Err(PyValueError::new_err(format!(
+                        "expected {expected} coordinates, got {inner_len}"
+                    )));
+                }
+                let mut coords = Vec::with_capacity(expected);
+                let mut fallback_needed = false;
+                for (j, &spec) in self.kinds.iter().enumerate() {
+                    let Ok(j_idx) = ffi::Py_ssize_t::try_from(j) else {
+                        break;
+                    };
+                    // SAFETY: `pt_ptr` is a live `PyList` of length `expected` and no Python code ran.
+                    let c_ptr = unsafe { ffi::PyList_GetItem(pt_ptr, j_idx) };
+                    if let Some(val) =
+                        Self::extract_borrowed_coord(py, c_ptr, spec, float_type, long_type)?
+                    {
+                        coords.push(val);
+                    } else {
+                        fallback_needed = true;
+                        break;
+                    }
+                }
+                if fallback_needed {
+                    let pt = self.py_to_point(py, &pts_list.get_item(i)?)?;
+                    len = pts_list.len();
+                    if len != sc_list.len() {
+                        return Err(PyValueError::new_err(
+                            "points and scores must have equal length",
+                        ));
+                    }
+                    pt
+                } else {
+                    coords
+                }
+            } else {
+                let pt = self.py_to_point(py, &pts_list.get_item(i)?)?;
+                len = pts_list.len();
+                if len != sc_list.len() {
+                    return Err(PyValueError::new_err(
+                        "points and scores must have equal length",
+                    ));
+                }
+                pt
+            };
+            samples.push(MixedCrossEntropySample::new(pt, score));
+            i += 1;
+        }
+        Ok(samples)
     }
 }
 
@@ -1954,30 +2233,50 @@ impl PyMixedCrossEntropyOptimizer {
         py: Python<'_>,
         rng: &mut PyTrialRng,
         count: usize,
-    ) -> PyResult<Vec<Py<PyList>>> {
-        self.inner
-            .ask_batch(&mut rng.inner, count)
-            .into_iter()
-            .map(|pt| Self::point_to_py(py, &pt))
-            .collect()
+    ) -> PyResult<Py<PyList>> {
+        let list = PyList::new(
+            py,
+            (0..count).map(|_| {
+                let pt = self.inner.ask(&mut rng.inner);
+                PyFallible(Self::point_to_py(py, &pt))
+            }),
+        )?;
+        Ok(list.unbind())
     }
 
-    #[allow(clippy::needless_pass_by_value)]
     fn tell(
         &mut self,
-        points: Vec<Bound<'_, PyAny>>,
-        scores: Vec<f64>,
+        py: Python<'_>,
+        points: &Bound<'_, PyAny>,
+        scores: &Bound<'_, PyAny>,
     ) -> PyResult<Option<(u64, f64)>> {
-        if points.len() != scores.len() {
-            return Err(PyValueError::new_err(
-                "points and scores must have equal length",
-            ));
-        }
-        let mut samples = Vec::with_capacity(points.len());
-        for (pt_obj, score) in points.iter().zip(scores) {
-            let pt = self.py_to_point(pt_obj)?;
-            samples.push(MixedCrossEntropySample::new(pt, score));
-        }
+        let mut samples = if let (Ok(pts_list), Ok(sc_list)) =
+            (points.cast_exact::<PyList>(), scores.cast_exact::<PyList>())
+        {
+            self.extract_tell_lists(py, pts_list, sc_list)?
+        } else {
+            validate_py_sequence(points)?;
+            validate_py_sequence(scores)?;
+            let mut pts_iter = points.try_iter()?;
+            let mut sc_iter = scores.try_iter()?;
+            let mut out = Vec::with_capacity(points.len().unwrap_or(0));
+            loop {
+                match (pts_iter.next(), sc_iter.next()) {
+                    (Some(pt_obj), Some(sc_obj)) => {
+                        let pt = self.py_to_point(py, &pt_obj?)?;
+                        let score = sc_obj?.extract::<f64>()?;
+                        out.push(MixedCrossEntropySample::new(pt, score));
+                    }
+                    (None, None) => break,
+                    _ => {
+                        return Err(PyValueError::new_err(
+                            "points and scores must have equal length",
+                        ));
+                    }
+                }
+            }
+            out
+        };
         let update = self
             .inner
             .tell(&mut samples)
