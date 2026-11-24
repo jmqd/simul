@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList};
+use pyo3::types::{PyAny, PyDict, PyList, PyString, PyTuple};
 use rustc_hash::FxHashMap;
 
 use simul_core::agent::{
@@ -14,7 +14,7 @@ use simul_core::agent::{
     geometric_consumer, geometric_producer, periodic_consumer, periodic_producer,
 };
 use simul_core::experiment::{
-    BernoulliReducer, BernoulliSummary, CandidateId, FailurePolicy, MasterSeed,
+    AgentStreams, BernoulliReducer, BernoulliSummary, CandidateId, FailurePolicy, MasterSeed,
     MixedCrossEntropyConfig, MixedCrossEntropyOptimizer, MixedCrossEntropySample, MixedDimension,
     MixedValue, NonFinitePolicy, ObjectiveDirection, PairedScalarSummary, ParetoArchive,
     Probability, QuantileReducer, QuantileSummary, ReplayKey, ReplicationId, ScalarReducer,
@@ -51,19 +51,26 @@ impl fmt::Debug for PyPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => f.write_str("None"),
-            Self::Obj(obj) => Python::attach(|py| {
-                let text = obj
-                    .bind(py)
-                    .repr()
-                    .and_then(|r| r.extract::<String>())
-                    .unwrap_or_else(|_| "<pyobject>".to_string());
-                f.write_str(&text)
+            Self::Obj(obj) => Python::attach(|py| match obj.bind(py).repr() {
+                Ok(r) => match r.to_cow() {
+                    Ok(text) => f.write_str(&text),
+                    Err(_) => f.write_str("<pyobject>"),
+                },
+                Err(_) => f.write_str("<pyobject>"),
             }),
         }
     }
 }
 
 impl PyPayload {
+    /// Clones using an already-attached Python token without re-entering `Python::attach`.
+    fn clone_with_py(&self, py: Python<'_>) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::Obj(obj) => Self::Obj(obj.clone_ref(py)),
+        }
+    }
+
     /// Converts into a Python object (`None` for [`Self::None`]).
     fn to_py(&self, py: Python<'_>) -> Py<PyAny> {
         match self {
@@ -159,14 +166,15 @@ impl PyMessage {
 struct PyAgentContext {
     #[pyo3(get)]
     id: u32,
-    #[pyo3(get)]
-    name: String,
+    name: Arc<str>,
+    py_name: Py<PyString>,
     #[pyo3(get)]
     time: u64,
     #[pyo3(get)]
     queue_len: usize,
-    peer_ids: FxHashMap<String, u32>,
+    peer_ids: Arc<FxHashMap<String, u32>>,
     seed: u64,
+    stream_root: Option<AgentStreams>,
     call_index: u64,
     rng: Option<TrialRng>,
     next_local_timer: u64,
@@ -182,8 +190,11 @@ impl PyAgentContext {
         let name = &self.name;
         let time = self.time;
         let call_index = &mut self.call_index;
+        let stream_root = &mut self.stream_root;
         self.rng.get_or_insert_with(|| {
-            let root = SeedDeriver::new(MasterSeed::from_u64(seed)).agent_streams(name);
+            let root = *stream_root.get_or_insert_with(|| {
+                SeedDeriver::new(MasterSeed::from_u64(seed)).agent_streams(name)
+            });
             let stream = root.rng(time, *call_index);
             *call_index += 1;
             stream
@@ -193,6 +204,12 @@ impl PyAgentContext {
 
 #[pymethods]
 impl PyAgentContext {
+    /// Returns the agent's name without allocating a new Python string.
+    #[getter]
+    fn name(&self, py: Python<'_>) -> Py<PyString> {
+        self.py_name.clone_ref(py)
+    }
+
     /// Resolves another agent's numeric ID by name, or `None` if unknown.
     fn agent_id(&self, name: &str) -> Option<u32> {
         self.peer_ids.get(name).copied()
@@ -209,11 +226,15 @@ impl PyAgentContext {
     }
 
     /// Queues a message to `target` (by agent name) for end-of-tick delivery.
-    fn send(&mut self, target: String, payload: &Bound<'_, PyAny>) {
-        self.actions.push(PendingAction::SendByName(
-            target,
-            PyPayload::from_py(payload),
-        ));
+    fn send(&mut self, target: &str, payload: &Bound<'_, PyAny>) {
+        let py_payload = PyPayload::from_py(payload);
+        if let Some(&target_id) = self.peer_ids.get(target) {
+            self.actions
+                .push(PendingAction::SendTo(target_id, py_payload));
+        } else {
+            self.actions
+                .push(PendingAction::SendByName(target.to_owned(), py_payload));
+        }
     }
 
     /// Queues a message to `target_id` for end-of-tick delivery.
@@ -275,17 +296,32 @@ impl PyAgentContext {
 /// Sentinel halt reason used when a Python callback raised an exception.
 const PY_ERROR_SENTINEL: &str = "__simul_py_exception__";
 
+/// Returns the Python reference count of `obj`.
+fn py_refcnt<T>(_py: Python<'_>, obj: &Py<T>) -> isize {
+    // SAFETY: Holding `Python<'_>` proves attachment to the Python interpreter,
+    // and `obj` owns a valid live Python object pointer.
+    unsafe { pyo3::ffi::Py_REFCNT(obj.as_ptr()) }
+}
+
 /// Wrapper implementing `simul::agent::Agent<PyPayload>` around any Python
 /// object providing `on_message(ctx, msg)` and/or `on_tick(ctx)`.
 struct PyCustomAgent {
     obj: Py<PyAny>,
+    name: Arc<str>,
+    py_name: Option<Py<PyString>>,
     peer_ids: Arc<FxHashMap<String, u32>>,
     seed_slot: Arc<AtomicU64>,
+    cached_streams: Option<(u64, AgentStreams)>,
     last_rng_tick: Option<u64>,
     calls_this_tick: u64,
     timer_map: FxHashMap<u64, TimerId>,
     next_local_timer: u64,
     error_slot: Arc<Mutex<Option<PyErr>>>,
+    reusable_ctx: Option<Py<PyAgentContext>>,
+    reusable_msg: Option<Py<PyMessage>>,
+    reusable_tick_args: Option<Py<PyTuple>>,
+    reusable_msg_args: Option<Py<PyTuple>>,
+    actions_buf: Vec<PendingAction>,
 }
 
 impl fmt::Debug for PyCustomAgent {
@@ -308,25 +344,34 @@ impl Clone for PyCustomAgent {
         });
         Self {
             obj: cloned_obj,
+            name: Arc::clone(&self.name),
+            py_name: None,
             peer_ids: Arc::clone(&self.peer_ids),
             seed_slot: Arc::new(AtomicU64::new(self.seed_slot.load(Ordering::Relaxed))),
+            cached_streams: self.cached_streams,
             last_rng_tick: self.last_rng_tick,
             calls_this_tick: self.calls_this_tick,
             timer_map: self.timer_map.clone(),
             next_local_timer: self.next_local_timer,
             error_slot: Arc::new(Mutex::new(None)),
+            reusable_ctx: None,
+            reusable_msg: None,
+            reusable_tick_args: None,
+            reusable_msg_args: None,
+            actions_buf: Vec::new(),
         }
     }
 }
 
 impl PyCustomAgent {
-    /// Replays buffered Python actions onto the real `AgentContext`.
+    /// Replays buffered Python actions onto the real `AgentContext`, retaining
+    /// the scratch vector's allocation for future callbacks.
     fn apply_actions(
         &mut self,
         ctx: &mut AgentContext<'_, PyPayload>,
-        actions: Vec<PendingAction>,
+        actions: &mut Vec<PendingAction>,
     ) {
-        for action in actions {
+        for action in actions.drain(..) {
             match action {
                 PendingAction::SendByName(target, payload) => ctx.send(&target, payload),
                 PendingAction::SendTo(target, payload) => {
@@ -356,11 +401,146 @@ impl PyCustomAgent {
         }
     }
 
+    /// Acquires a `Py<PyAgentContext>`, reusing the cached Python shell when no
+    /// Python reference escaped the previous callback.
+    #[allow(clippy::too_many_arguments)]
+    fn acquire_ctx(
+        &mut self,
+        py: Python<'_>,
+        id: u32,
+        time: u64,
+        queue_len: usize,
+        seed: u64,
+        stream_root: Option<AgentStreams>,
+        actions: Vec<PendingAction>,
+    ) -> PyResult<Py<PyAgentContext>> {
+        let expected_rc = 1
+            + isize::from(self.reusable_tick_args.is_some())
+            + isize::from(self.reusable_msg_args.is_some());
+        if let Some(existing) = self.reusable_ctx.take() {
+            if py_refcnt(py, &existing) == expected_rc {
+                {
+                    let mut b = existing.borrow_mut(py);
+                    b.id = id;
+                    b.time = time;
+                    b.queue_len = queue_len;
+                    b.seed = seed;
+                    b.stream_root = stream_root;
+                    b.call_index = self.calls_this_tick;
+                    b.rng = None;
+                    b.next_local_timer = self.next_local_timer;
+                    b.actions = actions;
+                }
+                return Ok(existing);
+            }
+            // External reference escaped; discard cached arg tuples pointing at old ctx.
+            self.reusable_tick_args = None;
+            self.reusable_msg_args = None;
+        }
+        self.reusable_tick_args = None;
+        self.reusable_msg_args = None;
+        let py_name = self
+            .py_name
+            .get_or_insert_with(|| PyString::new(py, &self.name).unbind())
+            .clone_ref(py);
+        Py::new(
+            py,
+            PyAgentContext {
+                id,
+                name: Arc::clone(&self.name),
+                py_name,
+                time,
+                queue_len,
+                peer_ids: Arc::clone(&self.peer_ids),
+                seed,
+                stream_root,
+                call_index: self.calls_this_tick,
+                rng: None,
+                next_local_timer: self.next_local_timer,
+                actions,
+            },
+        )
+    }
+
+    /// Acquires a `Py<PyMessage>`, reusing the cached Python shell when no
+    /// Python reference escaped the previous callback.
+    fn acquire_msg(&mut self, py: Python<'_>, m: &Message<PyPayload>) -> PyResult<Py<PyMessage>> {
+        let source = m
+            .source
+            .map(|s| u32::try_from(s.index()).unwrap_or(u32::MAX));
+        let destination = m
+            .destination
+            .map(|d| u32::try_from(d.index()).unwrap_or(u32::MAX));
+        let payload = m.payload.clone_with_py(py);
+        let expected_rc = 1 + isize::from(self.reusable_msg_args.is_some());
+        if let Some(existing) = self.reusable_msg.take() {
+            if py_refcnt(py, &existing) == expected_rc {
+                {
+                    let mut b = existing.borrow_mut(py);
+                    b.queued_time = m.queued_time;
+                    b.source = source;
+                    b.destination = destination;
+                    b.payload = payload;
+                }
+                return Ok(existing);
+            }
+            self.reusable_msg_args = None;
+        }
+        self.reusable_msg_args = None;
+        Py::new(
+            py,
+            PyMessage {
+                queued_time: m.queued_time,
+                source,
+                destination,
+                payload,
+            },
+        )
+    }
+
+    /// Calls `method` with reusable argument tuples and recycles `PyMessage`
+    /// and argument tuples when Python did not retain external references.
+    fn call_method_reusing_args(
+        &mut self,
+        py: Python<'_>,
+        method: &Bound<'_, PyAny>,
+        py_ctx: &Py<PyAgentContext>,
+        msg: Option<&Message<PyPayload>>,
+    ) -> PyResult<()> {
+        if let Some(m) = msg {
+            let py_msg = self.acquire_msg(py, m)?;
+            let args = match self.reusable_msg_args.take() {
+                Some(tuple) if py_refcnt(py, &tuple) == 1 => tuple,
+                _ => {
+                    PyTuple::new(py, [py_ctx.bind(py).as_any(), py_msg.bind(py).as_any()])?.unbind()
+                }
+            };
+            let res = method.call1(&args);
+            let tuple_sole = res.is_ok() && py_refcnt(py, &args) == 1;
+            if tuple_sole && py_refcnt(py, &py_msg) == 2 {
+                py_msg.borrow_mut(py).payload = PyPayload::None;
+                self.reusable_msg = Some(py_msg);
+                self.reusable_msg_args = Some(args);
+            }
+            res.map(|_| ())
+        } else {
+            let args = match self.reusable_tick_args.take() {
+                Some(tuple) if py_refcnt(py, &tuple) == 1 => tuple,
+                _ => PyTuple::new(py, [py_ctx.bind(py).as_any()])?.unbind(),
+            };
+            let res = method.call1(&args);
+            if res.is_ok() && py_refcnt(py, &args) == 1 {
+                self.reusable_tick_args = Some(args);
+            }
+            res.map(|_| ())
+        }
+    }
+
     /// Invokes a Python callback method (`on_message` or `on_tick`) if defined.
     fn invoke(
         &mut self,
         ctx: &mut AgentContext<'_, PyPayload>,
-        method_name: &str,
+        is_message: bool,
         msg: Option<&Message<PyPayload>>,
     ) {
         let tick = ctx.time();
@@ -369,53 +549,64 @@ impl PyCustomAgent {
             self.calls_this_tick = 0;
         }
         let id = u32::try_from(ctx.id().index()).unwrap_or(u32::MAX);
-        let py_ctx_data = PyAgentContext {
-            id,
-            name: ctx.name().to_string(),
-            time: tick,
-            queue_len: ctx.state().queue.len(),
-            peer_ids: (*self.peer_ids).clone(),
-            seed: self.seed_slot.load(Ordering::Relaxed),
-            call_index: self.calls_this_tick,
-            rng: None,
-            next_local_timer: self.next_local_timer,
-            actions: Vec::new(),
+        let queue_len = ctx.state().queue.len();
+        let seed = self.seed_slot.load(Ordering::Relaxed);
+        let stream_root = match self.cached_streams {
+            Some((cached_seed, root)) if cached_seed == seed => Some(root),
+            _ => None,
         };
-        let result: Result<(u64, u64, Vec<PendingAction>), PyErr> = Python::attach(|py| {
-            let bound_obj = self.obj.bind(py);
-            if !bound_obj.hasattr(method_name)? {
-                return Ok((self.calls_this_tick, self.next_local_timer, Vec::new()));
-            }
-            let py_ctx = Py::new(py, py_ctx_data)?;
-            if let Some(m) = msg {
-                let py_msg = Py::new(
-                    py,
-                    PyMessage {
-                        queued_time: m.queued_time,
-                        source: m
-                            .source
-                            .map(|s| u32::try_from(s.index()).unwrap_or(u32::MAX)),
-                        destination: m
-                            .destination
-                            .map(|d| u32::try_from(d.index()).unwrap_or(u32::MAX)),
-                        payload: m.payload.clone(),
-                    },
-                )?;
-                bound_obj.call_method1(method_name, (py_ctx.bind(py), py_msg.bind(py)))?;
-            } else {
-                bound_obj.call_method1(method_name, (py_ctx.bind(py),))?;
-            }
-            let mut borrowed = py_ctx.borrow_mut(py);
-            let next_calls = borrowed.call_index;
-            let next_timer = borrowed.next_local_timer;
-            let actions = std::mem::take(&mut borrowed.actions);
-            Ok((next_calls, next_timer, actions))
-        });
+        let mut actions_buf = std::mem::take(&mut self.actions_buf);
+        actions_buf.clear();
+
+        let result: Result<(u64, u64, Option<AgentStreams>, Vec<PendingAction>), PyErr> =
+            Python::attach(|py| {
+                let bound_obj = self.obj.bind(py);
+                let method_name = if is_message {
+                    pyo3::intern!(py, "on_message")
+                } else {
+                    pyo3::intern!(py, "on_tick")
+                };
+                let Some(method) = bound_obj.getattr_opt(method_name)? else {
+                    return Ok((
+                        self.calls_this_tick,
+                        self.next_local_timer,
+                        stream_root,
+                        actions_buf,
+                    ));
+                };
+                let py_ctx =
+                    self.acquire_ctx(py, id, tick, queue_len, seed, stream_root, actions_buf)?;
+                self.call_method_reusing_args(py, &method, &py_ctx, msg)?;
+                let (next_calls, next_timer, next_root, actions) = {
+                    let mut borrowed = py_ctx.borrow_mut(py);
+                    (
+                        borrowed.call_index,
+                        borrowed.next_local_timer,
+                        borrowed.stream_root,
+                        std::mem::take(&mut borrowed.actions),
+                    )
+                };
+                let expected_ctx_rc = 1
+                    + isize::from(self.reusable_tick_args.is_some())
+                    + isize::from(self.reusable_msg_args.is_some());
+                if py_refcnt(py, &py_ctx) == expected_ctx_rc {
+                    py_ctx.borrow_mut(py).rng = None;
+                    self.reusable_ctx = Some(py_ctx);
+                } else {
+                    self.reusable_tick_args = None;
+                    self.reusable_msg_args = None;
+                }
+                Ok((next_calls, next_timer, next_root, actions))
+            });
         match result {
-            Ok((next_calls, next_timer, actions)) => {
+            Ok((next_calls, next_timer, next_root, mut actions)) => {
                 self.calls_this_tick = next_calls;
                 self.next_local_timer = next_timer;
-                self.apply_actions(ctx, actions);
+                if let Some(root) = next_root {
+                    self.cached_streams = Some((seed, root));
+                }
+                self.apply_actions(ctx, &mut actions);
+                self.actions_buf = actions;
             }
             Err(err) => {
                 if let Ok(mut guard) = self.error_slot.lock() {
@@ -431,11 +622,11 @@ impl PyCustomAgent {
 
 impl Agent<PyPayload> for PyCustomAgent {
     fn on_message(&mut self, ctx: &mut AgentContext<'_, PyPayload>, msg: &Message<PyPayload>) {
-        self.invoke(ctx, "on_message", Some(msg));
+        self.invoke(ctx, true, Some(msg));
     }
 
     fn on_tick(&mut self, ctx: &mut AgentContext<'_, PyPayload>) {
-        self.invoke(ctx, "on_tick", None);
+        self.invoke(ctx, false, None);
     }
 }
 
@@ -443,8 +634,7 @@ impl Agent<PyPayload> for PyCustomAgent {
 #[pyclass(name = "RunOutcome")]
 #[derive(Clone)]
 struct PyRunOutcome {
-    #[pyo3(get)]
-    kind: String,
+    kind: &'static str,
     #[pyo3(get)]
     agent_id: Option<u32>,
     #[pyo3(get)]
@@ -453,29 +643,38 @@ struct PyRunOutcome {
     reason: Option<String>,
 }
 
+#[pymethods]
+impl PyRunOutcome {
+    /// Outcome kind (`"halted"`, `"interrupted"`, `"paused_at_time"`, or `"yielded"`).
+    #[getter]
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+}
+
 impl From<RunOutcome> for PyRunOutcome {
     fn from(outcome: RunOutcome) -> Self {
         match outcome {
             RunOutcome::Halted => Self {
-                kind: "halted".into(),
+                kind: "halted",
                 agent_id: None,
                 tag: None,
                 reason: None,
             },
             RunOutcome::Interrupted(reason) => Self {
-                kind: "interrupted".into(),
+                kind: "interrupted",
                 agent_id: None,
                 tag: None,
                 reason: Some(reason),
             },
             RunOutcome::PausedAtTime => Self {
-                kind: "paused_at_time".into(),
+                kind: "paused_at_time",
                 agent_id: None,
                 tag: None,
                 reason: None,
             },
             RunOutcome::Yielded { agent, tag } => Self {
-                kind: "yielded".into(),
+                kind: "yielded",
                 agent_id: Some(u32::try_from(agent.index()).unwrap_or(u32::MAX)),
                 tag: Some(tag),
                 reason: None,
@@ -600,13 +799,21 @@ fn build_agent_initializer(
         } => {
             let custom = PyCustomAgent {
                 obj,
+                name: Arc::from(name.as_str()),
+                py_name: None,
                 peer_ids: Arc::clone(peer_ids),
                 seed_slot: Arc::clone(seed_slot),
+                cached_streams: None,
                 last_rng_tick: None,
                 calls_this_tick: 0,
                 timer_map: FxHashMap::default(),
                 next_local_timer: 1,
                 error_slot: Arc::clone(error_slot),
+                reusable_ctx: None,
+                reusable_msg: None,
+                reusable_tick_args: None,
+                reusable_msg_args: None,
+                actions_buf: Vec::new(),
             };
             let mut i = if proactive {
                 AgentInitializer::proactive(name, custom)
