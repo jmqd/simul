@@ -151,12 +151,9 @@ pub(crate) enum PoolMsg {
     },
 }
 
-/// Draws a Poisson(`lambda`) arrival count using Knuth's exact product algorithm.
-fn draw_poisson(rng: &mut TrialRng, lambda: f64) -> usize {
-    if lambda <= 0.0 {
-        return 0;
-    }
-    let threshold = (-lambda).exp();
+/// Draws a Poisson arrival count using Knuth's exact product algorithm with a
+/// precomputed `exp(-lambda)` threshold.
+fn draw_poisson_threshold(rng: &mut TrialRng, threshold: f64) -> usize {
     let mut count = 0_usize;
     let mut prod = 1.0_f64;
     loop {
@@ -176,11 +173,29 @@ fn draw_lognormal_unit(rng: &mut TrialRng, sigma: f64) -> f64 {
     ((-0.5 * sigma).mul_add(sigma, sigma * z)).exp()
 }
 
+/// Advances `rng` by two draws (matching one [`draw_lognormal_unit`] call)
+/// without evaluating Box-Muller or `exp`.
+#[inline]
+fn skip_lognormal_unit(rng: &mut TrialRng) {
+    let _ = rng.next_u64();
+    let _ = rng.next_u64();
+}
+
 /// Proactive Poisson workload generator with synchronized per-request complexity draws.
 #[derive(Clone, Debug)]
 struct LoadGen {
     /// Simulation specification.
     spec: SimSpec,
+    /// Precomputed `exp(-lambda)` threshold outside the burst window.
+    normal_threshold: Option<f64>,
+    /// Precomputed `exp(-lambda)` threshold during the burst window.
+    burst_threshold: Option<f64>,
+    /// Cumulative class cutoff for `Nested` + `Slow`.
+    slow_cutoff: f64,
+    /// Cumulative class cutoff for `Nested` + `Slow` + `RpcHold`.
+    rpc_cutoff: f64,
+    /// Whether to eagerly populate unused payload fields for `Debug` traces.
+    eager_payload_fields: bool,
     /// Cached `app` agent ID.
     app_id: Option<AgentId>,
     /// Next monotonic request identifier.
@@ -189,33 +204,75 @@ struct LoadGen {
 
 impl LoadGen {
     /// Creates a workload generator for `spec`.
-    const fn new(spec: SimSpec) -> Self {
+    fn new(spec: SimSpec, eager_payload_fields: bool) -> Self {
+        let w = &spec.workload;
+        let normal_lambda = (w.rps * 1.0) / 1000.0;
+        let burst_lambda = (w.rps * w.burst_mult) / 1000.0;
+        let slow_cutoff = w.nested_frac + w.slow_frac;
+        let rpc_cutoff = slow_cutoff + w.rpc_hold_frac;
         Self {
             spec,
+            normal_threshold: (normal_lambda > 0.0).then(|| (-normal_lambda).exp()),
+            burst_threshold: (burst_lambda > 0.0).then(|| (-burst_lambda).exp()),
+            slow_cutoff,
+            rpc_cutoff,
+            eager_payload_fields,
             app_id: None,
             next_req_id: 1,
         }
     }
 
     /// Generates one incoming request payload using the per-tick RNG.
-    fn sample_request(&mut self, rng: &mut TrialRng, now: DiscreteTime) -> PoolMsg {
+    fn sample_request(&mut self, rng: &mut TrialRng, now: DiscreteTime, is_last: bool) -> PoolMsg {
         let w = &self.spec.workload;
         let req_id = self.next_req_id;
         self.next_req_id += 1;
         let u = rng.uniform_f64();
         let class = if u < w.nested_frac {
             RequestClass::Nested
-        } else if u < w.nested_frac + w.slow_frac {
+        } else if u < self.slow_cutoff {
             RequestClass::Slow
-        } else if u < w.nested_frac + w.slow_frac + w.rpc_hold_frac {
+        } else if u < self.rpc_cutoff {
             RequestClass::RpcHold
         } else {
             RequestClass::Fast
         };
-        let fast_j1 = draw_lognormal_unit(rng, 0.25);
-        let fast_j2 = draw_lognormal_unit(rng, 0.25);
-        let slow_j = draw_lognormal_unit(rng, 0.55);
-        let rpc_j = draw_lognormal_unit(rng, 0.25);
+        let eager = self.eager_payload_fields;
+        let need_fast_j1 = class != RequestClass::Slow;
+        let need_fast_j2 = eager || matches!(class, RequestClass::RpcHold | RequestClass::Nested);
+        let need_slow_j = class == RequestClass::Slow;
+        let need_rpc_j = eager || class == RequestClass::RpcHold;
+
+        let fast_j1 = if need_fast_j1 {
+            draw_lognormal_unit(rng, 0.25)
+        } else {
+            skip_lognormal_unit(rng);
+            0.0
+        };
+        let fast_j2 = if need_fast_j2 {
+            draw_lognormal_unit(rng, 0.25)
+        } else if need_slow_j || need_rpc_j || !is_last {
+            skip_lognormal_unit(rng);
+            0.0
+        } else {
+            0.0
+        };
+        let slow_j = if need_slow_j {
+            draw_lognormal_unit(rng, 0.55)
+        } else if need_rpc_j || !is_last {
+            skip_lognormal_unit(rng);
+            0.0
+        } else {
+            0.0
+        };
+        let rpc_j = if need_rpc_j {
+            draw_lognormal_unit(rng, 0.25)
+        } else if !is_last {
+            skip_lognormal_unit(rng);
+            0.0
+        } else {
+            0.0
+        };
         #[allow(clippy::cast_possible_truncation)]
         let q1_base_ms = if class == RequestClass::Slow {
             (w.slow_ms * slow_j).clamp(1.0, 20_000.0) as f32
@@ -223,9 +280,17 @@ impl LoadGen {
             (w.fast_ms * fast_j1).clamp(1.0, 2_000.0) as f32
         };
         #[allow(clippy::cast_possible_truncation)]
-        let q2_base_ms = (w.fast_ms * fast_j2).clamp(1.0, 2_000.0) as f32;
+        let q2_base_ms = if need_fast_j2 {
+            (w.fast_ms * fast_j2).clamp(1.0, 2_000.0) as f32
+        } else {
+            0.0
+        };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let rpc_ms = (w.rpc_ms * rpc_j).round().clamp(1.0, 10_000.0) as DiscreteTime;
+        let rpc_ms = if need_rpc_j {
+            (w.rpc_ms * rpc_j).round().clamp(1.0, 10_000.0) as DiscreteTime
+        } else {
+            0
+        };
         PoolMsg::IncomingRequest {
             req_id,
             class,
@@ -247,16 +312,18 @@ impl Agent<PoolMsg> for LoadGen {
         };
         let now = ctx.time();
         let w = &self.spec.workload;
-        let mult = if now >= w.burst_start_ms && now < w.burst_end_ms {
-            w.burst_mult
+        let threshold = if now >= w.burst_start_ms && now < w.burst_end_ms {
+            self.burst_threshold
         } else {
-            1.0
+            self.normal_threshold
         };
-        let lambda_ms = (w.rps * mult) / 1000.0;
+        let Some(threshold) = threshold else {
+            return;
+        };
         let mut rng = ctx.rng();
-        let arrivals = draw_poisson(&mut rng, lambda_ms);
-        for _ in 0..arrivals {
-            let msg = self.sample_request(&mut rng, now);
+        let arrivals = draw_poisson_threshold(&mut rng, threshold);
+        for idx in 0..arrivals {
+            let msg = self.sample_request(&mut rng, now, idx + 1 == arrivals);
             ctx.send_to(app_id, msg);
         }
     }
@@ -1009,6 +1076,8 @@ struct ActiveQuery {
 struct Database {
     /// Simulation specification.
     spec: SimSpec,
+    /// Precomputed USL slowdown factors indexed by concurrent query count.
+    usl_table: Vec<f64>,
     /// Cached `app` agent ID.
     app_id: Option<AgentId>,
     /// Next unique query sequence ID.
@@ -1025,9 +1094,14 @@ struct Database {
 
 impl Database {
     /// Creates a database server governed by `spec`.
-    const fn new(spec: SimSpec) -> Self {
+    fn new(spec: SimSpec) -> Self {
+        let max_conc = spec.pool.pool_size.max(1);
+        let usl_table = (0..=max_conc)
+            .map(|c| spec.hardware.usl_slowdown(c))
+            .collect();
         Self {
             spec,
+            usl_table,
             app_id: None,
             next_query_seq: 1,
             active: BTreeMap::new(),
@@ -1078,7 +1152,11 @@ impl Agent<PoolMsg> for Database {
                 if now >= self.spec.workload.warmup_ms {
                     self.max_active_post_warmup = self.max_active_post_warmup.max(concurrency);
                 }
-                let slowdown = self.spec.hardware.usl_slowdown(concurrency);
+                let slowdown = self
+                    .usl_table
+                    .get(concurrency)
+                    .copied()
+                    .unwrap_or_else(|| self.spec.hardware.usl_slowdown(concurrency));
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let exec_ms =
                     (f64::from(base_ms) * slowdown).round().clamp(1.0, 60_000.0) as DiscreteTime;
@@ -1203,11 +1281,21 @@ pub(crate) fn build_simulation(
     spec: &SimSpec,
     ctx: &TrialContext,
 ) -> Result<Simulation<PoolMsg>, SimulationError> {
+    build_simulation_with_options(spec, ctx, true)
+}
+
+/// Builds a simulation, optionally skipping unused `IncomingRequest` payload math
+/// when payload-level tracing is inactive.
+fn build_simulation_with_options(
+    spec: &SimSpec,
+    ctx: &TrialContext,
+    eager_payload_fields: bool,
+) -> Result<Simulation<PoolMsg>, SimulationError> {
     Simulation::builder(Halt::AtTime(spec.workload.horizon_ms))
         .trial(ctx)
         .unknown_destination_policy(UnknownDestinationPolicy::Panic)
         .agents([
-            AgentInitializer::proactive("load_gen", LoadGen::new(*spec)),
+            AgentInitializer::proactive("load_gen", LoadGen::new(*spec, eager_payload_fields)),
             AgentInitializer::reactive("app", AppServer::new(*spec)).drain_all_messages(),
             AgentInitializer::reactive("pool", ConnPool::new(*spec)).drain_all_messages(),
             AgentInitializer::reactive("db", Database::new(*spec)).drain_all_messages(),
@@ -1221,7 +1309,7 @@ pub(crate) fn evaluate_run(
     spec: &SimSpec,
     ctx: &TrialContext,
 ) -> Result<PoolOutcome, SimulationError> {
-    let mut sim = build_simulation(spec, ctx)?;
+    let mut sim = build_simulation_with_options(spec, ctx, false)?;
     sim.run();
     let end_time = sim.time();
     let penalty_ms = (spec.pool.acquire_timeout_ms * 4).max(500) as f64;
