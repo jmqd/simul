@@ -1,10 +1,12 @@
 //! Python (`PyO3`) bindings for `simul`.
 
+use std::cmp::Ordering as CmpOrdering;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyDict, PyList, PyString, PyTuple};
@@ -16,12 +18,11 @@ use simul_core::agent::{
     periodic_producer,
 };
 use simul_core::experiment::{
-    AgentStreams, BernoulliReducer, BernoulliSummary, CandidateId, FailurePolicy, MasterSeed,
+    AgentStreams, BernoulliReducer, BernoulliSummary, CandidateId, FiniteValue, MasterSeed,
     MixedCrossEntropyConfig, MixedCrossEntropyOptimizer, MixedCrossEntropySample, MixedDimension,
-    MixedValue, NonFinitePolicy, ObjectiveDirection, PairedScalarSummary, ParetoArchive,
-    Probability, QuantileReducer, QuantileSummary, ReplayKey, ReplicationId, ScalarReducer,
-    ScalarSummary, SeedDeriver, TrialContext, TrialId, TrialRecord, TrialRng, TrialSpec,
-    compare_paired_scalar, run_serial,
+    MixedValue, ObjectiveDirection, PairedCompareError, ParetoArchive, Probability,
+    QuantileReducer, QuantileSummary, ReduceError, ScalarReducer, ScalarSummary, SeedDeriver,
+    TrialRng,
     search::{sample_bounded, sample_latin_hypercube, sample_sobol, sample_sobol_scrambled},
 };
 use simul_core::message::Message;
@@ -1263,6 +1264,277 @@ impl PySimulation {
     }
 }
 
+/// Validates that `obj` is a non-`str` Python sequence using the exact same
+/// `PySequence_Check` protocol as `PyO3`'s `Vec<T>` extraction (accepting
+/// `list`, `tuple`, `array.array`, `collections.abc.Sequence`, etc. and
+/// rejecting `str`, generators, dicts, and sets).
+fn validate_py_sequence(obj: &Bound<'_, PyAny>) -> PyResult<()> {
+    if obj.is_instance_of::<PyString>() {
+        return Err(PyTypeError::new_err("Can't extract `str` to `Vec`"));
+    }
+    // SAFETY: `obj` is a valid live Python object while the GIL is held.
+    if unsafe { ffi::PySequence_Check(obj.as_ptr()) } == 0 {
+        let type_name = obj.get_type().name().map_or_else(
+            |_| "object".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        return Err(PyTypeError::new_err(format!(
+            "'{type_name}' object is not an instance of 'Sequence'"
+        )));
+    }
+    Ok(())
+}
+
+/// Extracts an `f64` from a borrowed `PyObject` pointer inside a `list` or `tuple`
+/// without refcount churn when it is an exact Python `float`.
+#[inline]
+fn extract_borrowed_f64(
+    item: *mut ffi::PyObject,
+    float_type: *mut ffi::PyTypeObject,
+) -> Option<f64> {
+    // SAFETY: Caller holds the GIL and `item` is a valid borrowed `PyObject` pointer.
+    // For exact `PyFloat`, `PyFloat_AsDouble` reads the double directly without
+    // executing Python code or mutating containers.
+    unsafe {
+        if ffi::Py_TYPE(item) == float_type {
+            Some(ffi::PyFloat_AsDouble(item))
+        } else {
+            None
+        }
+    }
+}
+
+/// Streams `f64` elements from a Python sequence directly into `observe` without
+/// allocating an intermediate `Vec<f64>`, keeping `ReduceError` conversion out of
+/// the hot loop.
+fn for_each_py_f64(
+    seq: &Bound<'_, PyAny>,
+    mut observe: impl FnMut(f64) -> Result<(), ReduceError>,
+) -> PyResult<()> {
+    let float_type = &raw mut ffi::PyFloat_Type;
+    if let Ok(list) = seq.cast_exact::<PyList>() {
+        let mut len = list.len();
+        let mut i = 0;
+        while i < len {
+            let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+                break;
+            };
+            // SAFETY: `list` is live, GIL is held, and `i < len == list.len()`.
+            let item = unsafe { ffi::PyList_GetItem(list.as_ptr(), idx) };
+            let val = if let Some(v) = extract_borrowed_f64(item, float_type) {
+                v
+            } else {
+                let v = list.get_item(i)?.extract::<f64>()?;
+                len = list.len();
+                v
+            };
+            if let Err(err) = observe(val) {
+                return Err(PyValueError::new_err(err.to_string()));
+            }
+            i += 1;
+        }
+        return Ok(());
+    }
+    if let Ok(tuple) = seq.cast_exact::<PyTuple>() {
+        let len = tuple.len();
+        for i in 0..len {
+            let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+                break;
+            };
+            // SAFETY: `tuple` is immutable and live while GIL is held, and `i < len`.
+            let item = unsafe { ffi::PyTuple_GetItem(tuple.as_ptr(), idx) };
+            let val = if let Some(v) = extract_borrowed_f64(item, float_type) {
+                v
+            } else {
+                tuple.get_item(i)?.extract::<f64>()?
+            };
+            if let Err(err) = observe(val) {
+                return Err(PyValueError::new_err(err.to_string()));
+            }
+        }
+        return Ok(());
+    }
+    validate_py_sequence(seq)?;
+    for item in seq.try_iter()? {
+        if let Err(err) = observe(item?.extract::<f64>()?) {
+            return Err(PyValueError::new_err(err.to_string()));
+        }
+    }
+    Ok(())
+}
+
+/// Streams exact Python `bool` elements from a sequence without allocating an
+/// intermediate `Vec<bool>`, using pointer identity against `Py_True`/`Py_False`.
+fn for_each_py_bool(seq: &Bound<'_, PyAny>, mut observe: impl FnMut(bool)) -> PyResult<()> {
+    // SAFETY: GIL is held (`seq` carries `'py`); `Py_True`/`Py_False` return singleton pointers.
+    let (py_true, py_false) = unsafe { (ffi::Py_True(), ffi::Py_False()) };
+    if let Ok(list) = seq.cast_exact::<PyList>() {
+        let len = list.len();
+        for i in 0..len {
+            let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+                break;
+            };
+            // SAFETY: `list` is a live `PyList`, GIL is held, and no Python code runs on the loop path.
+            let item = unsafe { ffi::PyList_GetItem(list.as_ptr(), idx) };
+            if std::ptr::eq(item, py_true) {
+                observe(true);
+            } else if std::ptr::eq(item, py_false) {
+                observe(false);
+            } else {
+                observe(list.get_item(i)?.extract::<bool>()?);
+            }
+        }
+        return Ok(());
+    }
+    if let Ok(tuple) = seq.cast_exact::<PyTuple>() {
+        let len = tuple.len();
+        for i in 0..len {
+            let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+                break;
+            };
+            // SAFETY: `tuple` is immutable, live, GIL is held, and `i < len`.
+            let item = unsafe { ffi::PyTuple_GetItem(tuple.as_ptr(), idx) };
+            if std::ptr::eq(item, py_true) {
+                observe(true);
+            } else if std::ptr::eq(item, py_false) {
+                observe(false);
+            } else {
+                observe(tuple.get_item(i)?.extract::<bool>()?);
+            }
+        }
+        return Ok(());
+    }
+    validate_py_sequence(seq)?;
+    for item in seq.try_iter()? {
+        let item = item?;
+        let ptr = item.as_ptr();
+        if std::ptr::eq(ptr, py_true) {
+            observe(true);
+        } else if std::ptr::eq(ptr, py_false) {
+            observe(false);
+        } else {
+            observe(item.extract::<bool>()?);
+        }
+    }
+    Ok(())
+}
+
+/// Streams matched `(baseline, challenger)` float pairs from two exact Python `list`s.
+fn for_each_py_list_pair(
+    b_list: &Bound<'_, PyList>,
+    c_list: &Bound<'_, PyList>,
+    mut observe: impl FnMut(f64, f64),
+) -> PyResult<usize> {
+    let float_type = &raw mut ffi::PyFloat_Type;
+    let mut len = b_list.len();
+    if len != c_list.len() {
+        return Err(PyValueError::new_err(
+            "baseline and challenger must have equal length",
+        ));
+    }
+    let mut i = 0;
+    while i < len {
+        let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+            break;
+        };
+        // SAFETY: Both lists are live, GIL is held, and `i < len` matches both lengths.
+        let b_item = unsafe { ffi::PyList_GetItem(b_list.as_ptr(), idx) };
+        let c_item = unsafe { ffi::PyList_GetItem(c_list.as_ptr(), idx) };
+        let (b_val, c_val) = if let (Some(b), Some(c)) = (
+            extract_borrowed_f64(b_item, float_type),
+            extract_borrowed_f64(c_item, float_type),
+        ) {
+            (b, c)
+        } else {
+            let b = b_list.get_item(i)?.extract::<f64>()?;
+            let c = c_list.get_item(i)?.extract::<f64>()?;
+            len = b_list.len();
+            if len != c_list.len() {
+                return Err(PyValueError::new_err(
+                    "baseline and challenger must have equal length",
+                ));
+            }
+            (b, c)
+        };
+        observe(b_val, c_val);
+        i += 1;
+    }
+    Ok(len)
+}
+
+/// Streams matched `(baseline, challenger)` float pairs from two exact Python `tuple`s.
+fn for_each_py_tuple_pair(
+    b_tup: &Bound<'_, PyTuple>,
+    c_tup: &Bound<'_, PyTuple>,
+    mut observe: impl FnMut(f64, f64),
+) -> PyResult<usize> {
+    let float_type = &raw mut ffi::PyFloat_Type;
+    let len = b_tup.len();
+    if len != c_tup.len() {
+        return Err(PyValueError::new_err(
+            "baseline and challenger must have equal length",
+        ));
+    }
+    for i in 0..len {
+        let Ok(idx) = ffi::Py_ssize_t::try_from(i) else {
+            break;
+        };
+        // SAFETY: Tuples are immutable and live while GIL is held, and `i < len`.
+        let b_item = unsafe { ffi::PyTuple_GetItem(b_tup.as_ptr(), idx) };
+        let c_item = unsafe { ffi::PyTuple_GetItem(c_tup.as_ptr(), idx) };
+        let b_val = match extract_borrowed_f64(b_item, float_type) {
+            Some(v) => v,
+            None => b_tup.get_item(i)?.extract::<f64>()?,
+        };
+        let c_val = match extract_borrowed_f64(c_item, float_type) {
+            Some(v) => v,
+            None => c_tup.get_item(i)?.extract::<f64>()?,
+        };
+        observe(b_val, c_val);
+    }
+    Ok(len)
+}
+
+/// Streams matched `(baseline, challenger)` float pairs from two Python sequences
+/// in lockstep without allocating intermediate `Vec` or `TrialRecord` buffers.
+fn for_each_py_f64_pair(
+    baseline: &Bound<'_, PyAny>,
+    challenger: &Bound<'_, PyAny>,
+    mut observe: impl FnMut(f64, f64),
+) -> PyResult<usize> {
+    if let (Ok(b_list), Ok(c_list)) = (
+        baseline.cast_exact::<PyList>(),
+        challenger.cast_exact::<PyList>(),
+    ) {
+        return for_each_py_list_pair(b_list, c_list, observe);
+    }
+    if let (Ok(b_tup), Ok(c_tup)) = (
+        baseline.cast_exact::<PyTuple>(),
+        challenger.cast_exact::<PyTuple>(),
+    ) {
+        return for_each_py_tuple_pair(b_tup, c_tup, observe);
+    }
+    validate_py_sequence(baseline)?;
+    validate_py_sequence(challenger)?;
+    let mut b_iter = baseline.try_iter()?;
+    let mut c_iter = challenger.try_iter()?;
+    let mut count = 0_usize;
+    loop {
+        match (b_iter.next(), c_iter.next()) {
+            (Some(b), Some(c)) => {
+                observe(b?.extract::<f64>()?, c?.extract::<f64>()?);
+                count += 1;
+            }
+            (None, None) => return Ok(count),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "baseline and challenger must have equal length",
+                ));
+            }
+        }
+    }
+}
+
 /// Finite scalar summary with two-sided 95% Student-t confidence intervals.
 #[pyclass(name = "ScalarSummary")]
 #[derive(Clone)]
@@ -1272,10 +1544,13 @@ struct PyScalarSummary {
 
 #[pymethods]
 impl PyScalarSummary {
-    /// Reduces an iterable of finite floats.
+    /// Reduces a sequence of finite floats without intermediate allocation.
     #[staticmethod]
-    fn from_values(values: Vec<f64>) -> PyResult<Self> {
-        let inner = ScalarReducer::from_results(values)
+    fn from_values(values: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut reducer = ScalarReducer::default();
+        for_each_py_f64(values, |val| reducer.observe(val))?;
+        let inner = reducer
+            .finish()
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(Self { inner })
     }
@@ -1323,16 +1598,14 @@ impl PyBernoulliSummary {
     /// Reduces a sequence of booleans with optional custom Wilson z-score.
     #[staticmethod]
     #[pyo3(signature = (results, wilson_z=None))]
-    fn from_results(results: Vec<bool>, wilson_z: Option<f64>) -> PyResult<Self> {
+    fn from_results(results: &Bound<'_, PyAny>, wilson_z: Option<f64>) -> PyResult<Self> {
         let mut reducer = match wilson_z {
             Some(z) => {
                 BernoulliReducer::new(z).map_err(|err| PyValueError::new_err(err.to_string()))?
             }
             None => BernoulliReducer::default(),
         };
-        for ok in results {
-            reducer.observe(ok);
-        }
+        for_each_py_bool(results, |ok| reducer.observe(ok))?;
         let inner = reducer
             .finish()
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -1372,8 +1645,16 @@ struct PyQuantileSummary {
 impl PyQuantileSummary {
     /// Reduces a sequence of finite floats into exact order statistics.
     #[staticmethod]
-    fn from_values(values: Vec<f64>) -> PyResult<Self> {
-        let inner = QuantileReducer::from_results(values)
+    fn from_values(values: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let cap = if values.is_instance_of::<PyString>() {
+            0
+        } else {
+            values.len().unwrap_or(0)
+        };
+        let mut reducer = QuantileReducer::with_capacity(cap);
+        for_each_py_f64(values, |val| reducer.observe(val))?;
+        let inner = reducer
+            .finish()
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(Self { inner })
     }
@@ -1427,101 +1708,138 @@ impl PyQuantileSummary {
 #[pyclass(name = "PairedScalarSummary")]
 #[derive(Clone)]
 struct PyPairedScalarSummary {
-    inner: PairedScalarSummary,
+    usable_pairs: u32,
+    challenger_wins: u32,
+    baseline_wins: u32,
+    ties: u32,
+    difference: ScalarSummary,
+    baseline: ScalarSummary,
+    challenger: ScalarSummary,
 }
 
 #[pymethods]
 impl PyPairedScalarSummary {
     /// Compares matched sequences `baseline` and `challenger` replication by replication.
     #[staticmethod]
-    fn from_pairs(baseline: Vec<f64>, challenger: Vec<f64>) -> PyResult<Self> {
-        if baseline.len() != challenger.len() {
+    fn from_pairs(baseline: &Bound<'_, PyAny>, challenger: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut diff_reducer = ScalarReducer::default();
+        let mut base_reducer = ScalarReducer::default();
+        let mut chal_reducer = ScalarReducer::default();
+        let mut baseline_non_finite = 0_u32;
+        let mut challenger_non_finite = 0_u32;
+        let mut usable_pairs = 0_u32;
+        let mut challenger_wins = 0_u32;
+        let mut baseline_wins = 0_u32;
+        let mut ties = 0_u32;
+        let mut reduction = Ok(());
+
+        let count = for_each_py_f64_pair(baseline, challenger, |b_raw, c_raw| {
+            let base_val = FiniteValue::new(b_raw).ok();
+            if base_val.is_none() {
+                baseline_non_finite += 1;
+            }
+            let chal_val = FiniteValue::new(c_raw).ok();
+            if chal_val.is_none() {
+                challenger_non_finite += 1;
+            }
+            if let (Some(b), Some(c)) = (base_val, chal_val) {
+                usable_pairs += 1;
+                match c.cmp(&b) {
+                    CmpOrdering::Greater => challenger_wins += 1,
+                    CmpOrdering::Less => baseline_wins += 1,
+                    CmpOrdering::Equal => ties += 1,
+                }
+                let diff = c.get() - b.get();
+                if diff.is_finite() {
+                    reduction = reduction
+                        .and_then(|()| diff_reducer.observe(diff))
+                        .and_then(|()| base_reducer.observe(b.get()))
+                        .and_then(|()| chal_reducer.observe(c.get()));
+                } else {
+                    reduction = Err(ReduceError::ArithmeticOverflow);
+                }
+            }
+        })?;
+
+        if count == 0 {
+            return Err(PyValueError::new_err(PairedCompareError::Empty.to_string()));
+        }
+        if u32::try_from(count).is_err() {
             return Err(PyValueError::new_err(
-                "baseline and challenger must have equal length",
+                PairedCompareError::TooManyRecords.to_string(),
             ));
         }
-        let seed = MasterSeed::from_u64(0);
-        let to_records = |cid: u64, values: Vec<f64>| -> Vec<TrialRecord<f64, ()>> {
-            values
-                .into_iter()
-                .enumerate()
-                .map(|(rep, val)| {
-                    let id = TrialId::new(
-                        CandidateId::new(cid),
-                        ReplicationId::new(u32::try_from(rep).unwrap_or(u32::MAX)),
-                    );
-                    let replay =
-                        TrialContext::from_replay_key(make_replay_key(seed, id)).replay_key();
-                    TrialRecord {
-                        key: id,
-                        replay,
-                        result: Ok(val),
-                    }
-                })
-                .collect()
+        if baseline_non_finite > 0 || challenger_non_finite > 0 {
+            return Err(PyValueError::new_err(
+                PairedCompareError::NonFinite {
+                    baseline_observations: baseline_non_finite,
+                    challenger_observations: challenger_non_finite,
+                }
+                .to_string(),
+            ));
+        }
+        if usable_pairs == 0 {
+            return Err(PyValueError::new_err(
+                PairedCompareError::NoUsablePairs.to_string(),
+            ));
+        }
+
+        let finish = |res: Result<(), ReduceError>, r: ScalarReducer| {
+            res.and_then(|()| r.finish()).map_err(|_| {
+                PyValueError::new_err(PairedCompareError::ArithmeticOverflow.to_string())
+            })
         };
-        let b_recs = to_records(0, baseline);
-        let c_recs = to_records(1, challenger);
-        let inner = compare_paired_scalar(
-            &b_recs,
-            &c_recs,
-            |&v| v,
-            FailurePolicy::RejectCandidate,
-            NonFinitePolicy::RejectCandidate,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        Ok(Self { inner })
+        let difference = finish(reduction, diff_reducer)?;
+        let baseline_summary = finish(Ok(()), base_reducer)?;
+        let challenger_summary = finish(Ok(()), chal_reducer)?;
+
+        Ok(Self {
+            usable_pairs,
+            challenger_wins,
+            baseline_wins,
+            ties,
+            difference,
+            baseline: baseline_summary,
+            challenger: challenger_summary,
+        })
     }
 
     #[getter]
     fn usable_pairs(&self) -> u32 {
-        self.inner.usable_pairs()
+        self.usable_pairs
     }
     #[getter]
     fn challenger_wins(&self) -> u32 {
-        self.inner.challenger_wins()
+        self.challenger_wins
     }
     #[getter]
     fn baseline_wins(&self) -> u32 {
-        self.inner.baseline_wins()
+        self.baseline_wins
     }
     #[getter]
     fn ties(&self) -> u32 {
-        self.inner.ties()
+        self.ties
     }
     #[getter]
     fn mean_diff(&self) -> f64 {
-        self.inner.difference().mean()
+        self.difference.mean()
     }
     #[getter]
     fn standard_error(&self) -> Option<f64> {
-        self.inner.difference().standard_error()
+        self.difference.standard_error()
     }
     fn ci_95(&self) -> Option<(f64, f64)> {
-        self.inner.ci_95()
+        self.difference.ci_95()
     }
     fn variance_reduction_ratio(&self) -> Option<f64> {
-        self.inner.variance_reduction_ratio()
-    }
-}
-
-/// Builds a synthetic `ReplayKey` via `run_serial` for Python paired sequences.
-fn make_replay_key(seed: MasterSeed, key: TrialId) -> ReplayKey {
-    let spec = TrialSpec::new(key.candidate(), key.replication(), 0, ());
-    run_serial(seed, [spec], |(), ctx| {
-        Ok::<ReplayKey, ()>(ctx.replay_key())
-    })
-    .ok()
-    .and_then(|mut v| v.pop())
-    .map_or_else(|| unreachable_fallback_replay_key(seed, key), |r| r.replay)
-}
-
-/// Deterministic fallback replay key construction.
-fn unreachable_fallback_replay_key(seed: MasterSeed, key: TrialId) -> ReplayKey {
-    let spec = TrialSpec::new(key.candidate(), key.replication(), 0, ());
-    match run_serial(seed, [spec], |(), _| Ok::<(), ()>(())) {
-        Ok(records) if !records.is_empty() => records[0].replay,
-        _ => panic!("single-spec run_serial cannot fail"),
+        let b_var = self.baseline.sample_variance()?;
+        let c_var = self.challenger.sample_variance()?;
+        let d_var = self.difference.sample_variance()?;
+        if d_var <= 0.0 {
+            return None;
+        }
+        let ratio = (b_var + c_var) / d_var;
+        ratio.is_finite().then_some(ratio)
     }
 }
 
