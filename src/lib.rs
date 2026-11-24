@@ -109,9 +109,9 @@ struct ReadmeDoctests;
 
 use agent::{
     AgentContext, AgentId, AgentInitializer, AgentMetadata, AgentMode, AgentState,
-    AgentStreamCache, CommandBuffer, MessageDrain, MessageHistory, MessageProcessingStatus, Peers,
-    PendingSend, QueueDepthChange, SimulationAgent, SpecialCommand, TickMeta, TickState, TimerId,
-    WakeMode,
+    AgentStreamCache, CommandBuffer, MessageDrain, MessageHistory, MessageProcessingStatus,
+    NameIndex, Peers, PendingSend, QueueDepthChange, SimulationAgent, SpecialCommand, TickMeta,
+    TickState, TimerId, WakeMode,
 };
 use experiment::{
     CandidateId, FixedReplications, MasterSeed, RunError, TrialContext, TrialRecord, TrialStream,
@@ -119,9 +119,8 @@ use experiment::{
 use message::Message;
 use trace::{SimulationTrace, TraceEventKind, TraceRecorder, debug_format_payload};
 
-use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, hash_map::Entry};
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -205,8 +204,9 @@ pub struct Simulation<M = ()> {
     mode: SimulationMode,
 
     /// Maps agent names to identities in simulations too large for linear
-    /// name scans; empty otherwise.
-    agent_name_handle_map: FxHashMap<String, AgentId>,
+    /// name scans; `None` otherwise. Shared via `Arc` so cloning a simulation
+    /// does not rebuild or duplicate the index.
+    agent_name_handle_map: Option<Arc<NameIndex>>,
 
     /// Identifies this agent layout for cached target identities. Clones share
     /// the layout and its token; every constructed simulation gets a new one.
@@ -1117,8 +1117,7 @@ impl<M> Simulation<M> {
                 count: initializers.len(),
             });
         }
-        let mut agent_name_handle_map = FxHashMap::default();
-        if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
+        let agent_name_handle_map = if initializers.len() <= LINEAR_NAME_SCAN_LIMIT {
             for (i, agent_initializer) in initializers.iter().enumerate() {
                 let name = &agent_initializer.options.name;
                 if initializers[..i]
@@ -1128,21 +1127,10 @@ impl<M> Simulation<M> {
                     return Err(SimulationError::DuplicateAgentName(name.clone()));
                 }
             }
+            None
         } else {
-            agent_name_handle_map.reserve(initializers.len());
-            for (i, agent_initializer) in initializers.iter().enumerate() {
-                match agent_name_handle_map.entry(agent_initializer.options.name.clone()) {
-                    Entry::Occupied(_) => {
-                        return Err(SimulationError::DuplicateAgentName(
-                            agent_initializer.options.name.clone(),
-                        ));
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(AgentId::from_handle(i));
-                    }
-                }
-            }
-        }
+            Some(Arc::new(NameIndex::try_from_initializers(initializers)?))
+        };
 
         // Small simulations are often run by the thousand in experiments;
         // reserving queues and histories up front avoids repeated growth.
@@ -1695,7 +1683,7 @@ impl<M> Simulation<M> {
                 time: self.time,
                 layout: self.layout,
                 agent_count,
-                agent_name_handle_map: &self.agent_name_handle_map,
+                agent_name_handle_map: self.agent_name_handle_map.as_deref(),
             },
             scan_names: agent_count <= LINEAR_NAME_SCAN_LIMIT,
             queue_depth_metric: self.enable_queue_depth_metric,
@@ -1872,7 +1860,10 @@ impl<M> Simulation<M> {
         if self.agents.len() <= LINEAR_NAME_SCAN_LIMIT {
             self.agents.iter().position(|agent| agent.name == name)
         } else {
-            self.agent_name_handle_map.get(name).map(|id| id.index())
+            self.agent_name_handle_map
+                .as_deref()
+                .and_then(|index| index.get(name))
+                .map(AgentId::index)
         }
     }
 

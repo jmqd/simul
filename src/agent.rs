@@ -1,9 +1,10 @@
 use crate::experiment::{AgentStreams, MasterSeed, SeedDeriver, TrialRng};
-use crate::{DiscreteTime, message::Message};
+use crate::{DiscreteTime, SimulationError, message::Message};
 use dyn_clone::DynClone;
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 use std::collections::VecDeque;
 use std::fmt;
+use std::hash::Hasher as _;
 use std::num::{NonZeroU32, NonZeroUsize};
 
 /// Possible states an Agent can be in.
@@ -565,6 +566,138 @@ impl AgentStreamCache {
     }
 }
 
+/// One occupied or vacant slot in [`NameIndex`].
+#[derive(Clone, Copy, Debug)]
+struct NameSlot {
+    /// Start byte offset in [`NameIndex::names`].
+    start: u32,
+    /// Byte length of the stored name.
+    len: u32,
+    /// Upper 32 bits of the key hash for quick mismatch rejection.
+    tag: u32,
+    /// Agent identity, or `None` when the slot is vacant.
+    id: Option<AgentId>,
+}
+
+/// Immutable contiguous open-addressed hash table mapping agent names to
+/// [`AgentId`]s without per-key heap allocations.
+#[derive(Debug)]
+pub(crate) struct NameIndex {
+    /// All agent names packed into a single contiguous byte buffer.
+    names: Box<[u8]>,
+    /// Power-of-two open-addressed table kept at load factor `<= 0.5`.
+    slots: Box<[NameSlot]>,
+}
+
+impl NameIndex {
+    /// Builds a name index from `initializers`, rejecting duplicate names in
+    /// construction order.
+    pub(crate) fn try_from_initializers<M>(
+        initializers: &[AgentInitializer<M>],
+    ) -> Result<Self, SimulationError> {
+        let total_bytes: usize = initializers.iter().map(|a| a.options.name.len()).sum();
+        assert!(
+            u32::try_from(total_bytes).is_ok(),
+            "combined agent name length exceeds u32::MAX"
+        );
+        let capacity = initializers
+            .len()
+            .saturating_mul(2)
+            .next_power_of_two()
+            .max(16);
+        let mask = capacity - 1;
+        let mut names = Vec::with_capacity(total_bytes);
+        let mut slots = vec![
+            NameSlot {
+                start: 0,
+                len: 0,
+                tag: 0,
+                id: None,
+            };
+            capacity
+        ]
+        .into_boxed_slice();
+
+        for (handle, initializer) in initializers.iter().enumerate() {
+            let name = initializer.options.name.as_str();
+            let bytes = name.as_bytes();
+            let hash = Self::hash_bytes(bytes);
+            let tag = Self::hash_tag(hash);
+            let len_u32 = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+            let mut idx = Self::slot_index(hash, mask);
+            loop {
+                let slot = slots[idx];
+                if slot.id.is_none() {
+                    let start = u32::try_from(names.len()).unwrap_or(u32::MAX);
+                    names.extend_from_slice(bytes);
+                    slots[idx] = NameSlot {
+                        start,
+                        len: len_u32,
+                        tag,
+                        id: Some(AgentId::from_handle(handle)),
+                    };
+                    break;
+                }
+                if slot.tag == tag && slot.len == len_u32 {
+                    let start = slot.start as usize;
+                    if &names[start..start + bytes.len()] == bytes {
+                        return Err(SimulationError::DuplicateAgentName(name.to_string()));
+                    }
+                }
+                idx = (idx + 1) & mask;
+            }
+        }
+
+        Ok(Self {
+            names: names.into_boxed_slice(),
+            slots,
+        })
+    }
+
+    /// Resolves `name` to its [`AgentId`], if present.
+    #[inline]
+    pub(crate) fn get(&self, name: &str) -> Option<AgentId> {
+        let slots = &*self.slots;
+        let mask = slots.len().checked_sub(1)?;
+        let bytes = name.as_bytes();
+        let len_u32 = u32::try_from(bytes.len()).ok()?;
+        let hash = Self::hash_bytes(bytes);
+        let tag = Self::hash_tag(hash);
+        let mut idx = Self::slot_index(hash, mask);
+        loop {
+            let slot = slots[idx];
+            let id = slot.id?;
+            if slot.tag == tag && slot.len == len_u32 {
+                let start = slot.start as usize;
+                if self.names.get(start..start + bytes.len()) == Some(bytes) {
+                    return Some(id);
+                }
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+
+    /// Computes a fast non-cryptographic 64-bit hash of `bytes`.
+    #[inline]
+    fn hash_bytes(bytes: &[u8]) -> u64 {
+        let mut hasher = FxHasher::default();
+        hasher.write(bytes);
+        hasher.finish()
+    }
+
+    /// Extracts the upper 32 bits of `hash` as a slot tag.
+    #[inline]
+    fn hash_tag(hash: u64) -> u32 {
+        u32::try_from(hash >> 32).unwrap_or(0)
+    }
+
+    /// Maps `hash` into `0..=mask` without truncating casts.
+    #[inline]
+    fn slot_index(hash: u64, mask: usize) -> usize {
+        usize::try_from(hash & (mask as u64)).unwrap_or(0)
+    }
+}
+
 /// Read-only per-tick metadata shared across every agent callback.
 pub(crate) struct TickMeta<'a> {
     /// The current simulation time.
@@ -574,7 +707,7 @@ pub(crate) struct TickMeta<'a> {
     /// Number of agents, which bounds valid identities.
     pub(crate) agent_count: usize,
     /// Maps agent names to identities when `peers` is absent.
-    pub(crate) agent_name_handle_map: &'a FxHashMap<String, AgentId>,
+    pub(crate) agent_name_handle_map: Option<&'a NameIndex>,
 }
 
 /// Mutable per-simulation state accessed infrequently by callbacks through
@@ -837,7 +970,10 @@ impl<'a, M> AgentContext<'a, M> {
                         .map(AgentId::from_handle)
                 }
             }
-            None => self.meta.agent_name_handle_map.get(name).copied(),
+            None => self
+                .meta
+                .agent_name_handle_map
+                .and_then(|index| index.get(name)),
         }
     }
 
