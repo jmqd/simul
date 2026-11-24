@@ -15,7 +15,7 @@ use simul::experiment::MasterSeed;
 use simul::message::Message;
 use simul::{DiscreteTime, Halt, Simulation, SimulationMode};
 use std::cell::{Cell, RefCell};
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::sync::Arc;
 
 /// Seeds per law for simulations of any size.
@@ -405,37 +405,43 @@ fn build_case(
     }
 }
 
-/// Everything observable except metrics and recorded messages.
-fn state_snapshot(simulation: &Simulation<Payload>) -> String {
-    let mut out = format!("time={}\n", simulation.time());
-    let waits = simulation.calc_avg_wait_statistics();
-    for agent in simulation.agents() {
-        let _ = writeln!(
-            out,
-            "{} {:?} {:?} consumed={} produced={} wait={:?}",
-            agent.name(),
-            agent.agent,
-            agent.state,
-            agent.consumed_count(),
-            agent.produced_count(),
-            waits.get(agent.name())
-        );
+/// Compares two agent behaviors without Debug-formatting `Chaos` event logs.
+fn same_agent_behavior(left: &SimulationAgent<Payload>, right: &SimulationAgent<Payload>) -> bool {
+    match (left.downcast_ref::<Chaos>(), right.downcast_ref::<Chaos>()) {
+        (Some(a), Some(b)) => a.rng == b.rng && a.events == b.events,
+        (None, None) => format!("{:?}", left.agent) == format!("{:?}", right.agent),
+        (Some(_), None) | (None, Some(_)) => false,
     }
-    let _ = writeln!(
-        out,
-        "in flight {:?}",
-        simulation.in_flight().collect::<Vec<_>>()
-    );
-    out
 }
 
-/// Everything observable except metrics.
-fn snapshot(simulation: &Simulation<Payload>) -> String {
-    let mut out = state_snapshot(simulation);
-    for agent in simulation.agents() {
-        let _ = writeln!(out, "{:?} {:?}", agent.consumed(), agent.produced());
+/// Compares everything observable except metrics (and optionally message histories).
+fn same_simulation(
+    left: &Simulation<Payload>,
+    right: &Simulation<Payload>,
+    include_history: bool,
+) -> bool {
+    if left.time() != right.time() || left.agents().len() != right.agents().len() {
+        return false;
     }
-    out
+    let left_waits = left.calc_avg_wait_statistics();
+    let right_waits = right.calc_avg_wait_statistics();
+    for (a, b) in left.agents().iter().zip(right.agents()) {
+        let wait_eq = left_waits.get(a.name()).map(|w| w.to_bits())
+            == right_waits.get(b.name()).map(|w| w.to_bits());
+        if a.name() != b.name()
+            || !same_agent_behavior(a, b)
+            || a.state != b.state
+            || a.consumed_count() != b.consumed_count()
+            || a.produced_count() != b.produced_count()
+            || !wait_eq
+        {
+            return false;
+        }
+        if include_history && (a.consumed() != b.consumed() || a.produced() != b.produced()) {
+            return false;
+        }
+    }
+    left.in_flight().eq(right.in_flight())
 }
 
 fn metrics(simulation: &Simulation<Payload>) -> Vec<(Vec<QueueDepthChange>, DiscreteTime)> {
@@ -463,36 +469,6 @@ fn run(case: &mut Case) -> Trace {
         take_halt_calls(),
         CALLBACKS.with(|calls| std::mem::take(&mut *calls.borrow_mut())),
     )
-}
-
-/// Parses the `Chaos` events out of an agent's Debug output.
-fn chaos_events(agent: &SimulationAgent<Payload>) -> Option<String> {
-    let debug = format!("{:?}", agent.agent);
-    debug.starts_with("Chaos").then_some(debug)
-}
-
-/// Parses the time that follows each `marker` in `debug`, up to `end`.
-fn times_after<'a>(
-    debug: &'a str,
-    marker: &'a str,
-    end: char,
-) -> impl Iterator<Item = DiscreteTime> + 'a {
-    debug.split(marker).skip(1).map(move |piece| {
-        let Some(at) = piece.find(end) else {
-            panic!("unterminated {marker:?} in {debug}");
-        };
-        piece[..at]
-            .parse()
-            .unwrap_or_else(|error| panic!("bad time after {marker:?} in {piece}: {error}"))
-    })
-}
-
-/// Returns what follows the first `needle` in `rest`.
-fn skip_past<'a>(seed: u64, rest: &'a str, needle: &str) -> &'a str {
-    let at = rest
-        .find(needle)
-        .unwrap_or_else(|| panic!("seed {seed}: missing {needle} in {rest}"));
-    &rest[at + needle.len()..]
 }
 
 /// `(queued_time, send tick, sender handle)`: messages arriving in one tick
@@ -534,7 +510,6 @@ fn sparse_and_dense_runs_are_observably_equivalent() {
     for seed in 0..LARGE_CASES {
         let mut sparse = build(seed, Size::Large, false, false, true);
         let sparse_calls = run(&mut sparse);
-        let expected = snapshot(&sparse.simulation);
         for (queue_metric, asleep_metric) in [(true, false), (false, true), (true, true)] {
             let mut dense = build(seed, Size::Large, queue_metric, asleep_metric, true);
             let dense_calls = run(&mut dense);
@@ -543,7 +518,7 @@ fn sparse_and_dense_runs_are_observably_equivalent() {
                 "seed {seed}: halt checks or callback order differ"
             );
             assert!(
-                expected == snapshot(&dense.simulation),
+                same_simulation(&sparse.simulation, &dense.simulation, true),
                 "seed {seed}: state differs with metrics ({queue_metric}, {asleep_metric})"
             );
         }
@@ -585,7 +560,7 @@ fn skipping_quiet_ticks_matches_running_every_tick() {
             "seed {seed}"
         );
         assert!(
-            snapshot(&every_tick.simulation) == snapshot(&skipping.simulation),
+            same_simulation(&every_tick.simulation, &skipping.simulation, true),
             "seed {seed}: state differs"
         );
         assert_eq!(
@@ -623,7 +598,7 @@ fn recording_message_history_does_not_change_the_run() {
         let mut off = case(History::Off);
         assert_eq!(run(&mut recorded), run(&mut off), "seed {seed}: trace");
         assert!(
-            state_snapshot(&recorded.simulation) == state_snapshot(&off.simulation),
+            same_simulation(&recorded.simulation, &off.simulation, false),
             "seed {seed}: state differs"
         );
         assert_eq!(
@@ -649,7 +624,7 @@ fn running_a_clone_matches_running_the_original() {
         let copy_calls = run(&mut copy);
         assert_eq!(original_calls, copy_calls, "seed {seed}");
         assert!(
-            snapshot(&original.simulation) == snapshot(&copy.simulation),
+            same_simulation(&original.simulation, &copy.simulation, true),
             "seed {seed}"
         );
         assert_eq!(
@@ -670,7 +645,7 @@ fn running_a_clone_matches_running_the_original() {
         let copy_calls = run(&mut resumed_copy);
         assert_eq!(original_calls, copy_calls, "seed {seed} resumed");
         assert!(
-            snapshot(&original.simulation) == snapshot(&resumed_copy.simulation),
+            same_simulation(&original.simulation, &resumed_copy.simulation, true),
             "seed {seed} resumed"
         );
         assert_eq!(
@@ -697,7 +672,7 @@ fn segmented_runs_match_one_run_without_interrupts() {
             run(&mut pieces);
         }
         assert!(
-            snapshot(&whole.simulation) == snapshot(&pieces.simulation),
+            same_simulation(&whole.simulation, &pieces.simulation, true),
             "seed {seed}"
         );
         assert_eq!(
@@ -760,7 +735,7 @@ fn pausing_with_run_until_matches_one_run() {
         );
         assert_eq!(whole_calls, pieces_calls, "seed {seed}: callbacks");
         assert!(
-            snapshot(&whole.simulation) == snapshot(&pieces.simulation),
+            same_simulation(&whole.simulation, &pieces.simulation, true),
             "seed {seed}"
         );
         assert_eq!(
@@ -776,49 +751,69 @@ fn check_chaos_history(
     seed: u64,
     simulation: &Simulation<Payload>,
     agent: &SimulationAgent<Payload>,
-    debug: &str,
+    chaos: &Chaos,
 ) {
     // Completed on_message calls, in order, are the consumed history.
-    let mut rest = debug;
+    let mut completed_iter = chaos.events.iter().filter_map(|event| match *event {
+        Event::Message {
+            time,
+            queued_time,
+            source,
+            in_progress: false,
+        } => Some((time, queued_time, source)),
+        Event::Tick(_)
+        | Event::Message {
+            in_progress: true, ..
+        }
+        | Event::Resolve(_, _)
+        | Event::Halt(_)
+        | Event::Sent(_, _, _) => None,
+    });
     for message in agent.consumed() {
-        let completion = format!(
-            "Message {{ time: {}, queued_time: {}, source: {:?}, in_progress: false }}",
+        let expected = (
             completed_time(seed, message),
             message.queued_time,
-            message.source
+            message.source,
         );
-        rest = skip_past(seed, rest, &completion);
+        assert_eq!(
+            completed_iter.next(),
+            Some(expected),
+            "seed {seed}: consumed mismatch"
+        );
     }
     assert!(
-        !rest.contains("in_progress: false"),
+        completed_iter.next().is_none(),
         "seed {seed}: extra completion"
     );
-    let names = simulation.agents().iter().map(SimulationAgent::name);
-    for name in names.chain(["ghost", ""]) {
-        let resolved = format!("Resolve({name:?}, {:?})", simulation.agent_id(name));
-        let prefix = format!("Resolve({name:?}, ");
-        let mentions = debug.matches(prefix.as_str()).count();
-        assert_eq!(
-            mentions,
-            debug.matches(resolved.as_str()).count(),
-            "seed {seed}"
-        );
+
+    for event in &chaos.events {
+        if let Event::Resolve(name, id) = event {
+            assert_eq!(
+                *id,
+                simulation.agent_id(name),
+                "seed {seed}: resolve {name:?}"
+            );
+        }
     }
+
     // Every send, known or not, is the produced history in call order.
-    assert_eq!(
-        debug.matches("Sent(").count(),
-        agent.produced().len(),
-        "seed {seed}: produced count"
-    );
-    let mut rest = debug;
+    let mut sent_iter = chaos.events.iter().filter_map(|event| match event {
+        Event::Sent(time, destination, payload) => Some((*time, *destination, payload.as_deref())),
+        Event::Tick(_) | Event::Message { .. } | Event::Resolve(_, _) | Event::Halt(_) => None,
+    });
     for message in agent.produced() {
-        let (time, _, destination, payload) = message_key(message);
-        rest = skip_past(
-            seed,
-            rest,
-            &format!("{:?}", Event::Sent(time, destination, payload)),
+        let expected = (
+            message.queued_time,
+            message.destination,
+            message.payload.as_deref(),
+        );
+        assert_eq!(
+            sent_iter.next(),
+            Some(expected),
+            "seed {seed}: produced mismatch"
         );
     }
+    assert!(sent_iter.next().is_none(), "seed {seed}: produced count");
 }
 
 /// Arrived messages for each receiver, keyed for their delivery order.
@@ -876,6 +871,7 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
         halted_in_flight += in_flight.len();
         still_in_flight.sort();
         assert_eq!(in_flight, still_in_flight, "seed {seed}: in flight");
+        let avg_waits = simulation.calc_avg_wait_statistics();
         for (handle, agent) in agents.iter().enumerate() {
             let mut expected: Vec<_> = case.initial_queues[handle]
                 .iter()
@@ -935,10 +931,7 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
             );
             assert_eq!(
                 (consumed > 0).then(|| (wait / consumed as f64).to_bits()),
-                simulation
-                    .calc_avg_wait_statistics()
-                    .get(agent.name())
-                    .map(|mean| mean.to_bits()),
+                avg_waits.get(agent.name()).map(|mean| mean.to_bits()),
                 "seed {seed}: agent {handle} mean wait"
             );
             assert!(
@@ -946,8 +939,8 @@ fn messages_are_conserved_and_delivered_in_issue_order() {
                 "seed {seed}"
             );
 
-            if let Some(debug) = chaos_events(agent) {
-                check_chaos_history(seed, simulation, agent, &debug);
+            if let Some(chaos) = agent.downcast_ref::<Chaos>() {
+                check_chaos_history(seed, simulation, agent, chaos);
             }
         }
     }
@@ -983,16 +976,24 @@ fn time_advances_per_tick_and_halts_at_first_true_check_or_interrupt() {
         let mut first_interrupt: Option<DiscreteTime> = None;
         let mut callback_times: Vec<Vec<DiscreteTime>> = Vec::new();
         for agent in simulation.agents() {
-            let Some(debug) = chaos_events(agent) else {
+            let Some(chaos) = agent.downcast_ref::<Chaos>() else {
                 continue;
             };
-            first_interrupt = first_interrupt
-                .into_iter()
-                .chain(times_after(&debug, "Halt(", ')'))
-                .min();
+            let mut tick_times = Vec::new();
+            let mut msg_times = Vec::new();
+            for event in &chaos.events {
+                match *event {
+                    Event::Halt(tick) => {
+                        first_interrupt = Some(first_interrupt.map_or(tick, |prev| prev.min(tick)));
+                    }
+                    Event::Tick(tick) => tick_times.push(tick),
+                    Event::Message { time, .. } => msg_times.push(time),
+                    Event::Resolve(_, _) | Event::Sent(_, _, _) => {}
+                }
+            }
             // Each kind of callback runs at most once per agent per tick.
-            callback_times.push(times_after(&debug, "Tick(", ')').collect());
-            callback_times.push(times_after(&debug, "Message { time: ", ',').collect());
+            callback_times.push(tick_times);
+            callback_times.push(msg_times);
         }
 
         let (end, expected_calls): (DiscreteTime, Vec<DiscreteTime>) = match first_interrupt {
@@ -1146,7 +1147,7 @@ fn sparse_and_dense_agree_across_runs_with_edits_between() {
             let dense_calls = run(&mut dense);
             assert_eq!(sparse_calls, dense_calls, "seed {seed} round {round}");
             assert!(
-                snapshot(&sparse.simulation) == snapshot(&dense.simulation),
+                same_simulation(&sparse.simulation, &dense.simulation, true),
                 "seed {seed} round {round}"
             );
             mutate_between_runs(&mut sparse.simulation, seed, round);
