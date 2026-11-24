@@ -229,31 +229,47 @@ fn recovery_seconds(series: &[(Tick, f64)], warmup: Tick, fault: Tick) -> f64 {
 
 type Records = Vec<TrialRecord<Outcome, Infallible>>;
 
-/// Runs every placement of every scenario. Both placements of a scenario
-/// share one common-random group, so they face identical workload and fault
-/// draws.
+/// Estimates relative CPU cost of one trial for longest-first scheduling.
+fn trial_cost(config: &Config) -> f64 {
+    let effective_duration = if config.copy_tables.is_empty() {
+        config.duration as f64
+    } else {
+        // Copy runs halt 30 s after the last table finishes (~100 MB/s total).
+        let copy_bytes: f64 = config
+            .copy_tables
+            .iter()
+            .map(|table| table.rows as f64 * table.data_bytes_per_row)
+            .sum();
+        ticks(copy_bytes / 100e6 + 30.0).min(config.duration) as f64 * 2.0
+    };
+    effective_duration * (1.0 + config.workload.rows_per_s / 180_000.0)
+}
+
+/// Runs every placement of every scenario across one or more suites in a single
+/// longest-first work-stealing pool. Both placements of a scenario share one
+/// common-random group, so they face identical workload and fault draws.
 ///
-/// A trial depends only on its replay key, so workers claim one trial at a
-/// time, longest first, instead of whole scenarios in fixed chunks: the
-/// slow high-rate scenarios no longer run back to back on a few workers
-/// while the rest sit idle. Records are regrouped in canonical order.
-fn run_scenarios(scenarios: &[(String, Config)], reps: u32) -> Vec<(String, Placement, Records)> {
-    let mut jobs: Vec<(f64, usize, Placement, TrialSpec<Config>)> = Vec::new();
-    for (index, (_, scenario)) in scenarios.iter().enumerate() {
-        for placement in Placement::ALL {
-            let mut config = scenario.clone();
-            config.placement = placement;
-            // Tick cost grows with the commit rate; measured from about
-            // 13 G instructions per 300 s at 100 rows/s to 24 G at 150 k.
-            let cost = config.duration as f64 * (1.0 + config.workload.rows_per_s / 180_000.0);
-            let candidate = CandidateId::new(
-                index as u64 * 2 + u64::from(placement == Placement::WithDestination),
-            );
-            jobs.extend(
-                FixedReplications::new(reps, index as u64)
-                    .trials(candidate, config)
-                    .map(|trial| (cost, index, placement, trial)),
-            );
+/// Running enabled suites in one pool avoids thread-pool barriers between
+/// suites (for example, letting the small copy suite overlap with CDC and
+/// faults) while preserving each suite's exact candidate IDs, RNG streams, and
+/// canonical output order.
+fn run_suites(suites: &[(&[(String, Config)], u32)]) -> Vec<Vec<(String, Placement, Records)>> {
+    let mut jobs: Vec<(f64, usize, usize, Placement, TrialSpec<Config>)> = Vec::new();
+    for (suite_index, &(scenarios, reps)) in suites.iter().enumerate() {
+        for (index, (_, scenario)) in scenarios.iter().enumerate() {
+            for placement in Placement::ALL {
+                let mut config = scenario.clone();
+                config.placement = placement;
+                let cost = trial_cost(&config);
+                let candidate = CandidateId::new(
+                    index as u64 * 2 + u64::from(placement == Placement::WithDestination),
+                );
+                jobs.extend(
+                    FixedReplications::new(reps, index as u64)
+                        .trials(candidate, config)
+                        .map(|trial| (cost, suite_index, index, placement, trial)),
+                );
+            }
         }
     }
     jobs.sort_by(|left, right| right.0.total_cmp(&left.0));
@@ -261,60 +277,79 @@ fn run_scenarios(scenarios: &[(String, Config)], reps: u32) -> Vec<(String, Plac
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
         .min(jobs.len());
-    let mut finished: Vec<(usize, Placement, TrialRecord<Outcome, Infallible>)> =
-        std::thread::scope(|scope| {
-            // Spawn every worker before joining any, or the runs would serialize.
-            #[allow(clippy::needless_collect)]
-            let handles: Vec<_> = (0..workers)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut done = Vec::new();
-                        while let Some((_, index, placement, trial)) =
-                            jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-                        {
-                            let records =
-                                run_serial(MASTER_SEED, [trial.clone()], |config, context| {
-                                    Ok::<_, Infallible>(run_trial(config, context))
-                                })
-                                .unwrap_or_else(|error| {
-                                    panic!("trial identities are unique: {error:?}")
-                                });
-                            done.extend(
-                                records
-                                    .into_iter()
-                                    .map(|record| (*index, *placement, record)),
-                            );
-                        }
-                        done
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .flat_map(|handle| {
-                    handle
-                        .join()
-                        .unwrap_or_else(|_| panic!("a simulation thread panicked"))
-                })
-                .collect()
-        });
-    // Candidate identities order scenarios, then placements.
-    finished.sort_by_key(|(_, _, record)| record.key);
-    let mut results: Vec<(usize, Placement, Records)> = Vec::new();
-    for (index, placement, record) in finished {
-        match results.last_mut() {
+    let run_worker = || {
+        let mut done = Vec::new();
+        while let Some((_, suite_index, index, placement, trial)) =
+            jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        {
+            let records = run_serial(MASTER_SEED, [trial.clone()], |config, context| {
+                Ok::<_, Infallible>(run_trial(config, context))
+            })
+            .unwrap_or_else(|error| panic!("trial identities are unique: {error:?}"));
+            done.extend(
+                records
+                    .into_iter()
+                    .map(|record| (*suite_index, *index, *placement, record)),
+            );
+        }
+        done
+    };
+    let mut finished: Vec<(usize, usize, Placement, TrialRecord<Outcome, Infallible>)> =
+        if workers <= 1 {
+            run_worker()
+        } else {
+            std::thread::scope(|scope| {
+                // Spawn every worker before running or joining any, or the runs would serialize.
+                #[allow(clippy::needless_collect)]
+                let handles: Vec<_> = (1..workers).map(|_| scope.spawn(run_worker)).collect();
+                let mut all = run_worker();
+                for handle in handles {
+                    all.extend(
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| panic!("a simulation thread panicked")),
+                    );
+                }
+                all
+            })
+        };
+    // Suite index, then candidate identities order scenarios, then placements.
+    finished.sort_by_key(|(suite_index, _, _, record)| (*suite_index, record.key));
+    let mut grouped: Vec<Vec<(usize, Placement, Records)>> = vec![Vec::new(); suites.len()];
+    for (suite_index, index, placement, record) in finished {
+        let suite_results = &mut grouped[suite_index];
+        match suite_results.last_mut() {
             Some((last, last_placement, records))
                 if *last == index && *last_placement == placement =>
             {
                 records.push(record);
             }
-            _ => results.push((index, placement, vec![record])),
+            _ => suite_results.push((index, placement, vec![record])),
         }
     }
-    results
+    grouped
         .into_iter()
-        .map(|(index, placement, records)| (scenarios[index].0.clone(), placement, records))
+        .enumerate()
+        .map(|(suite_index, results)| {
+            let scenarios = suites[suite_index].0;
+            results
+                .into_iter()
+                .map(|(index, placement, records)| (scenarios[index].0.clone(), placement, records))
+                .collect()
+        })
         .collect()
+}
+
+/// Runs every placement of every scenario in one suite.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "used by the delivery law test; main runs suites together"
+    )
+)]
+fn run_scenarios(scenarios: &[(String, Config)], reps: u32) -> Vec<(String, Placement, Records)> {
+    run_suites(&[(scenarios, reps)]).pop().unwrap_or_default()
 }
 
 /// Mean of a metric over replications; NaN when no replication produced a
@@ -850,20 +885,39 @@ fn main() {
     let options = parse_options();
     let mode = options.mode.as_str();
     print_assumptions();
-    if matches!(mode, "cdc" | "all") {
-        let scenarios = with_overrides(cdc_scenarios(&options), &options);
-        let results = run_scenarios(&scenarios, options.reps);
-        print_cdc(&results, &scenarios);
+    let cdc =
+        matches!(mode, "cdc" | "all").then(|| with_overrides(cdc_scenarios(&options), &options));
+    let copy = matches!(mode, "copy" | "all")
+        .then(|| with_overrides(copy_scenarios(options.quick), &options));
+    let faults = matches!(mode, "faults" | "all")
+        .then(|| with_overrides(fault_scenarios(options.quick), &options));
+
+    let mut suites: Vec<(&[(String, Config)], u32)> = Vec::new();
+    if let Some(scenarios) = cdc.as_deref() {
+        suites.push((scenarios, options.reps));
     }
-    if matches!(mode, "copy" | "all") {
-        let scenarios = with_overrides(copy_scenarios(options.quick), &options);
-        let results = run_scenarios(&scenarios, options.reps.min(2));
-        print_copy(&results);
+    if let Some(scenarios) = copy.as_deref() {
+        suites.push((scenarios, options.reps.min(2)));
     }
-    if matches!(mode, "faults" | "all") {
-        let scenarios = with_overrides(fault_scenarios(options.quick), &options);
-        let results = run_scenarios(&scenarios, options.reps);
-        print_faults(&results, &scenarios);
+    if let Some(scenarios) = faults.as_deref() {
+        suites.push((scenarios, options.reps));
+    }
+
+    let mut results = run_suites(&suites).into_iter();
+    if let Some(scenarios) = cdc.as_deref() {
+        if let Some(cdc_results) = results.next() {
+            print_cdc(&cdc_results, scenarios);
+        }
+    }
+    if copy.is_some() {
+        if let Some(copy_results) = results.next() {
+            print_copy(&copy_results);
+        }
+    }
+    if let Some(scenarios) = faults.as_deref() {
+        if let Some(faults_results) = results.next() {
+            print_faults(&faults_results, scenarios);
+        }
     }
 }
 
