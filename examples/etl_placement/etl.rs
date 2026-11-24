@@ -22,9 +22,10 @@ use crate::rng::Rng;
 use crate::time::{Tick, per_tick, secs, ticks, to_u64};
 use crate::wire::{ConnId, ConnKind, HttpKind, Op, Payload, Unit, WalChunk};
 use crate::{sink, source};
+use rustc_hash::FxHashMap;
 use simul::agent::{Agent, AgentContext};
 use simul::message::Message;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 pub(crate) const NAME: &str = "etl";
@@ -320,6 +321,121 @@ enum Completion {
     Write { owner: Owner, write: u64 },
 }
 
+/// Disjoint view of `EtlAgent` fields needed while mutating a `StreamLoop` in place.
+struct LoopEnv<'a> {
+    config: &'a Config,
+    recorder: &'a SharedRecorder,
+    net: &'a mut Endpoint,
+    apply_from: &'a [Option<u64>],
+    next_id: &'a mut u64,
+    dest_queue: &'a mut VecDeque<Request>,
+    writes: &'a mut FxHashMap<u64, Write>,
+    next_dest_due: &'a mut Tick,
+    status_debounce_ticks: Tick,
+}
+
+impl LoopEnv<'_> {
+    const fn id(&mut self) -> u64 {
+        let id = *self.next_id;
+        *self.next_id += 1;
+        id
+    }
+
+    fn relevant(&self, id: LoopId, lp: &StreamLoop, chunk: &WalChunk) -> bool {
+        match id {
+            LoopId::Apply => usize::try_from(chunk.table)
+                .ok()
+                .and_then(|table| self.apply_from.get(table).copied().flatten())
+                .is_some_and(|from| chunk.end_lsn == 0 || chunk.end_lsn > from),
+            LoopId::Catchup(_) => {
+                lp.table == Some(chunk.table) && (chunk.end_lsn == 0 || chunk.end_lsn <= lp.until)
+            }
+        }
+    }
+
+    fn send_status(&mut self, lp: &mut StreamLoop, forced: bool, now: Tick) {
+        let Some(conn) = lp.conn else {
+            return;
+        };
+        let flush = lp.checkpoint_lsn();
+        if !forced
+            && flush == lp.last_status_flush
+            && now < lp.last_status_at + self.status_debounce_ticks
+        {
+            return;
+        }
+        send_tracked(
+            self.net,
+            conn,
+            Unit::Status {
+                write: lp.received_lsn,
+                flush,
+            },
+        );
+        lp.last_status_at = now;
+        lp.last_status_flush = flush;
+    }
+
+    fn request_flush(&mut self, id: LoopId, lp: &mut StreamLoop, now: Tick) {
+        if lp.filling.rows == 0 {
+            lp.filling = Batch::default();
+            return;
+        }
+        if lp.inflight.is_none() && lp.checkpoint.is_none() && lp.queued.is_none() {
+            let batch = std::mem::take(&mut lp.filling);
+            self.dispatch(id, lp, batch, now);
+        } else if lp.queued.is_none() {
+            lp.queued = Some(std::mem::take(&mut lp.filling));
+            lp.paused = true;
+        }
+    }
+
+    fn dispatch(&mut self, id: LoopId, lp: &mut StreamLoop, mut batch: Batch, now: Tick) {
+        let parts = u64::from(batch.tables.count_ones())
+            .min(self.config.sink.max_parallel_requests)
+            .max(1);
+        let each = batch.request_bytes / parts as f64;
+        let write = self.submit_write(id.owner(), parts, each, HttpKind::Insert);
+        self.recorder.borrow_mut().register_write(
+            write,
+            parts,
+            std::mem::take(&mut batch.rows_by_table),
+        );
+        lp.inflight = Some((write, batch, now));
+    }
+
+    fn submit_write(&mut self, owner: Owner, parts: u64, bytes_each: f64, kind: HttpKind) -> u64 {
+        let write = self.id();
+        let rounded = to_u64(bytes_each.round());
+        for _ in 0..parts {
+            let id = self.id();
+            self.dest_queue.push_back(Request {
+                id,
+                write,
+                bytes: rounded,
+                kind,
+                of: write,
+            });
+        }
+        self.writes.insert(
+            write,
+            Write {
+                owner,
+                parts_left: parts,
+            },
+        );
+        *self.next_dest_due = 0;
+        write
+    }
+
+    fn after_flush(&mut self, id: LoopId, lp: &mut StreamLoop, now: Tick) {
+        if let Some(batch) = lp.queued.take() {
+            self.dispatch(id, lp, batch, now);
+        }
+        lp.paused = false;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct EtlAgent {
     config: Rc<Config>,
@@ -328,6 +444,18 @@ pub(crate) struct EtlAgent {
     rng: Rng,
     postgres: usize,
     destination: usize,
+    /// Precomputed tick/rate/size constants derived from `config`.
+    decode_rows_per_tick: f64,
+    max_fill_ticks: Tick,
+    heartbeat_ticks: Tick,
+    status_debounce_ticks: Tick,
+    store_idle_timeout_ticks: Tick,
+    keepalive_timeout_ticks: Tick,
+    copy_parse_per_tick: f64,
+    decoded_per_row: f64,
+    request_per_row: f64,
+    copy_tail_ticks: Tick,
+    copy_table_rates: Vec<(f64, f64)>,
     up: bool,
     restart_at: Option<Tick>,
     next_crash: usize,
@@ -335,20 +463,25 @@ pub(crate) struct EtlAgent {
     boot_script: Option<Script>,
     apply: Apply,
     workers: Vec<Option<Worker>>,
+    active_workers: usize,
     sync_queue: VecDeque<usize>,
     /// Apply handles a table's commits after this LSN once it is ready.
     apply_from: Vec<Option<u64>>,
     sync_done: Vec<Option<u64>>,
-    conn_owner: BTreeMap<ConnId, Owner>,
-    query_owner: BTreeMap<u64, Owner>,
+    conn_owner: FxHashMap<ConnId, Owner>,
+    query_owner: FxHashMap<u64, Owner>,
     next_id: u64,
     store_conns: Vec<StoreConn>,
     store_queue: VecDeque<StoreJob>,
+    next_store_due: Tick,
     dest_conns: Vec<DestConn>,
     dest_queue: VecDeque<Request>,
-    writes: BTreeMap<u64, Write>,
+    next_dest_due: Tick,
+    writes: FxHashMap<u64, Write>,
     polls: Vec<(Tick, Request)>,
     completions: Vec<Completion>,
+    copy_done_at: Option<Tick>,
+    last_reported_cross_region: f64,
     events_buf: Vec<NetEvent>,
 }
 
@@ -366,11 +499,43 @@ impl EtlAgent {
             config.etl_nic,
             vec![postgres, destination],
         );
+        let decode_rows_per_tick = per_tick(config.etl.decode_rows_per_s);
+        let max_fill_ticks = ticks(config.etl.max_fill_ms / 1000.0);
+        let heartbeat_ticks = ticks(0.6 * config.source.wal_sender_timeout_s);
+        let status_debounce_ticks = ticks(config.etl.status_debounce_s);
+        let store_idle_timeout_ticks = ticks(config.etl.store_idle_timeout_s);
+        let keepalive_timeout_ticks = ticks(config.sink.keepalive_timeout_s);
+        let copy_parse_per_tick = per_tick(config.etl.copy_parse_bytes_per_s);
+        let data_bytes = config.workload.data_bytes_per_row;
+        let decoded_per_row = config.decoded_bytes(data_bytes);
+        let request_per_row = config.request_bytes(data_bytes);
+        let copy_tail_ticks = ticks(30.0);
+        let copy_table_rates = config
+            .copy_tables
+            .iter()
+            .map(|spec| {
+                (
+                    config.decoded_bytes(spec.data_bytes_per_row),
+                    config.request_bytes(spec.data_bytes_per_row),
+                )
+            })
+            .collect();
         let mut agent = Self {
             postgres: net.peer_index(source::NAME),
             destination: net.peer_index(sink::NAME),
             net,
             rng,
+            decode_rows_per_tick,
+            max_fill_ticks,
+            heartbeat_ticks,
+            status_debounce_ticks,
+            store_idle_timeout_ticks,
+            keepalive_timeout_ticks,
+            copy_parse_per_tick,
+            decoded_per_row,
+            request_per_row,
+            copy_tail_ticks,
+            copy_table_rates,
             up: false,
             restart_at: Some(0),
             next_crash: 0,
@@ -378,19 +543,24 @@ impl EtlAgent {
             boot_script: None,
             apply: Apply::default(),
             workers: Vec::new(),
+            active_workers: 0,
             sync_queue: VecDeque::new(),
             apply_from: Vec::new(),
             sync_done: Vec::new(),
-            conn_owner: BTreeMap::new(),
-            query_owner: BTreeMap::new(),
+            conn_owner: FxHashMap::default(),
+            query_owner: FxHashMap::default(),
             next_id: 1,
             store_conns: Vec::new(),
             store_queue: VecDeque::new(),
+            next_store_due: Tick::MAX,
             dest_conns: Vec::new(),
             dest_queue: VecDeque::new(),
-            writes: BTreeMap::new(),
+            next_dest_due: Tick::MAX,
+            writes: FxHashMap::default(),
             polls: Vec::new(),
             completions: Vec::new(),
+            copy_done_at: None,
+            last_reported_cross_region: 0.0,
             events_buf: Vec::new(),
             config,
             recorder,
@@ -410,6 +580,7 @@ impl EtlAgent {
             VecDeque::new()
         };
         self.workers = vec![None; self.config.etl.table_sync_workers];
+        self.active_workers = 0;
     }
 
     const fn id(&mut self) -> u64 {
@@ -445,8 +616,10 @@ impl EtlAgent {
         self.query_owner.clear();
         self.store_conns.clear();
         self.store_queue.clear();
+        self.next_store_due = Tick::MAX;
         self.dest_conns.clear();
         self.dest_queue.clear();
+        self.next_dest_due = Tick::MAX;
         self.writes.clear();
         self.polls.clear();
         self.completions.clear();
@@ -540,7 +713,7 @@ impl EtlAgent {
                 self.query(owner, Op::StartReplication, from, 0)
             }
             Step::Store(op) | Step::CaptureStore(op) => Wait::Store(self.submit_store(owner, op)),
-            Step::Ddl => Wait::Write(self.submit_write(owner, &[2000.0], HttpKind::Ddl)),
+            Step::Ddl => Wait::Write(self.submit_write(owner, 1, 2000.0, HttpKind::Ddl)),
         }
     }
 
@@ -610,28 +783,11 @@ impl EtlAgent {
         }
     }
 
-    fn take_loop(&mut self, id: LoopId) -> Option<StreamLoop> {
-        match id {
-            LoopId::Apply => Some(std::mem::take(&mut self.apply.lp)),
-            LoopId::Catchup(worker) => self.workers[worker]
-                .as_mut()
-                .map(|entry| std::mem::take(&mut entry.lp)),
-        }
-    }
-
-    fn put_loop(&mut self, id: LoopId, lp: StreamLoop) {
-        match id {
-            LoopId::Apply => self.apply.lp = lp,
-            LoopId::Catchup(worker) => {
-                if let Some(entry) = self.workers[worker].as_mut() {
-                    entry.lp = lp;
-                }
-            }
-        }
-    }
-
     fn batch_slots(&self) -> usize {
         let mut slots = 2;
+        if self.active_workers == 0 {
+            return slots;
+        }
         for worker in self.workers.iter().flatten() {
             slots += worker
                 .children
@@ -645,27 +801,16 @@ impl EtlAgent {
         slots
     }
 
-    fn relevant(&self, id: LoopId, lp: &StreamLoop, chunk: &WalChunk) -> bool {
-        match id {
-            LoopId::Apply => usize::try_from(chunk.table)
-                .ok()
-                .and_then(|table| self.apply_from.get(table).copied().flatten())
-                .is_some_and(|from| chunk.end_lsn == 0 || chunk.end_lsn > from),
-            LoopId::Catchup(_) => {
-                lp.table == Some(chunk.table) && (chunk.end_lsn == 0 || chunk.end_lsn <= lp.until)
-            }
-        }
-    }
-
     /// Runs `run_loop`'s tick in place when loop `id` has nothing to read,
     /// flush, credit, or report, and returns whether it did. Such a tick
     /// only pays down decode debt and counts apply pauses and blocks. Most
-    /// ticks are quiet, and running them here avoids moving the loop out of
-    /// the agent and back. The conditions mirror `run_loop`'s.
+    /// ticks are quiet, and running them here avoids entering the full tick
+    /// path. The conditions mirror `run_loop_active`'s.
+    #[inline]
     fn quiet_loop_tick(&mut self, id: LoopId, now: Tick) -> bool {
-        let rows_per_tick = per_tick(self.config.etl.decode_rows_per_s);
-        let deadline = ticks(self.config.etl.max_fill_ms / 1000.0);
-        let heartbeat = ticks(0.6 * self.config.source.wal_sender_timeout_s);
+        let rows_per_tick = self.decode_rows_per_tick;
+        let deadline = self.max_fill_ticks;
+        let heartbeat = self.heartbeat_ticks;
         let (lp, streaming) = match id {
             LoopId::Apply => {
                 let streaming =
@@ -705,7 +850,7 @@ impl EtlAgent {
             };
         }
         let paused = lp.paused || lp.checkpoint.is_some();
-        if id == LoopId::Apply {
+        if id == LoopId::Apply && (paused || self.apply.blocked_by.is_some()) {
             let mut recorder = self.recorder.borrow_mut();
             if paused {
                 recorder.paused_ticks += 1;
@@ -717,6 +862,7 @@ impl EtlAgent {
         true
     }
 
+    #[inline]
     fn run_loop(&mut self, id: LoopId, now: Tick) {
         if self.quiet_loop_tick(id, now) {
             if let LoopId::Catchup(worker) = id {
@@ -724,26 +870,45 @@ impl EtlAgent {
             }
             return;
         }
-        let Some(mut lp) = self.take_loop(id) else {
-            return;
-        };
+        self.run_loop_active(id, now);
+    }
+
+    #[inline(never)]
+    fn run_loop_active(&mut self, id: LoopId, now: Tick) {
         let target = self.config.batch_target_bytes(self.batch_slots());
-        let rows_per_tick = per_tick(self.config.etl.decode_rows_per_s);
-        let data_bytes = self.config.workload.data_bytes_per_row;
-        let decoded_per_row = self.config.decoded_bytes(data_bytes);
-        let request_per_row = self.config.request_bytes(data_bytes);
+        let rows_per_tick = self.decode_rows_per_tick;
+        let decoded_per_row = self.decoded_per_row;
+        let request_per_row = self.request_per_row;
+        let deadline = self.max_fill_ticks;
+        let heartbeat = self.heartbeat_ticks;
+        let apply_blocked = self.apply.blocked_by.is_some();
         let streaming = match id {
-            LoopId::Apply => {
-                self.apply.state == ApplyState::Streaming && self.apply.blocked_by.is_none()
-            }
+            LoopId::Apply => self.apply.state == ApplyState::Streaming && !apply_blocked,
             // The connection exists from the handshake on; the stream starts
             // once the catch-up script's START_REPLICATION has returned.
+            LoopId::Catchup(worker) => self.workers[worker]
+                .as_ref()
+                .is_some_and(|entry| entry.lp.conn.is_some() && entry.catchup_script.is_none()),
+        };
+        let lp = match id {
+            LoopId::Apply => &mut self.apply.lp,
             LoopId::Catchup(worker) => {
-                lp.conn.is_some()
-                    && self.workers[worker]
-                        .as_ref()
-                        .is_some_and(|entry| entry.catchup_script.is_none())
+                let Some(entry) = self.workers[worker].as_mut() else {
+                    return;
+                };
+                &mut entry.lp
             }
+        };
+        let mut env = LoopEnv {
+            config: &self.config,
+            recorder: &self.recorder,
+            net: &mut self.net,
+            apply_from: &self.apply_from,
+            next_id: &mut self.next_id,
+            dest_queue: &mut self.dest_queue,
+            writes: &mut self.writes,
+            next_dest_due: &mut self.next_dest_due,
+            status_debounce_ticks: self.status_debounce_ticks,
         };
         let reading = streaming && lp.checkpoint.is_none() && !lp.paused && !lp.reached();
         if reading {
@@ -760,14 +925,14 @@ impl EtlAgent {
                 match unit {
                     Unit::Keepalive { wal_end, reply } => {
                         lp.received_lsn = lp.received_lsn.max(wal_end);
-                        self.send_status(&mut lp, reply, now);
+                        env.send_status(lp, reply, now);
                     }
                     Unit::Wal(chunk) => {
                         budget -= chunk.rows as f64;
                         if chunk.commits > 0 {
                             lp.received_lsn = lp.received_lsn.max(chunk.end_lsn);
                         }
-                        if self.relevant(id, &lp, &chunk) {
+                        if env.relevant(id, lp, &chunk) {
                             let batch = &mut lp.filling;
                             batch.first_at.get_or_insert(now);
                             batch.rows += chunk.rows;
@@ -789,7 +954,7 @@ impl EtlAgent {
                             });
                         }
                         if lp.filling.decoded >= target {
-                            self.request_flush(id, &mut lp, now);
+                            env.request_flush(id, lp, now);
                         }
                     }
                     other @ (Unit::Syn { .. }
@@ -820,13 +985,12 @@ impl EtlAgent {
             };
         }
         if lp.checkpoint.is_none() {
-            let deadline = ticks(self.config.etl.max_fill_ms / 1000.0);
             let due = lp
                 .filling
                 .first_at
                 .is_some_and(|first| now >= first + deadline);
             if due || (lp.reached() && lp.filling.rows > 0) {
-                self.request_flush(id, &mut lp, now);
+                env.request_flush(id, lp, now);
             }
         }
         if let Some(conn) = lp.conn {
@@ -835,7 +999,7 @@ impl EtlAgent {
                 || (unread > 0.0 && now >= lp.last_credit_at + CREDIT_IDLE_TICKS)
             {
                 send_tracked(
-                    &mut self.net,
+                    env.net,
                     conn,
                     Unit::Credit {
                         consumed: to_u64(lp.consumed),
@@ -844,79 +1008,34 @@ impl EtlAgent {
                 lp.credited = lp.consumed;
                 lp.last_credit_at = now;
             }
-            let heartbeat = ticks(0.6 * self.config.source.wal_sender_timeout_s);
             if streaming && now >= lp.last_status_at + heartbeat {
-                self.send_status(&mut lp, true, now);
+                env.send_status(lp, true, now);
             }
         }
-        if id == LoopId::Apply {
-            let mut recorder = self.recorder.borrow_mut();
-            if lp.paused || lp.checkpoint.is_some() {
+        let paused = lp.paused || lp.checkpoint.is_some();
+        if id == LoopId::Apply && (paused || apply_blocked) {
+            let mut recorder = env.recorder.borrow_mut();
+            if paused {
                 recorder.paused_ticks += 1;
             }
-            if self.apply.blocked_by.is_some() {
+            if apply_blocked {
                 recorder.blocked_ticks += 1;
             }
         }
-        self.put_loop(id, lp);
         if let LoopId::Catchup(worker) = id {
             self.check_catchup_done(worker, now);
         }
     }
 
-    fn send_status(&mut self, lp: &mut StreamLoop, forced: bool, now: Tick) {
-        let Some(conn) = lp.conn else {
-            return;
-        };
-        let flush = lp.checkpoint_lsn();
-        let debounce = ticks(self.config.etl.status_debounce_s);
-        if !forced && flush == lp.last_status_flush && now < lp.last_status_at + debounce {
-            return;
-        }
-        send_tracked(
-            &mut self.net,
-            conn,
-            Unit::Status {
-                write: lp.received_lsn,
-                flush,
-            },
-        );
-        lp.last_status_at = now;
-        lp.last_status_flush = flush;
-    }
-
-    fn request_flush(&mut self, id: LoopId, lp: &mut StreamLoop, now: Tick) {
-        if lp.filling.rows == 0 {
-            lp.filling = Batch::default();
-            return;
-        }
-        if lp.inflight.is_none() && lp.checkpoint.is_none() && lp.queued.is_none() {
-            let batch = std::mem::take(&mut lp.filling);
-            self.dispatch(id, lp, batch, now);
-        } else if lp.queued.is_none() {
-            lp.queued = Some(std::mem::take(&mut lp.filling));
-            lp.paused = true;
-        }
-    }
-
-    fn dispatch(&mut self, id: LoopId, lp: &mut StreamLoop, mut batch: Batch, now: Tick) {
-        let parts = u64::from(batch.tables.count_ones())
-            .min(self.config.sink.max_parallel_requests)
-            .max(1);
-        let each = batch.request_bytes / parts as f64;
-        let sizes = vec![each; usize::try_from(parts).unwrap_or(1)];
-        let write = self.submit_write(id.owner(), &sizes, HttpKind::Insert);
-        self.recorder.borrow_mut().register_write(
-            write,
-            parts,
-            std::mem::take(&mut batch.rows_by_table),
-        );
-        lp.inflight = Some((write, batch, now));
-    }
-
     fn on_loop_write(&mut self, id: LoopId, write: u64, now: Tick) {
-        let Some(mut lp) = self.take_loop(id) else {
-            return;
+        let lp = match id {
+            LoopId::Apply => &mut self.apply.lp,
+            LoopId::Catchup(worker) => {
+                let Some(entry) = self.workers[worker].as_mut() else {
+                    return;
+                };
+                &mut entry.lp
+            }
         };
         match lp.inflight.take() {
             Some((inflight, batch, started)) if inflight == write => {
@@ -928,20 +1047,42 @@ impl EtlAgent {
                 }
                 if batch.commit_lsn > 0 {
                     lp.last_flush_lsn = lp.last_flush_lsn.max(batch.commit_lsn);
-                    let job = self.submit_store(id.owner(), StoreOp::Checkpoint(batch.commit_lsn));
+                    let job = Self::push_store_job(
+                        &mut self.next_id,
+                        &mut self.store_queue,
+                        &mut self.next_store_due,
+                        id.owner(),
+                        StoreOp::Checkpoint(batch.commit_lsn),
+                    );
                     lp.checkpoint = Some((job, batch.commit_lsn, now));
                 } else {
-                    self.after_flush(id, &mut lp, now);
+                    let mut env = LoopEnv {
+                        config: &self.config,
+                        recorder: &self.recorder,
+                        net: &mut self.net,
+                        apply_from: &self.apply_from,
+                        next_id: &mut self.next_id,
+                        dest_queue: &mut self.dest_queue,
+                        writes: &mut self.writes,
+                        next_dest_due: &mut self.next_dest_due,
+                        status_debounce_ticks: self.status_debounce_ticks,
+                    };
+                    env.after_flush(id, lp, now);
                 }
             }
             other => lp.inflight = other,
         }
-        self.put_loop(id, lp);
     }
 
     fn on_loop_checkpoint(&mut self, id: LoopId, job: u64, now: Tick) {
-        let Some(mut lp) = self.take_loop(id) else {
-            return;
+        let lp = match id {
+            LoopId::Apply => &mut self.apply.lp,
+            LoopId::Catchup(worker) => {
+                let Some(entry) = self.workers[worker].as_mut() else {
+                    return;
+                };
+                &mut entry.lp
+            }
         };
         match lp.checkpoint.take() {
             Some((pending, lsn, started)) if pending == job => {
@@ -951,47 +1092,72 @@ impl EtlAgent {
                     .record(secs(now - started), 1);
                 let promotion = if id == LoopId::Apply {
                     self.apply.stored_checkpoint = self.apply.stored_checkpoint.max(lsn);
-                    self.promote_ready(now)
+                    Self::promote_ready_in(
+                        self.apply.stored_checkpoint,
+                        &mut self.sync_done,
+                        &self.recorder,
+                        &mut self.copy_done_at,
+                        &mut self.next_id,
+                        &mut self.store_queue,
+                        &mut self.next_store_due,
+                        now,
+                    )
                 } else {
                     None
                 };
-                match promotion {
-                    Some(next) => lp.checkpoint = Some((next, lsn, now)),
-                    None => self.after_flush(id, &mut lp, now),
+                if let Some(next) = promotion {
+                    lp.checkpoint = Some((next, lsn, now));
+                } else {
+                    let mut env = LoopEnv {
+                        config: &self.config,
+                        recorder: &self.recorder,
+                        net: &mut self.net,
+                        apply_from: &self.apply_from,
+                        next_id: &mut self.next_id,
+                        dest_queue: &mut self.dest_queue,
+                        writes: &mut self.writes,
+                        next_dest_due: &mut self.next_dest_due,
+                        status_debounce_ticks: self.status_debounce_ticks,
+                    };
+                    env.after_flush(id, lp, now);
                 }
             }
             other => lp.checkpoint = other,
         }
-        self.put_loop(id, lp);
     }
 
     /// Moves tables from `SyncDone` to `Ready` once the apply checkpoint has
     /// passed their catch-up LSN; returns the store job to await.
-    fn promote_ready(&mut self, now: Tick) -> Option<u64> {
-        let stored = self.apply.stored_checkpoint;
-        let table = self
-            .sync_done
+    #[allow(clippy::too_many_arguments)]
+    fn promote_ready_in(
+        stored: u64,
+        sync_done: &mut [Option<u64>],
+        recorder: &SharedRecorder,
+        copy_done_at: &mut Option<Tick>,
+        next_id: &mut u64,
+        store_queue: &mut VecDeque<StoreJob>,
+        next_store_due: &mut Tick,
+        now: Tick,
+    ) -> Option<u64> {
+        let table = sync_done
             .iter()
             .position(|done| done.is_some_and(|lsn| lsn <= stored))?;
-        self.sync_done[table] = None;
-        self.recorder.borrow_mut().tables[table].ready = Some(now);
-        if self
-            .recorder
-            .borrow()
-            .tables
-            .iter()
-            .all(|timeline| timeline.ready.is_some())
+        sync_done[table] = None;
         {
-            self.recorder.borrow_mut().copy_done_at = Some(now);
+            let mut rec = recorder.borrow_mut();
+            rec.tables[table].ready = Some(now);
+            if rec.tables.iter().all(|timeline| timeline.ready.is_some()) {
+                rec.copy_done_at = Some(now);
+                *copy_done_at = Some(now);
+            }
         }
-        Some(self.submit_store(Owner::Apply, StoreOp::TableState(table as u64, STATE_READY)))
-    }
-
-    fn after_flush(&mut self, id: LoopId, lp: &mut StreamLoop, now: Tick) {
-        if let Some(batch) = lp.queued.take() {
-            self.dispatch(id, lp, batch, now);
-        }
-        lp.paused = false;
+        Some(Self::push_store_job(
+            next_id,
+            store_queue,
+            next_store_due,
+            Owner::Apply,
+            StoreOp::TableState(table as u64, STATE_READY),
+        ))
     }
 
     // ---- table sync -------------------------------------------------------
@@ -1008,6 +1174,7 @@ impl EtlAgent {
                 return;
             };
             self.recorder.borrow_mut().tables[table].copy_started = Some(now);
+            self.active_workers += 1;
             self.workers[worker] = Some(Worker {
                 table,
                 phase: Phase::Setup,
@@ -1097,6 +1264,7 @@ impl EtlAgent {
                 let until = entry.lp.until;
                 let repl = entry.repl.take();
                 self.workers[worker] = None;
+                self.active_workers -= 1;
                 if let Some(conn) = repl {
                     self.conn_owner.remove(&conn);
                     self.net.close(conn);
@@ -1158,28 +1326,45 @@ impl EtlAgent {
         }
     }
 
-    fn run_child(&mut self, worker: usize, child: usize, now: Tick) {
-        let slots = self.batch_slots();
-        let target = self.config.batch_target_bytes(slots);
-        let parse_per_tick = per_tick(self.config.etl.copy_parse_bytes_per_s);
-        let deadline = ticks(self.config.etl.max_fill_ms / 1000.0);
-        let Some(entry) = self.workers[worker].as_ref() else {
-            return;
+    fn run_workers(&mut self, now: Tick) {
+        let mut target = self.config.batch_target_bytes(self.batch_slots());
+        for worker in 0..self.workers.len() {
+            let Some(entry) = self.workers[worker].as_ref() else {
+                continue;
+            };
+            if entry.phase == Phase::Catchup {
+                self.run_loop(LoopId::Catchup(worker), now);
+                target = self.config.batch_target_bytes(self.batch_slots());
+            }
+            let children = self.workers[worker]
+                .as_ref()
+                .map_or(0, |entry| entry.children.len());
+            for child in 0..children {
+                if self.run_child(worker, child, now, target) {
+                    target = self.config.batch_target_bytes(self.batch_slots());
+                }
+            }
+        }
+    }
+
+    /// Advances one copy child; returns whether its partition finished (which
+    /// may change `batch_slots`).
+    fn run_child(&mut self, worker: usize, child: usize, now: Tick, target: f64) -> bool {
+        let parse_per_tick = self.copy_parse_per_tick;
+        let deadline = self.max_fill_ticks;
+        let Some(entry) = self.workers[worker].as_mut() else {
+            return false;
         };
-        let spec = self.config.copy_tables[entry.table];
-        let decoded_per_row = self.config.decoded_bytes(spec.data_bytes_per_row);
-        let request_per_row = self.config.request_bytes(spec.data_bytes_per_row);
-        let Some(state) = self.workers[worker]
-            .as_mut()
-            .and_then(|entry| entry.children.get_mut(child))
-        else {
-            return;
+        let table = entry.table;
+        let Some(state) = entry.children.get_mut(child) else {
+            return false;
         };
         if !state.streaming {
-            return;
+            return false;
         }
         let mut write = None;
         if state.writing.is_none() {
+            let (decoded_per_row, request_per_row) = self.copy_table_rates[table];
             let mut budget = state.carry + parse_per_tick;
             let mut next = if budget > 0.0 {
                 state.unread.pop_front()
@@ -1246,7 +1431,8 @@ impl EtlAgent {
         if let Some((request_bytes, wire)) = write {
             let id = self.submit_write(
                 Owner::Child(worker, child),
-                &[request_bytes],
+                1,
+                request_bytes,
                 HttpKind::Insert,
             );
             if let Some(state) = self.workers[worker]
@@ -1259,6 +1445,7 @@ impl EtlAgent {
         if finished_part {
             self.next_partition(worker, child, now);
         }
+        finished_part
     }
 
     fn on_child_write(&mut self, worker: usize, child: usize, write: u64) {
@@ -1298,15 +1485,33 @@ impl EtlAgent {
 
     // ---- state store pool ---------------------------------------------------
 
-    fn submit_store(&mut self, owner: Owner, op: StoreOp) -> u64 {
-        let id = self.id();
-        self.store_queue.push_back(StoreJob {
+    fn push_store_job(
+        next_id: &mut u64,
+        store_queue: &mut VecDeque<StoreJob>,
+        next_store_due: &mut Tick,
+        owner: Owner,
+        op: StoreOp,
+    ) -> u64 {
+        let id = *next_id;
+        *next_id += 1;
+        store_queue.push_back(StoreJob {
             id,
             owner,
             statements: op.statements(),
             value: 0,
         });
+        *next_store_due = 0;
         id
+    }
+
+    fn submit_store(&mut self, owner: Owner, op: StoreOp) -> u64 {
+        Self::push_store_job(
+            &mut self.next_id,
+            &mut self.store_queue,
+            &mut self.next_store_due,
+            owner,
+            op,
+        )
     }
 
     fn send_next_statement(&mut self, index: usize) {
@@ -1321,7 +1526,7 @@ impl EtlAgent {
     }
 
     fn run_store_pool(&mut self, now: Tick) {
-        let idle_timeout = ticks(self.config.etl.store_idle_timeout_s);
+        let idle_timeout = self.store_idle_timeout_ticks;
         let mut index = 0;
         while index < self.store_conns.len() {
             let entry = &self.store_conns[index];
@@ -1362,6 +1567,16 @@ impl EtlAgent {
                 idle_since: now,
             });
         }
+        self.next_store_due = if self.store_queue.is_empty() {
+            self.store_conns
+                .iter()
+                .filter(|entry| entry.open && entry.job.is_none())
+                .map(|entry| entry.idle_since.saturating_add(idle_timeout))
+                .min()
+                .unwrap_or(Tick::MAX)
+        } else {
+            0
+        };
     }
 
     fn on_store_reply(&mut self, index: usize, value: u64, now: Tick) {
@@ -1377,6 +1592,7 @@ impl EtlAgent {
         if job.statements.is_empty() {
             if let Some(done) = entry.job.take() {
                 entry.idle_since = now;
+                self.next_store_due = 0;
                 self.completions.push(Completion::Store {
                     owner: done.owner,
                     job: done.id,
@@ -1390,14 +1606,15 @@ impl EtlAgent {
 
     // ---- destination client pool -------------------------------------------
 
-    fn submit_write(&mut self, owner: Owner, sizes: &[f64], kind: HttpKind) -> u64 {
+    fn submit_write(&mut self, owner: Owner, parts: u64, bytes_each: f64, kind: HttpKind) -> u64 {
         let write = self.id();
-        for &bytes in sizes {
+        let rounded = to_u64(bytes_each.round());
+        for _ in 0..parts {
             let id = self.id();
             self.dest_queue.push_back(Request {
                 id,
                 write,
-                bytes: to_u64(bytes.round()),
+                bytes: rounded,
                 kind,
                 of: write,
             });
@@ -1406,9 +1623,10 @@ impl EtlAgent {
             write,
             Write {
                 owner,
-                parts_left: sizes.len() as u64,
+                parts_left: parts,
             },
         );
+        self.next_dest_due = 0;
         write
     }
 
@@ -1422,7 +1640,7 @@ impl EtlAgent {
                 index += 1;
             }
         }
-        let keepalive = ticks(self.config.sink.keepalive_timeout_s);
+        let keepalive = self.keepalive_timeout_ticks;
         let mut index = 0;
         while index < self.dest_conns.len() {
             let entry = &self.dest_conns[index];
@@ -1483,6 +1701,24 @@ impl EtlAgent {
                 idle_since: now,
             });
         }
+        self.next_dest_due = if self.dest_queue.is_empty() {
+            let next_poll = self
+                .polls
+                .iter()
+                .map(|&(at, _)| at)
+                .min()
+                .unwrap_or(Tick::MAX);
+            let next_idle = self
+                .dest_conns
+                .iter()
+                .filter(|entry| entry.open && entry.request.is_none())
+                .map(|entry| entry.idle_since.saturating_add(keepalive))
+                .min()
+                .unwrap_or(Tick::MAX);
+            next_poll.min(next_idle)
+        } else {
+            0
+        };
     }
 
     fn on_http_response(&mut self, conn: ConnId, id: u64, durable_at: Tick, now: Tick) {
@@ -1493,6 +1729,7 @@ impl EtlAgent {
             return;
         };
         entry.idle_since = now;
+        self.next_dest_due = 0;
         if durable_at == 0 {
             if let Durability::Polled { interval_s, .. } = self.config.sink.durability {
                 let poll_id = self.id();
@@ -1536,11 +1773,13 @@ impl EtlAgent {
                 if let Some(entry) = self.store_conns.iter_mut().find(|entry| entry.conn == conn) {
                     entry.open = true;
                     entry.idle_since = now;
+                    self.next_store_due = 0;
                 } else if let Some(entry) =
                     self.dest_conns.iter_mut().find(|entry| entry.conn == conn)
                 {
                     entry.open = true;
                     entry.idle_since = now;
+                    self.next_dest_due = 0;
                 } else if let Some(&owner) = self.conn_owner.get(&conn) {
                     self.resume(owner, Wait::Conn(conn), 0, now);
                 }
@@ -1568,6 +1807,7 @@ impl EtlAgent {
             if let Some(job) = entry.job {
                 self.store_queue.push_front(job);
             }
+            self.next_store_due = 0;
             return;
         }
         if let Some(index) = self.dest_conns.iter().position(|entry| entry.conn == conn) {
@@ -1575,6 +1815,7 @@ impl EtlAgent {
             if let Some(request) = entry.request {
                 self.dest_queue.push_front(request);
             }
+            self.next_dest_due = 0;
             return;
         }
         match self.conn_owner.remove(&conn) {
@@ -1602,16 +1843,13 @@ impl EtlAgent {
                 self.on_http_response(conn, id, durable_at, now);
             }
             Unit::Wal(_) | Unit::Keepalive { .. } => {
-                let target = match self.conn_owner.get(&conn) {
-                    Some(Owner::Apply) => Some(LoopId::Apply),
-                    Some(Owner::Catchup(worker)) => Some(LoopId::Catchup(*worker)),
-                    _ => None,
-                };
-                if let Some(id) = target {
-                    if let Some(mut lp) = self.take_loop(id) {
-                        lp.unread_bytes += unit.wire_bytes() as f64;
-                        lp.unread.push_back(unit);
-                        self.put_loop(id, lp);
+                if self.apply.lp.conn == Some(conn) {
+                    self.apply.lp.unread_bytes += unit.wire_bytes() as f64;
+                    self.apply.lp.unread.push_back(unit);
+                } else if let Some(&Owner::Catchup(worker)) = self.conn_owner.get(&conn) {
+                    if let Some(entry) = self.workers[worker].as_mut() {
+                        entry.lp.unread_bytes += unit.wire_bytes() as f64;
+                        entry.lp.unread.push_back(unit);
                     }
                 }
             }
@@ -1693,7 +1931,9 @@ impl Agent<Payload> for EtlAgent {
             for &event in &events {
                 self.on_event(event, now);
             }
-            self.drain_completions(now);
+            if !self.completions.is_empty() {
+                self.drain_completions(now);
+            }
         }
         events.clear();
         self.events_buf = events;
@@ -1716,34 +1956,33 @@ impl Agent<Payload> for EtlAgent {
                     self.start_apply(now);
                 }
             }
-            self.start_workers(now);
-            self.run_loop(LoopId::Apply, now);
-            for worker in 0..self.workers.len() {
-                let Some(entry) = self.workers[worker].as_ref() else {
-                    continue;
-                };
-                if entry.phase == Phase::Catchup {
-                    self.run_loop(LoopId::Catchup(worker), now);
-                }
-                let children = self.workers[worker]
-                    .as_ref()
-                    .map_or(0, |entry| entry.children.len());
-                for child in 0..children {
-                    self.run_child(worker, child, now);
-                }
+            if !self.sync_queue.is_empty() && self.apply.state == ApplyState::Streaming {
+                self.start_workers(now);
             }
-            self.run_store_pool(now);
-            self.run_dest_pool(now);
-            self.drain_completions(now);
+            self.run_loop(LoopId::Apply, now);
+            if self.active_workers > 0 {
+                self.run_workers(now);
+            }
+            if now >= self.next_store_due {
+                self.run_store_pool(now);
+            }
+            if now >= self.next_dest_due {
+                self.run_dest_pool(now);
+            }
+            if !self.completions.is_empty() {
+                self.drain_completions(now);
+            }
         }
-        let copy_complete = {
-            let mut recorder = self.recorder.borrow_mut();
-            recorder.cross_region_bytes[1] = self.net.cross_region_bytes;
-            recorder.copy_done_at
-        };
+        if self.net.cross_region_bytes.to_bits() != self.last_reported_cross_region.to_bits() {
+            self.last_reported_cross_region = self.net.cross_region_bytes;
+            self.recorder.borrow_mut().cross_region_bytes[1] = self.net.cross_region_bytes;
+        }
         // A copy run ends once every table has been ready for 30 s, so the
         // report also covers streaming right after the handover.
-        if copy_complete.is_some_and(|done| now >= done + ticks(30.0)) {
+        if self
+            .copy_done_at
+            .is_some_and(|done| now >= done + self.copy_tail_ticks)
+        {
             ctx.send_halt_interrupt("every table is ready");
         }
         self.net.pump(ctx, now, &self.config.faults, &mut self.rng);
