@@ -138,16 +138,19 @@ impl QuantileReducer {
     ///
     /// Returns [`ReduceError::NonFinite`] when `value` is NaN or infinite,
     /// leaving the reducer unchanged.
+    #[inline]
     pub fn observe(&mut self, value: f64) -> Result<(), ReduceError> {
         let finite = FiniteValue::new(value).map_err(ReduceError::NonFinite)?;
-        // Canonicalize -0.0 to +0.0 so order statistics never depend on zero sign.
-        let canonical = if finite.get() == 0.0 {
-            0.0
-        } else {
-            finite.get()
-        };
-        self.values.push(canonical);
+        self.observe_finite(finite.get());
         Ok(())
+    }
+
+    /// Observes a pre-validated finite scalar value, canonicalizing `-0.0` to `+0.0`.
+    #[inline]
+    fn observe_finite(&mut self, value: f64) {
+        // Adding +0.0 converts -0.0 to +0.0 while leaving every other finite
+        // value bit-for-bit unchanged under IEEE-754 round-to-nearest-even.
+        self.values.push(value + 0.0);
     }
 
     /// Merges all observations from `other` into this reducer.
@@ -194,8 +197,11 @@ impl QuantileReducer {
         if self.values.is_empty() {
             return Err(ReduceError::Empty);
         }
-        self.values.sort_unstable_by(f64::total_cmp);
-        let mean = overflow_safe_weighted_mean(self.values.iter().copied(), 1.0, None);
+        // All stored observations are finite and have -0.0 canonicalized to
+        // +0.0, so IEEE float ordering is a total order identical to total_cmp.
+        self.values.sort_unstable_by(|&a, &b| cmp_finite_f64(a, b));
+        let finite_span = (self.values[self.values.len() - 1] - self.values[0]).is_finite();
+        let mean = overflow_safe_weighted_mean(self.values.iter().copied(), None, finite_span);
         Ok(QuantileSummary {
             sorted: self.values,
             mean,
@@ -330,13 +336,15 @@ impl QuantileSummary {
         if full == 0 {
             return self.max();
         }
-        let tail = self.sorted[n - full..].iter().rev().copied();
+        let tail_slice = &self.sorted[n - full..];
         let partial = if remainder > 0.0 && full < n {
             Some((self.sorted[n - full - 1], remainder))
         } else {
             None
         };
-        overflow_safe_weighted_mean(tail, 1.0, partial)
+        let low = partial.map_or(tail_slice[0], |(value, _)| value);
+        let finite_span = (tail_slice[tail_slice.len() - 1] - low).is_finite();
+        overflow_safe_weighted_mean(tail_slice.iter().rev().copied(), partial, finite_span)
     }
 
     /// Returns the lower-tail Conditional Value at Risk at tail fraction
@@ -364,13 +372,15 @@ impl QuantileSummary {
         if full == 0 {
             return self.min();
         }
-        let head = self.sorted[..full].iter().copied();
+        let head_slice = &self.sorted[..full];
         let partial = if remainder > 0.0 && full < n {
             Some((self.sorted[full], remainder))
         } else {
             None
         };
-        overflow_safe_weighted_mean(head, 1.0, partial)
+        let high = partial.map_or(head_slice[head_slice.len() - 1], |(value, _)| value);
+        let finite_span = (high - head_slice[0]).is_finite();
+        overflow_safe_weighted_mean(head_slice.iter().copied(), partial, finite_span)
     }
 
     /// Merges two summaries into a combined exact [`QuantileSummary`].
@@ -379,7 +389,7 @@ impl QuantileSummary {
         let mut combined = Vec::with_capacity(self.sorted.len() + other.sorted.len());
         let (mut i, mut j) = (0, 0);
         while i < self.sorted.len() && j < other.sorted.len() {
-            if self.sorted[i].total_cmp(&other.sorted[j]) == Ordering::Greater {
+            if self.sorted[i] > other.sorted[j] {
                 combined.push(other.sorted[j]);
                 j += 1;
             } else {
@@ -389,7 +399,8 @@ impl QuantileSummary {
         }
         combined.extend_from_slice(&self.sorted[i..]);
         combined.extend_from_slice(&other.sorted[j..]);
-        let mean = overflow_safe_weighted_mean(combined.iter().copied(), 1.0, None);
+        let finite_span = (combined[combined.len() - 1] - combined[0]).is_finite();
+        let mean = overflow_safe_weighted_mean(combined.iter().copied(), None, finite_span);
         Self {
             sorted: combined,
             mean,
@@ -397,8 +408,21 @@ impl QuantileSummary {
     }
 }
 
+/// Total ordering on finite, `-0.0`-canonicalized `f64` observations.
+#[inline]
+fn cmp_finite_f64(left: f64, right: f64) -> Ordering {
+    if left < right {
+        Ordering::Less
+    } else if left > right {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
+    }
+}
+
 /// Linearly interpolates between finite values `a` and `b` at `t` in `[0, 1]`
 /// without overflowing when `b - a` exceeds `f64::MAX`.
+#[inline]
 fn interpolate_safe(a: f64, b: f64, t: f64) -> f64 {
     let diff = b - a;
     if diff.is_finite() {
@@ -408,30 +432,46 @@ fn interpolate_safe(a: f64, b: f64, t: f64) -> f64 {
     }
 }
 
-/// Computes a weighted arithmetic mean of finite values using an overflow-safe
-/// incremental convex-combination update.
+/// Computes a unit-weighted arithmetic mean of finite values using an
+/// overflow-safe incremental convex-combination update.
+///
+/// When `finite_span` is `true`, the caller guarantees `max - min` is finite
+/// across all values (including any `partial`), so `value - mean` is always
+/// finite and the inner loop executes the exact same `mul_add` recurrence
+/// without per-element overflow branches.
 fn overflow_safe_weighted_mean(
-    values: impl Iterator<Item = f64>,
-    unit_weight: f64,
+    mut values: impl Iterator<Item = f64>,
     partial: Option<(f64, f64)>,
+    finite_span: bool,
 ) -> f64 {
-    let mut mean = 0.0_f64;
-    let mut weight_sum = 0.0_f64;
-    for value in values {
-        if weight_sum == 0.0 {
-            mean = value;
-            weight_sum = unit_weight;
-        } else {
-            weight_sum += unit_weight;
-            let step = unit_weight / weight_sum;
+    let Some(mut mean) = values.next() else {
+        return match partial {
+            Some((value, weight)) if weight > 0.0 => value,
+            _ => 0.0,
+        };
+    };
+    let mut weight_sum = 1.0_f64;
+    if finite_span {
+        for value in values {
+            weight_sum += 1.0;
+            let step = 1.0 / weight_sum;
+            mean = step.mul_add(value - mean, mean);
+        }
+        if let Some((value, weight)) = partial {
+            if weight > 0.0 {
+                weight_sum += weight;
+                let step = weight / weight_sum;
+                mean = step.mul_add(value - mean, mean);
+            }
+        }
+    } else {
+        for value in values {
+            weight_sum += 1.0;
+            let step = 1.0 / weight_sum;
             mean = interpolate_safe(mean, value, step);
         }
-    }
-    if let Some((value, weight)) = partial {
-        if weight > 0.0 {
-            if weight_sum == 0.0 {
-                mean = value;
-            } else {
+        if let Some((value, weight)) = partial {
+            if weight > 0.0 {
                 weight_sum += weight;
                 let step = weight / weight_sum;
                 mean = interpolate_safe(mean, value, step);
@@ -489,8 +529,7 @@ pub fn aggregate_quantiles<O, E>(
             },
         );
         if let Some(value) = value {
-            // FiniteValue guarantees observe cannot fail.
-            let _ = reducer.observe(value.get());
+            reducer.observe_finite(value.get());
         }
     }
     if failed > 0 && matches!(failure_policy, FailurePolicy::RejectCandidate) {
