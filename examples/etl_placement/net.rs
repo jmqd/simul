@@ -12,7 +12,7 @@ use crate::time::{Tick, secs, ticks, ticks_at_least_one};
 use crate::wire::{ConnId, ConnKind, FrameWriter, Payload, Unit, decode};
 use simul::agent::{AgentContext, AgentId};
 use simul::message::Message;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 /// Round-trip and loss characteristics of the network between two regions,
 /// or within one.
@@ -100,6 +100,13 @@ impl Nic {
 
     fn spend(&mut self, used: f64) {
         self.credits = (self.credits + self.baseline - used).clamp(0.0, self.capacity);
+    }
+
+    #[inline]
+    fn refill_idle(&mut self) {
+        if self.credits < self.capacity {
+            self.credits = (self.credits + self.baseline).min(self.capacity);
+        }
     }
 }
 
@@ -443,14 +450,14 @@ impl Flow {
             return 0.0;
         }
         let mut remaining = budget;
-        let mut completed = Vec::new();
+        let deliver_start = self.deliveries.len();
         while let Some(front) = self.queue.front_mut().filter(|_| remaining > 0.0) {
             let take = front.left.min(remaining);
             front.left -= take;
             remaining -= take;
             if front.left <= 1e-6 {
                 if let Some(done) = self.queue.pop_front() {
-                    completed.push(done.unit);
+                    self.deliveries.push_back((0, done.unit));
                 }
             }
         }
@@ -459,30 +466,18 @@ impl Flow {
         self.sent_total += sent;
 
         let rtt = self.rtt_s();
-        let rtt_ticks = ticks(rtt);
-        let (deliver_after, ack_after) = if let Some(resume) = faults.retransmit_time(
-            self.path.cross_region,
-            now,
-            rtt_ticks,
-            self.rto_s(tcp),
-            tcp.rto_max_s,
-        ) {
-            self.on_timeout(resume, tcp);
-            let wait = secs(resume - now);
-            (wait + self.one_way_s, wait + rtt)
-        } else {
-            let packets = (sent / tcp.mss_bytes).ceil();
-            let drop_probability = self.path.loss.max(faults.loss(self.path.cross_region, now));
-            let lost = drop_probability > 0.0
-                && rng.bernoulli(1.0 - (1.0 - drop_probability).powf(packets));
-            if lost {
-                self.on_loss(now, tcp);
+        let (deliver_after, ack_after) = if self.path.cross_region && !faults.outages.is_empty() {
+            if let Some(resume) =
+                faults.retransmit_time(true, now, ticks(rtt), self.rto_s(tcp), tcp.rto_max_s)
+            {
+                self.on_timeout(resume, tcp);
+                let wait = secs(resume - now);
+                (wait + self.one_way_s, wait + rtt)
+            } else {
+                self.deliver_without_outage(now, sent, rtt, tcp, faults, rng)
             }
-            let recovery = if lost { rtt } else { 0.0 };
-            (
-                self.one_way_s + rng.exponential(self.path.jitter_mean_s) + recovery,
-                rtt + recovery,
-            )
+        } else {
+            self.deliver_without_outage(now, sent, rtt, tcp, faults, rng)
         };
         let deliver_at = (now + ticks_at_least_one(deliver_after)).max(self.last_delivery);
         self.last_delivery = deliver_at;
@@ -491,10 +486,48 @@ impl Flow {
         self.inflight.push_back((ack_at, sent));
         self.inflight_bytes += sent;
         self.last_send = Some(now);
-        for unit in completed {
-            self.deliveries.push_back((deliver_at, unit));
+        if self.deliveries.len() > deliver_start {
+            for (at, _) in self.deliveries.range_mut(deliver_start..) {
+                *at = deliver_at;
+            }
         }
         sent
+    }
+
+    fn deliver_without_outage(
+        &mut self,
+        now: Tick,
+        sent: f64,
+        rtt: f64,
+        tcp: &TcpModel,
+        faults: &FaultPlan,
+        rng: &mut Rng,
+    ) -> (f64, f64) {
+        let packets = (sent / tcp.mss_bytes).ceil();
+        let drop_probability = self.path.loss.max(faults.loss(self.path.cross_region, now));
+        let lost = if drop_probability > 0.0 {
+            let draw = rng.unit();
+            // Bernoulli's inequality: 1 - (1 - p)^n <= n * p (with FP margin).
+            let upper = (packets * drop_probability).mul_add(1.001, 1e-12);
+            draw < upper && {
+                let prob = if packets <= 1.0 {
+                    1.0 - (1.0 - drop_probability)
+                } else {
+                    1.0 - (1.0 - drop_probability).powf(packets)
+                };
+                draw < prob
+            }
+        } else {
+            false
+        };
+        if lost {
+            self.on_loss(now, tcp);
+        }
+        let recovery = if lost { rtt } else { 0.0 };
+        (
+            self.one_way_s + rng.exponential(self.path.jitter_mean_s) + recovery,
+            rtt + recovery,
+        )
     }
 
     fn idle(&self) -> bool {
@@ -519,9 +552,10 @@ struct Conn {
     flow: Flow,
     /// Deliveries are batched to this many ticks to bound message counts.
     quantum: Tick,
-    /// The earliest tick at which `Endpoint::pump` has work for this
-    /// connection. Every change made outside `pump` resets it to 0.
-    due: Tick,
+    /// Whether the flow's last `want` was zero while not timeout-blocked
+    /// (limited by cwnd, receiver window, or send buffer), so queued bytes
+    /// cannot leave until an ACK, credit, or external change wakes it.
+    window_blocked: bool,
 }
 
 impl Conn {
@@ -539,7 +573,11 @@ impl Conn {
             due = due.min(at);
         }
         if !flow.queue.is_empty() {
-            due = due.min(flow.blocked_until);
+            if now < flow.blocked_until {
+                due = due.min(flow.blocked_until);
+            } else if !self.window_blocked {
+                due = due.min(now + 1);
+            }
         }
         if let Some(&(at, _)) = flow.deliveries.front() {
             // `pump` at tick `t` delivers up to `t + 1`, on quantum multiples.
@@ -601,8 +639,16 @@ pub(crate) struct Endpoint {
     tcp: TcpModel,
     nic: Nic,
     peers: Vec<Peer>,
-    conns: BTreeMap<ConnId, Conn>,
-    /// The earliest `Conn::due`; `pump` skips its connection scans before it.
+    peers_resolved: bool,
+    /// Connection IDs kept in ascending order, parallel to `conn_dues` and `conns`.
+    conn_ids: Vec<ConnId>,
+    /// Earliest tick at which `pump` has work for each connection.
+    conn_dues: Vec<Tick>,
+    conns: Vec<Conn>,
+    /// Reusable scratch buffers for `move_due_connections`.
+    wants: Vec<(usize, f64)>,
+    finished: Vec<usize>,
+    /// The earliest `conn_dues` entry; `pump` skips its connection scans before it.
     next_due: Tick,
     control: Vec<(Tick, usize, ConnId, Unit)>,
     writers: Vec<FrameWriter>,
@@ -619,12 +665,50 @@ impl Endpoint {
             tcp,
             nic: Nic::new(nic),
             peers,
-            conns: BTreeMap::new(),
+            peers_resolved: false,
+            conn_ids: Vec::new(),
+            conn_dues: Vec::new(),
+            conns: Vec::new(),
+            wants: Vec::new(),
+            finished: Vec::new(),
             next_due: Tick::MAX,
             control: Vec::new(),
             writers,
             cross_region_bytes: 0.0,
         }
+    }
+
+    #[inline]
+    fn find_conn(&self, conn: ConnId) -> Option<usize> {
+        self.conn_ids.binary_search(&conn).ok()
+    }
+
+    fn insert_conn(&mut self, id: ConnId, due: Tick, conn: Conn) {
+        if self.conn_ids.last().is_none_or(|&last| id > last) {
+            self.conn_ids.push(id);
+            self.conn_dues.push(due);
+            self.conns.push(conn);
+        } else {
+            match self.conn_ids.binary_search(&id) {
+                Ok(idx) => {
+                    self.conn_dues[idx] = due;
+                    self.conns[idx] = conn;
+                }
+                Err(idx) => {
+                    self.conn_ids.insert(idx, id);
+                    self.conn_dues.insert(idx, due);
+                    self.conns.insert(idx, conn);
+                }
+            }
+        }
+        self.next_due = self.next_due.min(due);
+    }
+
+    fn remove_conn(&mut self, id: ConnId) -> Option<Conn> {
+        let idx = self.find_conn(id)?;
+        self.conn_ids.remove(idx);
+        self.conn_dues.remove(idx);
+        Some(self.conns.remove(idx))
     }
 
     fn peer_id(&mut self, peer: usize, ctx: &AgentContext<'_, Payload>) -> AgentId {
@@ -672,8 +756,9 @@ impl Endpoint {
             kind,
             one_way_us: crate::time::to_u64((one_way_s * 1e6).round()),
         });
-        self.conns.insert(
+        self.insert_conn(
             id,
+            0,
             Conn {
                 peer,
                 state: ConnState::Handshaking {
@@ -681,10 +766,9 @@ impl Endpoint {
                 },
                 flow,
                 quantum: 1,
-                due: 0,
+                window_blocked: false,
             },
         );
-        self.next_due = 0;
         id
     }
 
@@ -692,10 +776,10 @@ impl Endpoint {
     /// open, in which case nothing is sent.
     #[must_use]
     pub(crate) fn send(&mut self, conn: ConnId, unit: Unit) -> bool {
-        match self.conns.get_mut(&conn) {
-            Some(entry) if entry.state == ConnState::Open => {
-                entry.flow.push(unit);
-                entry.due = 0;
+        match self.find_conn(conn) {
+            Some(idx) if self.conns[idx].state == ConnState::Open => {
+                self.conns[idx].flow.push(unit);
+                self.conn_dues[idx] = 0;
                 self.next_due = 0;
                 true
             }
@@ -705,9 +789,8 @@ impl Endpoint {
 
     /// Bytes waiting in the socket send buffer, for writer backpressure.
     pub(crate) fn buffered(&self, conn: ConnId) -> f64 {
-        self.conns
-            .get(&conn)
-            .map_or(0.0, |entry| entry.flow.buffered())
+        self.find_conn(conn)
+            .map_or(0.0, |idx| self.conns[idx].flow.buffered())
     }
 
     pub(crate) const fn send_buffer_bytes(&self) -> f64 {
@@ -717,43 +800,48 @@ impl Endpoint {
     /// Switches a connection to receiver-paced flow control: the peer reports
     /// what its application read with `Unit::Credit`.
     pub(crate) fn use_receiver_credit(&mut self, conn: ConnId) {
-        if let Some(entry) = self.conns.get_mut(&conn) {
-            entry.flow.credit = Some(entry.flow.sent_total);
-            entry.due = 0;
+        if let Some(idx) = self.find_conn(conn) {
+            let flow = &mut self.conns[idx].flow;
+            flow.credit = Some(flow.sent_total);
+            self.conn_dues[idx] = 0;
             self.next_due = 0;
         }
     }
 
     pub(crate) fn set_quantum(&mut self, conn: ConnId, quantum: Tick) {
-        if let Some(entry) = self.conns.get_mut(&conn) {
-            entry.quantum = quantum.max(1);
-            entry.due = 0;
+        if let Some(idx) = self.find_conn(conn) {
+            self.conns[idx].quantum = quantum.max(1);
+            self.conn_dues[idx] = 0;
             self.next_due = 0;
         }
     }
 
     /// Sends a FIN after the queued data.
     pub(crate) fn close(&mut self, conn: ConnId) {
-        if let Some(entry) = self.conns.get_mut(&conn) {
+        if let Some(idx) = self.find_conn(conn) {
+            let entry = &mut self.conns[idx];
             if entry.state == ConnState::Open {
                 entry.flow.push(Unit::Close);
             }
             entry.state = ConnState::Closing;
-            entry.due = 0;
+            self.conn_dues[idx] = 0;
             self.next_due = 0;
         }
     }
 
     /// Drops a connection at once; the kernel resets it at the peer.
     pub(crate) fn abort(&mut self, conn: ConnId, now: Tick, faults: &FaultPlan) {
-        if let Some(entry) = self.conns.remove(&conn) {
+        if let Some(entry) = self.remove_conn(conn) {
             self.notify_peer(entry.peer, conn, entry.flow.one_way_s, now, faults);
         }
     }
 
     pub(crate) fn abort_all(&mut self, now: Tick, faults: &FaultPlan) {
+        let conn_ids = std::mem::take(&mut self.conn_ids);
+        self.conn_dues.clear();
         let conns = std::mem::take(&mut self.conns);
-        for (conn, entry) in conns {
+        self.next_due = Tick::MAX;
+        for (conn, entry) in conn_ids.into_iter().zip(conns) {
             self.notify_peer(entry.peer, conn, entry.flow.one_way_s, now, faults);
         }
     }
@@ -788,49 +876,65 @@ impl Endpoint {
             .and_then(|source| self.peers.iter().position(|peer| peer.id == Some(source)))
             .unwrap_or_else(|| panic!("messages come from configured peers"));
         let mut events = Vec::new();
-        for (conn, unit) in decode(payload) {
-            match unit {
-                Unit::Syn { kind, one_way_us } => {
-                    let path = self.peers[peer].path.clone();
-                    let mut flow = Flow::new(path, one_way_us as f64 / 1e6, &self.tcp, now, rng);
-                    flow.push(Unit::Pong);
-                    self.conns.insert(
-                        conn,
-                        Conn {
-                            peer,
-                            state: ConnState::Open,
-                            flow,
-                            quantum: 1,
-                            due: 0,
-                        },
-                    );
-                    self.next_due = 0;
-                    events.push(NetEvent::Accepted(conn, kind));
+        for frame in decode(payload) {
+            self.handle_frame(peer, frame, now, faults, rng, &mut events);
+        }
+        events
+    }
+
+    fn handle_frame(
+        &mut self,
+        peer: usize,
+        (conn, unit): (ConnId, Unit),
+        now: Tick,
+        faults: &FaultPlan,
+        rng: &mut Rng,
+        events: &mut Vec<NetEvent>,
+    ) {
+        match unit {
+            Unit::Syn { kind, one_way_us } => {
+                let path = self.peers[peer].path.clone();
+                let mut flow = Flow::new(path, one_way_us as f64 / 1e6, &self.tcp, now, rng);
+                flow.push(Unit::Pong);
+                self.insert_conn(
+                    conn,
+                    0,
+                    Conn {
+                        peer,
+                        state: ConnState::Open,
+                        flow,
+                        quantum: 1,
+                        window_blocked: false,
+                    },
+                );
+                events.push(NetEvent::Accepted(conn, kind));
+            }
+            Unit::Reset | Unit::Close => {
+                if self.remove_conn(conn).is_some() {
+                    events.push(NetEvent::Closed(conn));
                 }
-                Unit::Reset | Unit::Close => {
-                    if self.conns.remove(&conn).is_some() {
-                        events.push(NetEvent::Closed(conn));
-                    }
+            }
+            other @ (Unit::Ping
+            | Unit::Pong
+            | Unit::Credit { .. }
+            | Unit::Query { .. }
+            | Unit::Reply { .. }
+            | Unit::Wal(_)
+            | Unit::Keepalive { .. }
+            | Unit::Status { .. }
+            | Unit::CopyData { .. }
+            | Unit::HttpRequest { .. }
+            | Unit::HttpResponse { .. }) => match self.find_conn(conn) {
+                None => {
+                    let one_way = self.peers[peer].path.rtt_median_s / 2.0;
+                    self.notify_peer(peer, conn, one_way, now, faults);
                 }
-                other @ (Unit::Ping
-                | Unit::Pong
-                | Unit::Credit { .. }
-                | Unit::Query { .. }
-                | Unit::Reply { .. }
-                | Unit::Wal(_)
-                | Unit::Keepalive { .. }
-                | Unit::Status { .. }
-                | Unit::CopyData { .. }
-                | Unit::HttpRequest { .. }
-                | Unit::HttpResponse { .. }) => match self.conns.get_mut(&conn) {
-                    None => {
-                        let one_way = self.peers[peer].path.rtt_median_s / 2.0;
-                        self.notify_peer(peer, conn, one_way, now, faults);
-                    }
-                    Some(entry) => match (other, entry.state) {
+                Some(idx) => {
+                    let entry = &mut self.conns[idx];
+                    match (other, entry.state) {
                         (Unit::Ping, _) => {
                             entry.flow.push(Unit::Pong);
-                            entry.due = 0;
+                            self.conn_dues[idx] = 0;
                             self.next_due = 0;
                         }
                         (Unit::Pong, ConnState::Handshaking { round_trips_left }) => {
@@ -843,23 +947,22 @@ impl Endpoint {
                                 };
                                 entry.flow.push(Unit::Ping);
                             }
-                            entry.due = 0;
+                            self.conn_dues[idx] = 0;
                             self.next_due = 0;
                         }
                         (Unit::Credit { consumed }, _) => {
                             if let Some(known) = entry.flow.credit.as_mut() {
                                 *known = known.max(consumed as f64);
                             }
-                            entry.due = 0;
+                            self.conn_dues[idx] = 0;
                             self.next_due = 0;
                         }
                         (Unit::Pong, ConnState::Open | ConnState::Closing) => {}
                         (data, _) => events.push(NetEvent::Data(conn, data)),
-                    },
-                },
-            }
+                    }
+                }
+            },
         }
-        events
     }
 
     /// Moves bytes on every connection and sends this tick's deliveries.
@@ -867,7 +970,23 @@ impl Endpoint {
     /// Only connections with work due are visited. A visit to any other
     /// changes nothing, so every byte, draw, and delivery is as if every
     /// connection were visited every tick.
+    #[inline]
     pub(crate) fn pump(
+        &mut self,
+        ctx: &mut AgentContext<'_, Payload>,
+        now: Tick,
+        faults: &FaultPlan,
+        rng: &mut Rng,
+    ) {
+        if self.next_due > now && self.control.is_empty() && self.peers_resolved {
+            self.nic.refill_idle();
+            return;
+        }
+        self.pump_active(ctx, now, faults, rng);
+    }
+
+    #[inline(never)]
+    fn pump_active(
         &mut self,
         ctx: &mut AgentContext<'_, Payload>,
         now: Tick,
@@ -895,9 +1014,15 @@ impl Endpoint {
         }
         // Resolve every peer, not only those sent to: a peer may open a
         // connection to this agent before this agent ever sends to it.
+        if !self.peers_resolved {
+            for peer in 0..self.peers.len() {
+                let _ = self.peer_id(peer, ctx);
+            }
+            self.peers_resolved = true;
+        }
         for peer in 0..self.peers.len() {
-            let id = self.peer_id(peer, ctx);
             if !self.writers[peer].is_empty() {
+                let id = self.peer_id(peer, ctx);
                 ctx.send_to(id, self.writers[peer].take_payload());
             }
         }
@@ -908,24 +1033,29 @@ impl Endpoint {
     /// Returns the bytes sent.
     fn move_due_connections(&mut self, now: Tick, faults: &FaultPlan, rng: &mut Rng) -> f64 {
         let tcp = &self.tcp;
-        let mut wants = Vec::new();
+        self.wants.clear();
         let mut total = 0.0;
-        for (conn, entry) in &mut self.conns {
-            if entry.due > now {
+        for idx in 0..self.conn_dues.len() {
+            if self.conn_dues[idx] > now {
                 continue;
             }
+            let entry = &mut self.conns[idx];
             entry.flow.advance(now, tcp, rng);
             let want = entry.flow.want(now, tcp);
             if want > 0.0 {
-                wants.push((*conn, want));
+                entry.window_blocked = false;
+                self.wants.push((idx, want));
                 total += want;
+            } else {
+                entry.window_blocked = now >= entry.flow.blocked_until;
             }
         }
-        let budget = self.nic.budget();
-        let scale = if total > budget { budget / total } else { 1.0 };
         let mut used = 0.0;
-        for (conn, want) in wants {
-            if let Some(entry) = self.conns.get_mut(&conn) {
+        if !self.wants.is_empty() {
+            let budget = self.nic.budget();
+            let scale = if total > budget { budget / total } else { 1.0 };
+            for &(idx, want) in &self.wants {
+                let entry = &mut self.conns[idx];
                 let sent = entry.flow.transmit(now, want * scale, tcp, faults, rng);
                 used += sent;
                 if entry.flow.path.cross_region {
@@ -935,29 +1065,36 @@ impl Endpoint {
         }
 
         let horizon = now + 1;
-        let mut finished = Vec::new();
+        self.finished.clear();
         let mut next_due = Tick::MAX;
-        for (conn, entry) in &mut self.conns {
-            if entry.due <= now {
+        for idx in 0..self.conn_dues.len() {
+            if self.conn_dues[idx] <= now {
+                let entry = &mut self.conns[idx];
                 if horizon % entry.quantum == 0 {
+                    let conn = self.conn_ids[idx];
                     while let Some(&(at, unit)) = entry.flow.deliveries.front() {
                         if at > horizon {
                             break;
                         }
                         entry.flow.deliveries.pop_front();
-                        self.writers[entry.peer].push(*conn, unit);
+                        self.writers[entry.peer].push(conn, unit);
                     }
                 }
                 if entry.state == ConnState::Closing && entry.flow.idle() {
-                    finished.push(*conn);
+                    self.finished.push(idx);
                     continue;
                 }
-                entry.due = entry.next_due(now);
+                let due = entry.next_due(now);
+                self.conn_dues[idx] = due;
+                next_due = next_due.min(due);
+            } else {
+                next_due = next_due.min(self.conn_dues[idx]);
             }
-            next_due = next_due.min(entry.due);
         }
-        for conn in finished {
-            self.conns.remove(&conn);
+        for idx in self.finished.drain(..).rev() {
+            self.conn_ids.remove(idx);
+            self.conn_dues.remove(idx);
+            self.conns.remove(idx);
         }
         self.next_due = next_due;
         used
