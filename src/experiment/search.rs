@@ -874,41 +874,55 @@ const SOBOL_DIM_SPECS: [SobolDimSpec; MAX_SOBOL_DIMENSIONS - 1] = [
 /// Scale converting a 32-bit Sobol integer coordinate to `[0, 1)`.
 const U32_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 32) as f64);
 
-/// Computes the 32 left-aligned Sobol direction numbers for `dimension`.
-fn sobol_direction_numbers(dimension: usize) -> [u32; 32] {
-    let mut v = [0_u32; 32];
-    if dimension == 0 {
-        for (bit, slot) in v.iter_mut().enumerate() {
-            let shift = 31 - u32::try_from(bit).unwrap_or(31);
-            *slot = 1_u32 << shift;
+/// Precomputes all 32 left-aligned Sobol direction numbers for every supported
+/// dimension, transposed as `[bit][dimension]` so Gray-code XOR updates touch
+/// one contiguous row per sample.
+const fn build_sobol_directions() -> [[u32; MAX_SOBOL_DIMENSIONS]; 32] {
+    let mut table = [[0_u32; MAX_SOBOL_DIMENSIONS]; 32];
+    let mut bit = 0_usize;
+    let mut bit_u32 = 0_u32;
+    while bit < 32 {
+        table[bit][0] = 1_u32 << (31 - bit_u32);
+        bit += 1;
+        bit_u32 += 1;
+    }
+
+    let mut dim = 1_usize;
+    while dim < MAX_SOBOL_DIMENSIONS {
+        let spec = &SOBOL_DIM_SPECS[dim - 1];
+        let s = spec.degree as usize;
+        let mut i = 0_usize;
+        let mut i_u32 = 0_u32;
+        while i < s {
+            table[i][dim] = spec.init_m[i] << (31 - i_u32);
+            i += 1;
+            i_u32 += 1;
         }
-        return v;
-    }
-    let spec = &SOBOL_DIM_SPECS[dimension - 1];
-    let s = spec.degree as usize;
-    for i in 0..s {
-        let shift = 32 - u32::try_from(i + 1).unwrap_or(32);
-        v[i] = spec.init_m[i] << shift;
-    }
-    for i in s..32 {
-        let mut val = v[i - s] ^ (v[i - s] >> spec.degree);
-        for k in 1..s {
-            let bit = u32::try_from(s - 1 - k).unwrap_or(0);
-            if ((spec.poly_a >> bit) & 1) != 0 {
-                val ^= v[i - k];
+        while i < 32 {
+            let mut val = table[i - s][dim] ^ (table[i - s][dim] >> spec.degree);
+            let mut k = 1_usize;
+            let mut k_u32 = 1_u32;
+            while k < s {
+                let shift = spec.degree - 1 - k_u32;
+                if ((spec.poly_a >> shift) & 1) != 0 {
+                    val ^= table[i - k][dim];
+                }
+                k += 1;
+                k_u32 += 1;
             }
+            table[i][dim] = val;
+            i += 1;
         }
-        v[i] = val;
+        dim += 1;
     }
-    v
+    table
 }
 
-/// Core Sobol generator supporting optional per-dimension XOR digital shifts.
-fn generate_sobol(
-    samples: usize,
-    bounds: &[(f64, f64)],
-    shifts: Option<&[u32]>,
-) -> Result<Vec<Vec<f64>>, SobolError> {
+/// Compile-time Sobol direction numbers indexed as `[bit][dimension]`.
+const SOBOL_DIRECTIONS: [[u32; MAX_SOBOL_DIMENSIONS]; 32] = build_sobol_directions();
+
+/// Validates bounds and dimension count for Sobol samplers.
+fn validate_sobol_bounds(bounds: &[(f64, f64)]) -> Result<(), SobolError> {
     validate_bounds(bounds)?;
     if bounds.len() > MAX_SOBOL_DIMENSIONS {
         return Err(SobolError::TooManyDimensions {
@@ -916,32 +930,109 @@ fn generate_sobol(
             max: MAX_SOBOL_DIMENSIONS,
         });
     }
+    Ok(())
+}
+
+/// Advances the Gray-code Sobol state for sample `index > 0`.
+#[inline]
+fn advance_sobol_state(state: &mut [u32], index: usize) {
+    let bit = index.trailing_zeros() as usize;
+    if let Some(dir_row) = SOBOL_DIRECTIONS.get(bit) {
+        for (slot, &dir) in state.iter_mut().zip(dir_row) {
+            *slot ^= dir;
+        }
+    }
+}
+
+/// Scales one Sobol integer state vector into `buf` and appends it to `points`.
+//
+// Keep interpolation operations separate: contraction would change the
+// deterministic Sobol coordinate sequence.
+#[inline]
+#[allow(clippy::suboptimal_flops)]
+fn push_sobol_fast(
+    state: &[u32],
+    lowers: &[f64],
+    scaled_widths: &[f64],
+    buf: &mut [f64],
+    points: &mut Vec<Vec<f64>>,
+) {
+    let dims = buf.len();
+    let state = &state[..dims];
+    let lowers = &lowers[..dims];
+    let scaled_widths = &scaled_widths[..dims];
+    for d in 0..dims {
+        buf[d] = lowers[d] + scaled_widths[d] * f64::from(state[d]);
+    }
+    points.push(buf.to_vec());
+}
+
+/// Core Sobol generator assuming `bounds` was already validated and has at most
+/// [`MAX_SOBOL_DIMENSIONS`] dimensions.
+fn generate_sobol_validated(
+    samples: usize,
+    bounds: &[(f64, f64)],
+    shifts: Option<&[u32]>,
+) -> Vec<Vec<f64>> {
     let dims = bounds.len();
     let mut points = Vec::with_capacity(samples);
     if samples == 0 || dims == 0 {
         points.resize_with(samples, Vec::new);
-        return Ok(points);
+        return points;
     }
-    let directions: Vec<[u32; 32]> = (0..dims).map(sobol_direction_numbers).collect();
-    let mut state: Vec<u32> = shifts.map_or_else(|| vec![0_u32; dims], <[u32]>::to_vec);
+    let mut state = [0_u32; MAX_SOBOL_DIMENSIONS];
+    let active_state = &mut state[..dims];
+    if let Some(shifts) = shifts {
+        active_state.copy_from_slice(&shifts[..dims]);
+    }
 
-    for index in 0..samples {
-        if index > 0 {
-            let bit = index.trailing_zeros() as usize;
-            if bit < 32 {
-                for d in 0..dims {
-                    state[d] ^= directions[d][bit];
-                }
-            }
+    let mut lowers = [0.0_f64; MAX_SOBOL_DIMENSIONS];
+    let mut scaled_widths = [0.0_f64; MAX_SOBOL_DIMENSIONS];
+    let mut fast_scale = true;
+    for (d, &(lower, upper)) in bounds.iter().enumerate() {
+        let width = upper - lower;
+        let scaled = width * U32_TO_UNIT_F64;
+        // `U32_TO_UNIT_F64` is an exact power of two (2^-32), so when `scaled`
+        // is normal (or `width == 0`), `scaled * f64::from(s)` is bit-identical
+        // to `width * (f64::from(s) * U32_TO_UNIT_F64)`.
+        if width.is_finite() && (scaled.is_normal() || width <= 0.0) {
+            lowers[d] = lower;
+            scaled_widths[d] = scaled;
+        } else {
+            fast_scale = false;
+            break;
         }
-        let mut point = Vec::with_capacity(dims);
-        for (d, &(lower, upper)) in bounds.iter().enumerate() {
-            let fraction = f64::from(state[d]) * U32_TO_UNIT_F64;
-            point.push(scale_unit_to_bound(fraction, lower, upper));
-        }
-        points.push(point);
     }
-    Ok(points)
+
+    if fast_scale {
+        let lowers = &lowers[..dims];
+        let scaled_widths = &scaled_widths[..dims];
+        let mut buf = [0.0_f64; MAX_SOBOL_DIMENSIONS];
+        let active_buf = &mut buf[..dims];
+        push_sobol_fast(active_state, lowers, scaled_widths, active_buf, &mut points);
+        for index in 1..samples {
+            advance_sobol_state(active_state, index);
+            push_sobol_fast(active_state, lowers, scaled_widths, active_buf, &mut points);
+        }
+    } else {
+        let push_fallback = |cur_state: &[u32], out: &mut Vec<Vec<f64>>| {
+            let point = cur_state
+                .iter()
+                .zip(bounds)
+                .map(|(&s, &(lower, upper))| {
+                    let fraction = f64::from(s) * U32_TO_UNIT_F64;
+                    scale_unit_to_bound(fraction, lower, upper)
+                })
+                .collect();
+            out.push(point);
+        };
+        push_fallback(active_state, &mut points);
+        for index in 1..samples {
+            advance_sobol_state(active_state, index);
+            push_fallback(active_state, &mut points);
+        }
+    }
+    points
 }
 
 /// Produces a deterministic low-discrepancy Sobol quasi-random sequence of
@@ -969,7 +1060,8 @@ fn generate_sobol(
 /// # Ok::<(), simul::experiment::search::SobolError>(())
 /// ```
 pub fn sample_sobol(samples: usize, bounds: &[(f64, f64)]) -> Result<Vec<Vec<f64>>, SobolError> {
-    generate_sobol(samples, bounds, None)
+    validate_sobol_bounds(bounds)?;
+    Ok(generate_sobol_validated(samples, bounds, None))
 }
 
 /// Produces a digitally shifted (scrambled) Sobol quasi-random sequence seeded
@@ -988,25 +1080,23 @@ pub fn sample_sobol_scrambled(
     samples: usize,
     bounds: &[(f64, f64)],
 ) -> Result<Vec<Vec<f64>>, SobolError> {
-    validate_bounds(bounds)?;
-    if bounds.len() > MAX_SOBOL_DIMENSIONS {
-        return Err(SobolError::TooManyDimensions {
-            requested: bounds.len(),
-            max: MAX_SOBOL_DIMENSIONS,
-        });
+    validate_sobol_bounds(bounds)?;
+    if samples == 0 || bounds.is_empty() {
+        return Ok(vec![Vec::new(); samples]);
     }
     let deriver = SeedDeriver::new(master_seed);
-    let shifts: Vec<u32> = (0..bounds.len())
-        .map(|dim| {
-            let mut rng = deriver
-                .proposal_dimension_seed(0, u64::try_from(dim).unwrap_or(u64::MAX))
-                .rng();
-            let mut bytes = [0_u8; 4];
-            rng.fill_bytes(&mut bytes);
-            u32::from_le_bytes(bytes)
-        })
-        .collect();
-    generate_sobol(samples, bounds, Some(&shifts))
+    let mut shifts = [0_u32; MAX_SOBOL_DIMENSIONS];
+    for (dim, slot) in shifts[..bounds.len()].iter_mut().enumerate() {
+        let mut rng = deriver
+            .proposal_dimension_seed(0, u64::try_from(dim).unwrap_or(u64::MAX))
+            .rng();
+        *slot = rand::Rng::next_u32(&mut rng);
+    }
+    Ok(generate_sobol_validated(
+        samples,
+        bounds,
+        Some(&shifts[..bounds.len()]),
+    ))
 }
 
 #[cfg(test)]
