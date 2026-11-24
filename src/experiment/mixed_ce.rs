@@ -10,6 +10,15 @@ use rand_distr::StandardNormal;
 
 use super::{CrossEntropyUpdate, ObjectiveScore};
 
+/// Largest population for which full sorting beats partial selection overhead.
+const FULL_SORT_POPULATION_THRESHOLD: usize = 12;
+
+/// Largest category count tracked in a stack buffer during `fit_categorical`.
+const STACK_CATEGORY_COUNTS: usize = 64;
+
+/// Largest elite slice normalized into a stack buffer during `fit_dimension`.
+const STACK_ELITE_BUFFER: usize = 128;
+
 /// Specification of one dimension in a [`MixedCrossEntropyOptimizer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MixedDimension {
@@ -461,7 +470,7 @@ impl MixedCrossEntropyOptimizer {
             return Ok(None);
         }
         let elite_samples = compute_elite_count(valid_samples, self.elite_fraction);
-        samples.sort_unstable_by(compare_mixed_samples);
+        select_and_order_mixed_elites(samples, valid_samples, elite_samples);
         let elites = &samples[..elite_samples];
         let generation_best = &elites[0];
         let replace_best = self
@@ -542,7 +551,50 @@ impl MixedCrossEntropyOptimizer {
     }
 }
 
+/// Places the `elite_samples` best entries of `samples` at the front in
+/// canonical descending-score order.
+fn select_and_order_mixed_elites(
+    samples: &mut [MixedCrossEntropySample],
+    valid_samples: usize,
+    elite_samples: usize,
+) {
+    let all_valid = valid_samples == samples.len();
+    if elite_samples == 1 {
+        let mut best_index = 0;
+        if all_valid {
+            for index in 1..samples.len() {
+                if compare_valid_mixed_samples(&samples[index], &samples[best_index]).is_lt() {
+                    best_index = index;
+                }
+            }
+        } else {
+            for index in 1..samples.len() {
+                if compare_mixed_samples(&samples[index], &samples[best_index]).is_lt() {
+                    best_index = index;
+                }
+            }
+        }
+        samples.swap(0, best_index);
+    } else if samples.len() <= FULL_SORT_POPULATION_THRESHOLD || elite_samples == samples.len() {
+        if all_valid {
+            samples.sort_unstable_by(compare_valid_mixed_samples);
+        } else {
+            samples.sort_unstable_by(compare_mixed_samples);
+        }
+    } else {
+        if all_valid {
+            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_valid_mixed_samples);
+        } else {
+            let _ = samples.select_nth_unstable_by(elite_samples - 1, compare_mixed_samples);
+        }
+        if elite_samples > 2 {
+            samples[..elite_samples - 1].sort_unstable_by(compare_valid_mixed_samples);
+        }
+    }
+}
+
 /// Fits a single dimension's distribution parameters to `elites`.
+#[allow(clippy::suboptimal_flops)]
 fn fit_dimension(
     state: &mut DimState,
     elites: &[MixedCrossEntropySample],
@@ -564,11 +616,12 @@ fn fit_dimension(
                 *std = *min_std;
                 return;
             }
-            fit_linear_unit(
+            fit_linear_normalized(
                 elites
                     .iter()
                     .filter_map(|s| s.point[dim_index].as_f64())
                     .map(|v| normalize_to_unit(v, *lower, *upper)),
+                elites.len(),
                 mean,
                 std,
                 *min_std,
@@ -584,27 +637,9 @@ fn fit_dimension(
             std,
             min_std,
         } => {
-            let elite_mean = mixed_circular_mean(elites, dim_index, *lower, *upper, *mean);
-            let next_mean = if keep <= 0.0 {
-                elite_mean
-            } else {
-                wrap_unit(lr.mul_add(circular_delta_unit(*mean, elite_mean), *mean))
-            };
-            let elite_var = elites
-                .iter()
-                .filter_map(|s| s.point[dim_index].as_f64())
-                .map(|v| {
-                    let d = circular_delta_unit(elite_mean, normalize_to_unit(v, *lower, *upper));
-                    d * d
-                })
-                .sum::<f64>()
-                * inv_n;
-            *mean = next_mean;
-            *std = (*std * *std)
-                .mul_add(keep, elite_var * lr)
-                .max(0.0)
-                .sqrt()
-                .max(*min_std);
+            fit_circular_dimension(
+                elites, dim_index, *lower, *upper, mean, std, *min_std, lr, keep, inv_n,
+            );
         }
         DimState::Integer {
             min,
@@ -619,11 +654,12 @@ fn fit_dimension(
                 return;
             }
             let (lo, hi) = (*min as f64, *max as f64);
-            fit_linear_unit(
+            fit_linear_normalized(
                 elites
                     .iter()
                     .filter_map(|s| s.point[dim_index].as_i64())
                     .map(|v| normalize_to_unit(v as f64, lo, hi)),
+                elites.len(),
                 mean,
                 std,
                 *min_std,
@@ -647,9 +683,12 @@ fn fit_dimension(
     }
 }
 
-/// Smoothly fits a linear unit-interval Gaussian to normalized elite values.
-fn fit_linear_unit(
-    values: impl Iterator<Item = f64> + Clone,
+/// Smoothly fits a linear unit-interval Gaussian from normalized elite values,
+/// caching them once so each elite is extracted and normalized only once.
+#[allow(clippy::too_many_arguments, clippy::suboptimal_flops)]
+fn fit_linear_normalized(
+    values: impl Iterator<Item = f64>,
+    capacity_hint: usize,
     mean: &mut f64,
     std: &mut f64,
     min_std: f64,
@@ -657,15 +696,102 @@ fn fit_linear_unit(
     keep: f64,
     inv_n: f64,
 ) {
-    let elite_mean = values.clone().sum::<f64>() * inv_n;
-    let elite_var = values
-        .map(|u| {
-            let d = u - elite_mean;
-            d * d
-        })
-        .sum::<f64>()
-        * inv_n;
+    let mut stack_buf = [0.0_f64; STACK_ELITE_BUFFER];
+    let mut heap_buf = Vec::new();
+    let mut sum = -0.0_f64;
+    let slice: &[f64] = if capacity_hint <= STACK_ELITE_BUFFER {
+        let mut count = 0_usize;
+        for (slot, u) in stack_buf.iter_mut().zip(values) {
+            *slot = u;
+            sum += u;
+            count += 1;
+        }
+        &stack_buf[..count]
+    } else {
+        heap_buf.reserve(capacity_hint);
+        for u in values {
+            heap_buf.push(u);
+            sum += u;
+        }
+        &heap_buf
+    };
+    let elite_mean = sum * inv_n;
+    let mut sum_sq = -0.0_f64;
+    for &u in slice {
+        let d = u - elite_mean;
+        sum_sq += d * d;
+    }
+    let elite_var = sum_sq * inv_n;
     *mean = mean.mul_add(keep, elite_mean * lr).clamp(0.0, 1.0);
+    *std = (*std * *std)
+        .mul_add(keep, elite_var * lr)
+        .max(0.0)
+        .sqrt()
+        .max(min_std);
+}
+
+/// Smoothly fits a circular dimension, normalizing each elite coordinate once.
+#[allow(clippy::too_many_arguments, clippy::suboptimal_flops)]
+fn fit_circular_dimension(
+    elites: &[MixedCrossEntropySample],
+    dim_index: usize,
+    lower: f64,
+    upper: f64,
+    mean: &mut f64,
+    std: &mut f64,
+    min_std: f64,
+    lr: f64,
+    keep: f64,
+    inv_n: f64,
+) {
+    let mut stack_buf = [0.0_f64; STACK_ELITE_BUFFER];
+    let mut heap_buf = Vec::new();
+    let mut sin_sum = 0.0_f64;
+    let mut cos_sum = 0.0_f64;
+    let slice: &[f64] = if elites.len() <= STACK_ELITE_BUFFER {
+        let mut count = 0_usize;
+        for (slot, v) in stack_buf
+            .iter_mut()
+            .zip(elites.iter().filter_map(|s| s.point[dim_index].as_f64()))
+        {
+            let u = normalize_to_unit(v, lower, upper);
+            *slot = u;
+            count += 1;
+            let (s, c) = (u * TAU).sin_cos();
+            sin_sum += s;
+            cos_sum += c;
+        }
+        &stack_buf[..count]
+    } else {
+        heap_buf.reserve(elites.len());
+        for sample in elites {
+            if let Some(v) = sample.point[dim_index].as_f64() {
+                let u = normalize_to_unit(v, lower, upper);
+                heap_buf.push(u);
+                let (s, c) = (u * TAU).sin_cos();
+                sin_sum += s;
+                cos_sum += c;
+            }
+        }
+        &heap_buf
+    };
+    let elite_mean = if sin_sum.hypot(cos_sum) <= 1.0e-12 {
+        *mean
+    } else {
+        wrap_unit(sin_sum.atan2(cos_sum) / TAU)
+    };
+    let next_mean = if keep <= 0.0 {
+        elite_mean
+    } else {
+        wrap_unit(lr.mul_add(circular_delta_unit(*mean, elite_mean), *mean))
+    };
+    let mut sum_sq = -0.0_f64;
+    for &u in slice {
+        let d = circular_delta_unit(elite_mean, u);
+        sum_sq += d * d;
+    }
+    let elite_var = sum_sq * inv_n;
+    *mean = next_mean;
     *std = (*std * *std)
         .mul_add(keep, elite_var * lr)
         .max(0.0)
@@ -684,14 +810,21 @@ fn fit_categorical(
     inv_n: f64,
 ) {
     let k = probabilities.len();
-    let mut counts = vec![0_usize; k];
+    let mut stack_counts = [0_usize; STACK_CATEGORY_COUNTS];
+    let mut heap_counts = Vec::new();
+    let counts: &mut [usize] = if k <= STACK_CATEGORY_COUNTS {
+        &mut stack_counts[..k]
+    } else {
+        heap_counts.resize(k, 0);
+        &mut heap_counts
+    };
     for sample in elites {
         if let Some(cat) = sample.point[dim_index].as_category() {
             counts[cat] += 1;
         }
     }
     let mut total = 0.0_f64;
-    for (prob, &count) in probabilities.iter_mut().zip(&counts) {
+    for (prob, &count) in probabilities.iter_mut().zip(counts.iter()) {
         let emp = count as f64 * inv_n;
         *prob = prob.mul_add(keep, emp * lr).max(floor);
         total += *prob;
@@ -955,10 +1088,10 @@ fn validate_mixed_samples(
         for (dim_idx, (value, state)) in sample.point.iter().zip(dims).enumerate() {
             let ok = match (value, state) {
                 (MixedValue::Continuous(v), DimState::Continuous { lower, upper, .. }) => {
-                    v.is_finite() && *v >= *lower && *v <= *upper
+                    *v >= *lower && *v <= *upper
                 }
                 (MixedValue::Continuous(v), DimState::Circular { lower, upper, .. }) => {
-                    v.is_finite() && *v >= *lower && *v < *upper
+                    *v >= *lower && *v < *upper
                 }
                 (MixedValue::Category(c), DimState::Categorical { probabilities, .. }) => {
                     *c < probabilities.len()
@@ -995,6 +1128,39 @@ fn validate_mixed_samples(
     Ok(valid)
 }
 
+/// Breaks ties between equal-scored valid mixed samples via total score order
+/// and then lexicographical coordinate order.
+#[cold]
+fn compare_valid_mixed_tie(
+    left: &MixedCrossEntropySample,
+    right: &MixedCrossEntropySample,
+) -> Ordering {
+    right.score.total_cmp(&left.score).then_with(|| {
+        left.point
+            .iter()
+            .zip(&right.point)
+            .map(|(&a, &b)| a.total_cmp(b))
+            .find(|ord| ord.is_ne())
+            .unwrap_or(Ordering::Equal)
+    })
+}
+
+/// Orders two known-valid mixed samples highest score first, breaking ties
+/// deterministically by coordinate values.
+#[inline]
+fn compare_valid_mixed_samples(
+    left: &MixedCrossEntropySample,
+    right: &MixedCrossEntropySample,
+) -> Ordering {
+    if left.score > right.score {
+        Ordering::Less
+    } else if left.score < right.score {
+        Ordering::Greater
+    } else {
+        compare_valid_mixed_tie(left, right)
+    }
+}
+
 /// Orders valid mixed samples highest score first, breaking ties
 /// deterministically by coordinate values, and places NaNs last.
 fn compare_mixed_samples(
@@ -1005,14 +1171,7 @@ fn compare_mixed_samples(
         (true, true) => Ordering::Equal,
         (true, false) => Ordering::Greater,
         (false, true) => Ordering::Less,
-        (false, false) => right.score.total_cmp(&left.score).then_with(|| {
-            left.point
-                .iter()
-                .zip(&right.point)
-                .map(|(&a, &b)| a.total_cmp(b))
-                .find(|ord| ord.is_ne())
-                .unwrap_or(Ordering::Equal)
-        }),
+        (false, false) => compare_valid_mixed_samples(left, right),
     }
 }
 
@@ -1035,58 +1194,86 @@ fn normalize_to_unit(value: f64, lower: f64, upper: f64) -> f64 {
 }
 
 /// Maps `unit` in `[0, 1]` onto `[lower, upper]`.
+#[inline]
 fn denormalize(unit: f64, lower: f64, upper: f64) -> f64 {
     unit.mul_add(upper - lower, lower)
 }
 
 /// Reflects an arbitrary finite real into `[0, 1]`.
+#[allow(clippy::manual_range_contains)]
+#[inline]
 fn reflect_unit(value: f64) -> f64 {
+    if value >= 0.0 && value <= 1.0 {
+        return value;
+    }
+    reflect_unit_out_of_domain(value)
+}
+
+/// Reflects an out-of-domain value into `[0, 1]` without calling `libm::fmod`.
+#[cold]
+fn reflect_unit_out_of_domain(value: f64) -> f64 {
     if !value.is_finite() {
         return 0.5;
     }
-    let period = value.rem_euclid(2.0);
+    // Bit-identical to `value.rem_euclid(2.0)` for all finite `f64`.
+    let remainder = (-2.0_f64)
+        .mul_add((value * 0.5).trunc(), value)
+        .copysign(value);
+    let period = if remainder < 0.0 {
+        remainder + 2.0
+    } else {
+        remainder
+    };
     if period <= 1.0 { period } else { 2.0 - period }
 }
 
 /// Wraps an arbitrary finite real into `[0, 1)`.
+#[allow(clippy::manual_range_contains)]
+#[inline]
 fn wrap_unit(value: f64) -> f64 {
+    if value >= 0.0 && value < 1.0 {
+        return value;
+    }
+    wrap_unit_out_of_domain(value)
+}
+
+/// Wraps an out-of-domain value into `[0, 1)` without calling `libm::fmod`.
+#[cold]
+fn wrap_unit_out_of_domain(value: f64) -> f64 {
     if !value.is_finite() {
         return 0.0;
     }
-    let wrapped = value.rem_euclid(1.0);
+    // Bit-identical to `value.rem_euclid(1.0)` for all finite `f64`.
+    let remainder = (value - value.trunc()).copysign(value);
+    let wrapped = if remainder < 0.0 {
+        remainder + 1.0
+    } else {
+        remainder
+    };
     if wrapped >= 1.0 { 0.0 } else { wrapped }
 }
 
 /// Signed shortest circular displacement from `from` to `to` on `[0, 1)`.
+#[allow(clippy::manual_range_contains)]
+#[inline]
 fn circular_delta_unit(from: f64, to: f64) -> f64 {
-    let mut delta = (to - from).rem_euclid(1.0);
+    let diff = to - from;
+    let mut delta = if diff >= 0.0 && diff < 1.0 {
+        diff
+    } else if diff > -1.0 && diff < 0.0 {
+        diff + 1.0
+    } else {
+        let remainder = (diff - diff.trunc()).copysign(diff);
+        if remainder < 0.0 {
+            remainder + 1.0
+        } else {
+            remainder
+        }
+    };
     if delta >= 0.5 {
         delta -= 1.0;
     }
     delta
-}
-
-/// Circular mean on `[0, 1)` over `elites`, falling back to `fallback` if resultant vanishes.
-fn mixed_circular_mean(
-    elites: &[MixedCrossEntropySample],
-    dim_index: usize,
-    lower: f64,
-    upper: f64,
-    fallback: f64,
-) -> f64 {
-    let mut sin_sum = 0.0;
-    let mut cos_sum = 0.0;
-    for sample in elites {
-        if let Some(v) = sample.point[dim_index].as_f64() {
-            let angle = normalize_to_unit(v, lower, upper) * TAU;
-            sin_sum += angle.sin();
-            cos_sum += angle.cos();
-        }
-    }
-    if sin_sum.hypot(cos_sum) <= 1.0e-12 {
-        return fallback;
-    }
-    wrap_unit(sin_sum.atan2(cos_sum) / TAU)
 }
 
 #[cfg(test)]
@@ -1186,5 +1373,104 @@ mod tests {
         assert_eq!(0, opt.generation());
         assert_eq!(None, opt.best());
         assert_ne!("", err.to_string());
+    }
+
+    #[test]
+    fn mixed_unit_projections_match_rem_euclid_bit_for_bit() {
+        let cases = [
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            2.0,
+            -2.0,
+            -1.0e-20,
+            1.0e-20,
+            f64::from_bits(1.0_f64.to_bits() - 1),
+            -f64::from_bits(1.0_f64.to_bits() - 1),
+            ((1_u64 << 52) as f64) - 0.5,
+            -((1_u64 << 52) as f64),
+            (1_u64 << 53) as f64,
+            -((1_u64 << 53) as f64),
+            f64::MAX,
+            -f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        for v in cases {
+            let expected_reflect = if v.is_finite() {
+                let p = v.rem_euclid(2.0);
+                if p <= 1.0 { p } else { 2.0 - p }
+            } else {
+                0.5
+            };
+            assert_eq!(expected_reflect.to_bits(), reflect_unit(v).to_bits());
+
+            let expected_wrap = if v.is_finite() {
+                let w = v.rem_euclid(1.0);
+                if w >= 1.0 { 0.0 } else { w }
+            } else {
+                0.0
+            };
+            assert_eq!(expected_wrap.to_bits(), wrap_unit(v).to_bits());
+        }
+
+        let unit = [
+            0.0,
+            -0.0,
+            1.0e-20,
+            0.25,
+            0.5,
+            0.75,
+            f64::from_bits(1.0_f64.to_bits() - 1),
+            1.0,
+        ];
+        for a in unit {
+            for b in unit {
+                let mut expected = (b - a).rem_euclid(1.0);
+                if expected >= 0.5 {
+                    expected -= 1.0;
+                }
+                assert_eq!(expected.to_bits(), circular_delta_unit(a, b).to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_tell_selection_matches_full_sort_with_ties_and_nans() {
+        let config = MixedCrossEntropyConfig::new(vec![
+            MixedDimension::categorical(3),
+            MixedDimension::integer(0, 10),
+            MixedDimension::continuous(0.0, 1.0),
+            MixedDimension::circular(0.0, 1.0),
+        ])
+        .with_learning_rate(0.7);
+        for (size, elite_frac) in [(10, 0.2), (32, 0.01), (32, 0.06), (32, 0.25), (32, 1.0)] {
+            let mut rng = SeedDeriver::new(MasterSeed::from_u64(size as u64))
+                .proposal_seed(0)
+                .rng();
+            let mut opt_a =
+                MixedCrossEntropyOptimizer::new(&config.clone().with_elite_fraction(elite_frac))
+                    .expect("valid");
+            let mut opt_b = opt_a.clone();
+            let mut samples_a: Vec<_> = opt_a
+                .ask_batch(&mut rng, size)
+                .into_iter()
+                .enumerate()
+                .map(|(i, pt)| {
+                    let score = if i % 7 == 0 { f64::NAN } else { (i % 4) as f64 };
+                    MixedCrossEntropySample::new(pt, score)
+                })
+                .collect();
+            let mut samples_b = samples_a.clone();
+            samples_b.reverse();
+            let ua = opt_a.tell(&mut samples_a).expect("tell a");
+            let ub = opt_b.tell(&mut samples_b).expect("tell b");
+            assert_eq!(ua, ub);
+            assert_eq!(opt_a, opt_b);
+        }
     }
 }
