@@ -432,15 +432,13 @@ impl<const N: usize> CrossEntropyOptimizer<N> {
     fn sample_unchecked(&self, mut standard_normal: impl FnMut(usize) -> f64) -> [f64; N] {
         std::array::from_fn(|dimension| {
             let normal = standard_normal(dimension);
-            let value = self.standard_deviation[dimension].mul_add(normal, self.mean[dimension]);
-            if value.is_infinite() && normal.is_finite() {
-                // Each finite binary64 factor has at most 53 significant bits.
-                // An overflowing exact product is therefore an even integer:
-                // its remainder modulo either domain's period (1 or 2) is zero.
-                // Project the exact product plus the mean without overflow.
-                self.mean[dimension]
+            let mean = self.mean[dimension];
+            let value = self.standard_deviation[dimension].mul_add(normal, mean);
+            let geometry = self.dimensions[dimension];
+            if valid_coordinate(value, geometry) {
+                value
             } else {
-                normalize(value, self.dimensions[dimension])
+                project_out_of_domain(value, normal, mean, geometry)
             }
         })
     }
@@ -579,14 +577,19 @@ fn validate_samples<const N: usize>(
     Ok(valid)
 }
 
+/// Largest IEEE-754 `f64` strictly less than `1.0`, matching the exclusive
+/// upper bound of [`CrossEntropyDimension::Circular`].
+const MAX_CIRCULAR_COORDINATE: f64 = f64::from_bits(1.0_f64.to_bits() - 1);
+
 /// Returns whether a coordinate belongs to its normalized domain.
 #[allow(clippy::manual_range_contains)]
 #[inline]
 fn valid_coordinate(value: f64, dimension: CrossEntropyDimension) -> bool {
-    match dimension {
-        CrossEntropyDimension::Linear => value >= 0.0 && value <= 1.0,
-        CrossEntropyDimension::Circular => value >= 0.0 && value < 1.0,
-    }
+    let upper = match dimension {
+        CrossEntropyDimension::Linear => 1.0,
+        CrossEntropyDimension::Circular => MAX_CIRCULAR_COORDINATE,
+    };
+    value >= 0.0 && value <= upper
 }
 
 /// Orders valid scores from greatest to least, ties by point, and NaNs last.
@@ -676,21 +679,48 @@ fn circular_delta(from: f64, to: f64) -> f64 {
     }
 }
 
+/// Projects an out-of-domain sample into its normalized domain, handling
+/// overflow from finite products without losing the exact mean.
+#[cold]
+fn project_out_of_domain(
+    value: f64,
+    normal: f64,
+    mean: f64,
+    dimension: CrossEntropyDimension,
+) -> f64 {
+    if value.is_infinite() && normal.is_finite() {
+        // Each finite binary64 factor has at most 53 significant bits.
+        // An overflowing exact product is therefore an even integer:
+        // its remainder modulo either domain's period (1 or 2) is zero.
+        // Project the exact product plus the mean without overflow.
+        mean
+    } else {
+        normalize_out_of_domain(value, dimension)
+    }
+}
+
 /// Projects a value into its normalized domain.
-///
-/// Both remainders return in-domain values unchanged, so those skip the
-/// `fmod` call that the remainders make.
 #[inline]
 fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
     if valid_coordinate(value, dimension) {
         return value;
     }
+    normalize_out_of_domain(value, dimension)
+}
+
+/// Projects an out-of-domain value into its normalized domain without calling
+/// `libm::fmod`.
+#[inline]
+fn normalize_out_of_domain(value: f64, dimension: CrossEntropyDimension) -> f64 {
     match dimension {
         CrossEntropyDimension::Linear => {
             // Reflection is symmetric about zero. Unlike `rem_euclid`, which
-            // rounds `2 + value` for negative values, `abs`, `%`, and `2 - r`
-            // on [1, 2] are all exact.
-            let reflected = value.abs() % 2.0;
+            // rounds `2 + value` for negative values, `abs`, remainder mod 2,
+            // and `2 - r` on [1, 2] are all exact. For all finite `abs_v >= 0`,
+            // `abs_v - 2 * floor(abs_v / 2)` is exact in IEEE-754 binary64 and
+            // bit-identical to `abs_v % 2.0`.
+            let abs_v = value.abs();
+            let reflected = (-2.0_f64).mul_add((abs_v * 0.5).floor(), abs_v);
             if reflected <= 1.0 {
                 reflected
             } else {
@@ -698,7 +728,15 @@ fn normalize(value: f64, dimension: CrossEntropyDimension) -> f64 {
             }
         }
         CrossEntropyDimension::Circular => {
-            let wrapped = value.rem_euclid(1.0);
+            // `(value - value.trunc()).copysign(value)` is exact in IEEE-754
+            // binary64 and bit-identical to `value % 1.0` (including signed
+            // zero for negative integers).
+            let remainder = (value - value.trunc()).copysign(value);
+            let wrapped = if remainder < 0.0 {
+                remainder + 1.0
+            } else {
+                remainder
+            };
             // A tiny negative remainder can round up to the excluded endpoint.
             if wrapped >= 1.0 { 0.0 } else { wrapped }
         }
@@ -1299,6 +1337,61 @@ mod tests {
                     assert_eq!(expected, update_bits(&mut with_nan), "size {size} with NaN");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn normalize_matches_fmod_bit_for_bit_on_boundary_values() {
+        let cases = [
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            2.0,
+            -2.0,
+            -1.0e-20,
+            1.0e-20,
+            MAX_CIRCULAR_COORDINATE,
+            -MAX_CIRCULAR_COORDINATE,
+            f64::from_bits(1.0_f64.to_bits() + 1),
+            -f64::from_bits(1.0_f64.to_bits() + 1),
+            ((1_u64 << 52) as f64) - 0.5,
+            -((1_u64 << 52) as f64),
+            (1_u64 << 53) as f64,
+            -((1_u64 << 53) as f64),
+            f64::MAX,
+            -f64::MAX,
+        ];
+        for value in cases {
+            let expected_linear = if (0.0..=1.0).contains(&value) {
+                value
+            } else {
+                let reflected = value.abs() % 2.0;
+                if reflected <= 1.0 {
+                    reflected
+                } else {
+                    2.0 - reflected
+                }
+            };
+            assert_eq!(
+                expected_linear.to_bits(),
+                normalize(value, CrossEntropyDimension::Linear).to_bits(),
+                "linear mismatch for {value:?}"
+            );
+
+            let expected_circular = if (0.0..1.0).contains(&value) {
+                value
+            } else {
+                let wrapped = value.rem_euclid(1.0);
+                if wrapped >= 1.0 { 0.0 } else { wrapped }
+            };
+            assert_eq!(
+                expected_circular.to_bits(),
+                normalize(value, CrossEntropyDimension::Circular).to_bits(),
+                "circular mismatch for {value:?}"
+            );
         }
     }
 }
