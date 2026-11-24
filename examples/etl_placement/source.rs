@@ -35,7 +35,7 @@ struct OpenAggregate {
     rows: u64,
     commits: u64,
     end_lsn: u64,
-    weighted_ticks: u128,
+    weighted_offset: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,20 +92,42 @@ pub(crate) struct PostgresAgent {
     lsn: u64,
     burst_high: bool,
     burst_switch_at: Tick,
+    /// Precomputed workload/streaming rates and thresholds.
+    base_tx_per_tick: f64,
+    burst_low_mult: f64,
+    burst_mean_low_s: f64,
+    current_tx_per_tick: f64,
+    poisson_limit: f64,
+    geo_ln_failure: f64,
+    decode_rows_per_tick: f64,
+    copy_bytes_per_tick: f64,
+    wal_sender_timeout_ticks: Tick,
+    wal_sender_half_timeout_ticks: Tick,
+    row_wire_bytes: f64,
     open: Vec<OpenAggregate>,
+    open_dirty: bool,
+    scratch_order: Vec<(u64, usize)>,
     history: VecDeque<Record>,
     history_base: u64,
     confirmed_flush: u64,
     table_slots: BTreeMap<u64, u64>,
     stored_checkpoint: u64,
-    backends: BTreeMap<ConnId, Backend>,
+    /// Backends kept sorted by ascending `ConnId`.
+    backends: Vec<(ConnId, Backend)>,
     /// The earliest tick at which `run_statements` has work: a running
     /// statement finishes. A newly queued query resets it to 0.
     next_statement_at: Tick,
+    /// The earliest tick at which `stream` has work: a copy backend is active,
+    /// a walsender has unread WAL or a blocked keepalive, or a ping/timeout
+    /// falls due.
+    next_stream_at: Tick,
+    /// Whether `trim_history` may have newly droppable records.
+    trim_dirty: bool,
     next_resets: usize,
     copy_bytes_per_row: Vec<f64>,
     /// Commit time of the newest record visible to decoding.
     newest_commit: Tick,
+    last_reported_cross_region: f64,
     events_buf: Vec<NetEvent>,
 }
 
@@ -123,8 +145,31 @@ impl PostgresAgent {
             .iter()
             .map(|table| config.copy_wire_bytes(table.data_bytes_per_row))
             .collect();
+        let workload = &config.workload;
+        let base_tx_per_tick = per_tick(workload.rows_per_s / workload.mean_rows_per_transaction);
+        let (burst_switch_at, burst_low_mult, burst_mean_low_s) =
+            workload.burst.map_or((Tick::MAX, 1.0, 0.0), |burst| {
+                let low = burst.fraction.mul_add(-burst.multiplier, 1.0) / (1.0 - burst.fraction);
+                let mean_low_s = burst.mean_high_s * (1.0 - burst.fraction) / burst.fraction;
+                (0, low, mean_low_s)
+            });
+        let current_tx_per_tick = base_tx_per_tick * 1.0;
+        let poisson_limit = (-current_tx_per_tick).exp();
+        let geo_ln_failure = if workload.mean_rows_per_transaction > 1.0 {
+            (1.0 - 1.0 / workload.mean_rows_per_transaction).ln()
+        } else {
+            0.0
+        };
+        let decode_rows_per_tick = per_tick(config.source.decode_rows_per_s);
+        let copy_bytes_per_tick = per_tick(config.source.copy_bytes_per_s);
+        let wal_sender_timeout_ticks = ticks(config.source.wal_sender_timeout_s);
+        let wal_sender_half_timeout_ticks = wal_sender_timeout_ticks.div_euclid(2);
+        let row_wire_bytes = config.row_wire_bytes(workload.data_bytes_per_row);
+        let tables = workload.tables;
         Self {
-            open: vec![OpenAggregate::default(); config.workload.tables],
+            open: vec![OpenAggregate::default(); tables],
+            open_dirty: false,
+            scratch_order: Vec::with_capacity(tables),
             config,
             recorder,
             net,
@@ -132,19 +177,62 @@ impl PostgresAgent {
             workload_rng,
             lsn: 1,
             burst_high: false,
-            burst_switch_at: 0,
+            burst_switch_at,
+            base_tx_per_tick,
+            burst_low_mult,
+            burst_mean_low_s,
+            current_tx_per_tick,
+            poisson_limit,
+            geo_ln_failure,
+            decode_rows_per_tick,
+            copy_bytes_per_tick,
+            wal_sender_timeout_ticks,
+            wal_sender_half_timeout_ticks,
+            row_wire_bytes,
             history: VecDeque::new(),
             history_base: 0,
             confirmed_flush: 1,
             table_slots: BTreeMap::new(),
             stored_checkpoint: 0,
-            backends: BTreeMap::new(),
+            backends: Vec::new(),
             next_statement_at: Tick::MAX,
+            next_stream_at: Tick::MAX,
+            trim_dirty: false,
             next_resets: 0,
             copy_bytes_per_row,
             newest_commit: 0,
+            last_reported_cross_region: 0.0,
             events_buf: Vec::new(),
         }
+    }
+
+    #[inline]
+    fn find_backend(&self, conn: ConnId) -> Option<usize> {
+        self.backends
+            .binary_search_by_key(&conn, |&(id, _)| id)
+            .ok()
+    }
+
+    #[inline]
+    fn backend_mut(&mut self, conn: ConnId) -> Option<&mut Backend> {
+        let idx = self.find_backend(conn)?;
+        Some(&mut self.backends[idx].1)
+    }
+
+    fn insert_backend(&mut self, conn: ConnId, backend: Backend) {
+        if self.backends.last().is_none_or(|&(last, _)| conn > last) {
+            self.backends.push((conn, backend));
+        } else {
+            match self.backends.binary_search_by_key(&conn, |&(id, _)| id) {
+                Ok(idx) => self.backends[idx].1 = backend,
+                Err(idx) => self.backends.insert(idx, (conn, backend)),
+            }
+        }
+    }
+
+    fn remove_backend(&mut self, conn: ConnId) -> Option<Backend> {
+        let idx = self.find_backend(conn)?;
+        Some(self.backends.remove(idx).1)
     }
 
     fn history_end(&self) -> u64 {
@@ -158,83 +246,117 @@ impl PostgresAgent {
             .map_or(self.confirmed_flush, |record| record.end_lsn)
     }
 
-    fn generate(&mut self, now: Tick) {
-        let workload = &self.config.workload;
-        let multiplier = if let Some(burst) = workload.burst {
-            if now >= self.burst_switch_at {
-                self.burst_high = !self.burst_high && now > 0;
-                let mean_low_s = burst.mean_high_s * (1.0 - burst.fraction) / burst.fraction;
-                let mean = if self.burst_high {
-                    burst.mean_high_s
-                } else {
-                    mean_low_s
-                };
-                self.burst_switch_at = now + ticks(self.workload_rng.exponential(mean)).max(1);
-            }
-            // Keep the long-run mean: high × f + low × (1 − f) = 1.
-            let low = burst.fraction.mul_add(-burst.multiplier, 1.0) / (1.0 - burst.fraction);
-            if self.burst_high {
-                burst.multiplier
-            } else {
-                low
-            }
-        } else {
-            1.0
+    #[cold]
+    fn switch_burst(&mut self, now: Tick) {
+        let Some(burst) = self.config.workload.burst else {
+            return;
         };
-        let transactions_per_tick =
-            per_tick(workload.rows_per_s / workload.mean_rows_per_transaction) * multiplier;
+        self.burst_high = !self.burst_high && now > 0;
+        let mean = if self.burst_high {
+            burst.mean_high_s
+        } else {
+            self.burst_mean_low_s
+        };
+        self.burst_switch_at = now + ticks(self.workload_rng.exponential(mean)).max(1);
+        let multiplier = if self.burst_high {
+            burst.multiplier
+        } else {
+            self.burst_low_mult
+        };
+        self.current_tx_per_tick = self.base_tx_per_tick * multiplier;
+        self.poisson_limit = (-self.current_tx_per_tick).exp();
+    }
+
+    fn generate(&mut self, now: Tick) {
+        if now >= self.burst_switch_at {
+            self.switch_burst(now);
+        }
         let draining = self.config.workload_until.is_some_and(|until| now >= until);
         let count = if draining {
             0
         } else {
-            self.workload_rng.poisson(transactions_per_tick)
-        };
-        for _ in 0..count {
-            let rows = self
-                .workload_rng
-                .geometric(workload.mean_rows_per_transaction);
-            let table = self.workload_rng.below(workload.tables as u64);
-            self.lsn += to_u64(rows as f64 * self.config.source.wal_bytes_per_row) + 100;
-            let slot = &mut self.open[usize::try_from(table).unwrap_or(0)];
-            slot.rows += rows;
-            slot.commits += 1;
-            slot.end_lsn = self.lsn;
-            slot.weighted_ticks += u128::from(rows) * u128::from(now);
-        }
-        if (now + 1) % AGGREGATION_TICKS == 0 {
-            let mut records: Vec<Record> = self
-                .open
-                .iter_mut()
-                .enumerate()
-                .filter(|(_, slot)| slot.commits > 0)
-                .map(|(table, slot)| {
-                    let taken = std::mem::take(slot);
-                    let mean = taken
-                        .weighted_ticks
-                        .div_euclid(u128::from(taken.rows.max(1)));
-                    Record {
-                        table: table as u64,
-                        rows: taken.rows,
-                        commits: taken.commits,
-                        end_lsn: taken.end_lsn,
-                        commit_tick: u64::try_from(mean).unwrap_or(now),
-                    }
-                })
-                .collect();
-            records.sort_by_key(|record| record.end_lsn);
-            if let Some(newest) = records.iter().map(|record| record.commit_tick).max() {
-                self.newest_commit = self.newest_commit.max(newest);
-            }
-            {
-                let mut recorder = self.recorder.borrow_mut();
-                for record in &records {
-                    let table = usize::try_from(record.table)
-                        .unwrap_or_else(|_| panic!("table ids come from a usize table count"));
-                    recorder.committed(table, record.end_lsn);
+            let mean = self.current_tx_per_tick;
+            if mean <= 0.0 {
+                0
+            } else if mean > 30.0 {
+                self.workload_rng.poisson(mean)
+            } else {
+                const MAX_COUNT: u64 = 1_000;
+                let limit = self.poisson_limit;
+                let mut product = self.workload_rng.unit();
+                let mut drawn = 0;
+                while product > limit && drawn < MAX_COUNT {
+                    drawn += 1;
+                    product *= self.workload_rng.unit();
                 }
+                drawn
             }
-            self.history.extend(records);
+        };
+        if count > 0 {
+            self.open_dirty = true;
+            let workload = &self.config.workload;
+            let tables = workload.tables as u64;
+            let wal_bytes_per_row = self.config.source.wal_bytes_per_row;
+            let offset = now % AGGREGATION_TICKS;
+            for _ in 0..count {
+                let rows = if self.geo_ln_failure >= 0.0 {
+                    self.workload_rng
+                        .geometric(workload.mean_rows_per_transaction)
+                } else {
+                    1 + to_u64(
+                        ((1.0 - self.workload_rng.unit()).ln() / self.geo_ln_failure).floor(),
+                    )
+                };
+                let table = self.workload_rng.below(tables);
+                self.lsn += to_u64(rows as f64 * wal_bytes_per_row) + 100;
+                let slot = &mut self.open[usize::try_from(table).unwrap_or(0)];
+                slot.rows += rows;
+                slot.commits += 1;
+                slot.end_lsn = self.lsn;
+                slot.weighted_offset += rows * offset;
+            }
         }
+        if (now + 1) % AGGREGATION_TICKS == 0 && self.open_dirty {
+            self.flush_open_aggregates(now);
+        }
+    }
+
+    fn flush_open_aggregates(&mut self, now: Tick) {
+        self.open_dirty = false;
+        let base = now + 1 - AGGREGATION_TICKS;
+        self.scratch_order.clear();
+        for (table, slot) in self.open.iter().enumerate() {
+            if slot.commits > 0 {
+                self.scratch_order.push((slot.end_lsn, table));
+            }
+        }
+        if self.scratch_order.len() > 1 {
+            self.scratch_order.sort_unstable_by_key(|&(lsn, _)| lsn);
+        }
+        let audit = self.config.audit_delivery;
+        if audit {
+            let mut recorder = self.recorder.borrow_mut();
+            for &(lsn, table) in &self.scratch_order {
+                recorder.committed(table, lsn);
+            }
+        }
+        for &(_, table) in &self.scratch_order {
+            let taken = std::mem::take(&mut self.open[table]);
+            let commit_tick = if taken.rows > 0 {
+                base + taken.weighted_offset.div_euclid(taken.rows)
+            } else {
+                0
+            };
+            self.newest_commit = self.newest_commit.max(commit_tick);
+            self.history.push_back(Record {
+                table: table as u64,
+                rows: taken.rows,
+                commits: taken.commits,
+                end_lsn: taken.end_lsn,
+                commit_tick,
+            });
+        }
+        self.next_stream_at = 0;
     }
 
     fn service_time(&self, op: Op) -> f64 {
@@ -274,6 +396,7 @@ impl PostgresAgent {
             }
             Op::DropSlot => {
                 self.table_slots.remove(&a);
+                self.trim_dirty = true;
                 0
             }
             Op::StartReplication | Op::StartCatchup => {
@@ -304,17 +427,18 @@ impl PostgresAgent {
                     last_client_message: now,
                     ping_outstanding: false,
                 };
-                if let Some(backend) = self.backends.get_mut(&conn) {
+                if let Some(backend) = self.backend_mut(conn) {
                     backend.mode = Mode::WalSender(sender);
                 }
                 self.net.use_receiver_credit(conn);
                 self.net.set_quantum(conn, AGGREGATION_TICKS);
+                self.next_stream_at = 0;
                 0
             }
             Op::StartCopy => {
                 let table = usize::try_from(b).unwrap_or(0);
                 let bytes_per_row = self.copy_bytes_per_row.get(table).copied().unwrap_or(100.0);
-                if let Some(backend) = self.backends.get_mut(&conn) {
+                if let Some(backend) = self.backend_mut(conn) {
                     backend.mode = Mode::Copy(CopyOut {
                         rows_left: a,
                         bytes_left: a as f64 * bytes_per_row,
@@ -324,6 +448,7 @@ impl PostgresAgent {
                 }
                 self.net.use_receiver_credit(conn);
                 self.net.set_quantum(conn, AGGREGATION_TICKS);
+                self.next_stream_at = 0;
                 0
             }
             Op::Begin
@@ -346,119 +471,136 @@ impl PostgresAgent {
         if now < self.next_statement_at {
             return;
         }
-        let conns: Vec<ConnId> = self.backends.keys().copied().collect();
-        for conn in conns {
-            while let Some(backend) = self.backends.get_mut(&conn) {
-                match backend.running {
+        let mut next_statement_at = Tick::MAX;
+        for idx in 0..self.backends.len() {
+            let conn = self.backends[idx].0;
+            loop {
+                match self.backends[idx].1.running {
                     Some((id, op, a, b, done_at)) if done_at <= now => {
-                        backend.running = None;
+                        self.backends[idx].1.running = None;
                         let value = self.execute(conn, op, a, b, now);
                         send_tracked(&mut self.net, conn, Unit::Reply { id, value });
                     }
-                    Some(_) => break,
+                    Some((.., done_at)) => {
+                        next_statement_at = next_statement_at.min(done_at);
+                        break;
+                    }
                     None => {
-                        let Some((id, op, a, b)) = backend.queue.pop_front() else {
+                        let Some((id, op, a, b)) = self.backends[idx].1.queue.pop_front() else {
                             break;
                         };
                         let service = ticks(self.service_time(op));
-                        if let Some(backend) = self.backends.get_mut(&conn) {
-                            backend.running = Some((id, op, a, b, now + service));
-                        }
+                        self.backends[idx].1.running = Some((id, op, a, b, now + service));
                     }
                 }
             }
         }
-        self.next_statement_at = self
-            .backends
-            .values()
-            .filter_map(|backend| backend.running.map(|(.., done_at)| done_at))
-            .min()
-            .unwrap_or(Tick::MAX);
+        self.next_statement_at = next_statement_at;
     }
 
     fn stream(&mut self, now: Tick) {
-        let rows_per_tick = per_tick(self.config.source.decode_rows_per_s);
+        if now < self.next_stream_at {
+            return;
+        }
+        let rows_per_tick = self.decode_rows_per_tick;
+        let copy_rate = self.copy_bytes_per_tick;
         let send_buffer = self.net.send_buffer_bytes();
-        let timeout = ticks(self.config.source.wal_sender_timeout_s);
-        let row_wire = self
-            .config
-            .row_wire_bytes(self.config.workload.data_bytes_per_row);
+        let timeout = self.wal_sender_timeout_ticks;
+        let half_timeout = self.wal_sender_half_timeout_ticks;
+        let row_wire = self.row_wire_bytes;
         let transaction_wire = self.config.source.transaction_overhead_bytes;
         let flushed = self.flushed_lsn();
         let history_end = self.history_end();
+        let mut next_due = Tick::MAX;
         let mut terminated = Vec::new();
-        for (&conn, backend) in &mut self.backends {
+        for &mut (conn, ref mut backend) in &mut self.backends {
             match &mut backend.mode {
                 Mode::WalSender(sender) => {
                     if now.saturating_sub(sender.last_client_message) >= timeout {
                         terminated.push(conn);
                         continue;
                     }
-                    let mut budget = sender.decode_carry + rows_per_tick;
-                    while self.net.buffered(conn) < send_buffer && budget >= 1.0 {
-                        let Some(record) = sender
-                            .cursor
-                            .checked_sub(self.history_base)
-                            .and_then(|index| usize::try_from(index).ok())
-                            .and_then(|index| self.history.get(index))
-                            .copied()
-                        else {
-                            break;
-                        };
-                        let available = record.rows - sender.partial_rows;
-                        let take = available.min(to_u64(budget.floor()));
-                        let completes = take == available;
-                        let chunk = WalChunk {
-                            table: record.table,
-                            rows: take,
-                            wire_bytes: to_u64((take as f64).mul_add(
-                                row_wire,
-                                if completes {
-                                    record.commits as f64 * transaction_wire
-                                } else {
-                                    0.0
-                                },
-                            )),
-                            commits: if completes { record.commits } else { 0 },
-                            end_lsn: if completes { record.end_lsn } else { 0 },
-                            commit_tick: record.commit_tick,
-                        };
-                        send_tracked(&mut self.net, conn, Unit::Wal(chunk));
-                        budget -= take as f64;
-                        if completes {
-                            sender.cursor += 1;
-                            sender.partial_rows = 0;
-                            sender.sent_lsn = record.end_lsn;
-                        } else {
-                            sender.partial_rows += take;
+                    if sender.cursor < history_end {
+                        let mut budget = sender.decode_carry + rows_per_tick;
+                        while sender.cursor < history_end
+                            && budget >= 1.0
+                            && self.net.buffered(conn) < send_buffer
+                        {
+                            let Some(record) = sender
+                                .cursor
+                                .checked_sub(self.history_base)
+                                .and_then(|index| usize::try_from(index).ok())
+                                .and_then(|index| self.history.get(index))
+                                .copied()
+                            else {
+                                break;
+                            };
+                            let available = record.rows - sender.partial_rows;
+                            let take = available.min(to_u64(budget.floor()));
+                            let completes = take == available;
+                            let chunk = WalChunk {
+                                table: record.table,
+                                rows: take,
+                                wire_bytes: to_u64((take as f64).mul_add(
+                                    row_wire,
+                                    if completes {
+                                        record.commits as f64 * transaction_wire
+                                    } else {
+                                        0.0
+                                    },
+                                )),
+                                commits: if completes { record.commits } else { 0 },
+                                end_lsn: if completes { record.end_lsn } else { 0 },
+                                commit_tick: record.commit_tick,
+                            };
+                            send_tracked(&mut self.net, conn, Unit::Wal(chunk));
+                            budget -= take as f64;
+                            if completes {
+                                sender.cursor += 1;
+                                sender.partial_rows = 0;
+                                sender.sent_lsn = record.end_lsn;
+                                self.trim_dirty = true;
+                            } else {
+                                sender.partial_rows += take;
+                            }
                         }
+                        sender.decode_carry = if sender.cursor >= history_end {
+                            0.0
+                        } else {
+                            budget.min(rows_per_tick)
+                        };
+                    } else {
+                        sender.decode_carry = 0.0;
                     }
                     let caught_up = sender.cursor >= history_end;
-                    sender.decode_carry = if caught_up {
-                        0.0
-                    } else {
-                        budget.min(rows_per_tick)
-                    };
+                    let mut needs_poll = !caught_up;
                     // WalSndWaitForWal: when idle with the client behind, send a
                     // keepalive carrying the current end of WAL.
-                    if caught_up && self.net.buffered(conn) < send_buffer {
-                        sender.sent_lsn = sender.sent_lsn.max(flushed);
-                        if sender.client_write < sender.sent_lsn
-                            && sender.last_keepalive_lsn < sender.sent_lsn
-                        {
-                            sender.last_keepalive_lsn = sender.sent_lsn;
-                            send_tracked(
-                                &mut self.net,
-                                conn,
-                                Unit::Keepalive {
-                                    wal_end: sender.sent_lsn,
-                                    reply: false,
-                                },
-                            );
+                    if caught_up {
+                        let target_lsn = sender.sent_lsn.max(flushed);
+                        let need_keepalive = sender.client_write < target_lsn
+                            && sender.last_keepalive_lsn < target_lsn;
+                        if target_lsn > sender.sent_lsn || need_keepalive {
+                            if self.net.buffered(conn) < send_buffer {
+                                sender.sent_lsn = target_lsn;
+                                if need_keepalive {
+                                    sender.last_keepalive_lsn = sender.sent_lsn;
+                                    send_tracked(
+                                        &mut self.net,
+                                        conn,
+                                        Unit::Keepalive {
+                                            wal_end: sender.sent_lsn,
+                                            reply: false,
+                                        },
+                                    );
+                                }
+                            } else {
+                                needs_poll = true;
+                            }
                         }
                     }
                     if !sender.ping_outstanding
-                        && now.saturating_sub(sender.last_client_message) >= timeout.div_euclid(2)
+                        && now.saturating_sub(sender.last_client_message) >= half_timeout
                     {
                         sender.ping_outstanding = true;
                         send_tracked(
@@ -470,13 +612,23 @@ impl PostgresAgent {
                             },
                         );
                     }
+                    if needs_poll {
+                        next_due = 0;
+                    } else {
+                        let timer_at = if sender.ping_outstanding {
+                            sender.last_client_message.saturating_add(timeout)
+                        } else {
+                            sender.last_client_message.saturating_add(half_timeout)
+                        };
+                        next_due = next_due.min(timer_at);
+                    }
                 }
                 Mode::Copy(copy) => {
                     let room = (send_buffer - self.net.buffered(conn)).max(0.0);
-                    let rate = per_tick(self.config.source.copy_bytes_per_s);
-                    let bytes = (copy.carry + rate).min(room).min(copy.bytes_left);
-                    copy.carry = (copy.carry + rate - bytes).min(rate);
+                    let bytes = (copy.carry + copy_rate).min(room).min(copy.bytes_left);
+                    copy.carry = (copy.carry + copy_rate - bytes).min(copy_rate);
                     if bytes <= 0.0 {
+                        next_due = 0;
                         continue;
                     }
                     let rows = to_u64((bytes / copy.bytes_per_row).round()).min(copy.rows_left);
@@ -495,32 +647,39 @@ impl PostgresAgent {
                     );
                     if done {
                         backend.mode = Mode::Sql;
+                    } else {
+                        next_due = 0;
                     }
                 }
                 Mode::Sql => {}
             }
         }
-        for conn in terminated {
-            self.backends.remove(&conn);
-            self.net.abort(conn, now, &self.config.faults);
-            self.recorder
-                .borrow_mut()
-                .event(now, "walsender exited: wal_sender_timeout");
+        if !terminated.is_empty() {
+            self.trim_dirty = true;
+            for conn in terminated {
+                self.remove_backend(conn);
+                self.net.abort(conn, now, &self.config.faults);
+                self.recorder
+                    .borrow_mut()
+                    .event(now, "walsender exited: wal_sender_timeout");
+            }
         }
+        self.next_stream_at = next_due;
     }
 
     fn on_status(&mut self, conn: ConnId, write: u64, flush: u64, now: Tick) {
         let Some(Backend {
             mode: Mode::WalSender(sender),
             ..
-        }) = self.backends.get_mut(&conn)
+        }) = self.backend_mut(conn)
         else {
             return;
         };
         sender.last_client_message = now;
         sender.ping_outstanding = false;
         sender.client_write = sender.client_write.max(write);
-        match sender.slot {
+        let slot = sender.slot;
+        match slot {
             Slot::Main => self.confirmed_flush = self.confirmed_flush.max(flush),
             Slot::Table(table) => {
                 if let Some(lsn) = self.table_slots.get_mut(&table) {
@@ -528,16 +687,28 @@ impl PostgresAgent {
                 }
             }
         }
+        self.next_stream_at = 0;
+        self.trim_dirty = true;
     }
 
     /// Drops WAL every slot and sender has passed.
     fn trim_history(&mut self) {
+        if !self.trim_dirty {
+            return;
+        }
+        self.trim_dirty = false;
+        let Some(front) = self.history.front() else {
+            return;
+        };
+        if front.end_lsn > self.confirmed_flush {
+            return;
+        }
         let mut keep_lsn = self.confirmed_flush;
         for lsn in self.table_slots.values() {
             keep_lsn = keep_lsn.min(*lsn);
         }
         let mut keep_index = self.history_end();
-        for backend in self.backends.values() {
+        for (_, backend) in &self.backends {
             if let Mode::WalSender(sender) = &backend.mode {
                 keep_index = keep_index.min(sender.cursor);
             }
@@ -552,8 +723,13 @@ impl PostgresAgent {
     }
 
     fn inject_faults(&mut self, now: Tick) {
-        let resets = &self.config.faults.replication_resets;
-        while self.next_resets < resets.len() && resets[self.next_resets] <= now {
+        while self
+            .config
+            .faults
+            .replication_resets
+            .get(self.next_resets)
+            .is_some_and(|&at| at <= now)
+        {
             self.next_resets += 1;
             let main: Vec<ConnId> = self
                 .backends
@@ -561,12 +737,13 @@ impl PostgresAgent {
                 .filter(|(_, backend)| {
                     matches!(&backend.mode, Mode::WalSender(sender) if sender.slot == Slot::Main)
                 })
-                .map(|(conn, _)| *conn)
+                .map(|&(conn, _)| conn)
                 .collect();
             for conn in main {
-                self.backends.remove(&conn);
+                self.remove_backend(conn);
                 self.net.abort(conn, now, &self.config.faults);
             }
+            self.trim_dirty = true;
             self.recorder
                 .borrow_mut()
                 .event(now, "source reset the replication connection");
@@ -592,7 +769,7 @@ impl Agent<Payload> for PostgresAgent {
                         kind != ConnKind::Http,
                         "postgres serves only Postgres connections"
                     );
-                    self.backends.insert(
+                    self.insert_backend(
                         conn,
                         Backend {
                             queue: VecDeque::new(),
@@ -602,10 +779,12 @@ impl Agent<Payload> for PostgresAgent {
                     );
                 }
                 NetEvent::Closed(conn) => {
-                    self.backends.remove(&conn);
+                    if self.remove_backend(conn).is_some() {
+                        self.trim_dirty = true;
+                    }
                 }
                 NetEvent::Data(conn, Unit::Query { id, op, a, b }) => {
-                    if let Some(backend) = self.backends.get_mut(&conn) {
+                    if let Some(backend) = self.backend_mut(conn) {
                         backend.queue.push_back((id, op, a, b));
                         self.next_statement_at = 0;
                     }
@@ -639,7 +818,10 @@ impl Agent<Payload> for PostgresAgent {
                 .push((now, self.lsn.saturating_sub(oldest)));
             recorder.sample_lag(now, self.newest_commit);
         }
-        self.recorder.borrow_mut().cross_region_bytes[0] = self.net.cross_region_bytes;
+        if self.net.cross_region_bytes.to_bits() != self.last_reported_cross_region.to_bits() {
+            self.last_reported_cross_region = self.net.cross_region_bytes;
+            self.recorder.borrow_mut().cross_region_bytes[0] = self.net.cross_region_bytes;
+        }
         self.net
             .pump(ctx, now, &self.config.faults, &mut self.network_rng);
     }
