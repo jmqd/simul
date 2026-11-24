@@ -11,10 +11,12 @@
 //!   slowdown and optional cancellable `statement_timeout`.
 //! - `rpc` (reactive): External downstream HTTP/gRPC dependency.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
 
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use simul::agent::{Agent, AgentContext, AgentId, AgentInitializer, TimerId};
-use simul::experiment::{Probability, QuantileReducer, QuantileSummary, TrialContext, TrialRng};
+use simul::experiment::{Probability, TrialContext, TrialRng};
 use simul::message::Message;
 use simul::{DiscreteTime, Halt, Simulation, SimulationError, UnknownDestinationPolicy};
 
@@ -67,14 +69,14 @@ pub(crate) enum PoolMsg {
         req_id: u64,
         /// Workload class.
         class: RequestClass,
-        /// Arrival tick (ms).
-        arrived_at: DiscreteTime,
+        /// Arrival tick (ms), compact for trace readability; full timestamp is in `Message::queued_time`.
+        arrived_at: u32,
         /// Intrinsic base duration for query 1 before USL contention (ms).
         q1_base_ms: f32,
         /// Intrinsic base duration for query 2 before USL contention (ms).
         q2_base_ms: f32,
         /// External RPC duration (ms), used for [`RequestClass::RpcHold`].
-        rpc_ms: DiscreteTime,
+        rpc_ms: u16,
     },
     /// `app` requests a connection from `pool`.
     AcquireConn {
@@ -142,7 +144,7 @@ pub(crate) enum PoolMsg {
         /// Request identifier.
         req_id: u64,
         /// Synchronized RPC latency (ms).
-        delay_ms: DiscreteTime,
+        delay_ms: u16,
     },
     /// `rpc` notifies `app` that the external call completed.
     RpcDone {
@@ -287,14 +289,14 @@ impl LoadGen {
         };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let rpc_ms = if need_rpc_j {
-            (w.rpc_ms * rpc_j).round().clamp(1.0, 10_000.0) as DiscreteTime
+            (w.rpc_ms * rpc_j).round().clamp(1.0, 10_000.0) as u16
         } else {
             0
         };
         PoolMsg::IncomingRequest {
             req_id,
             class,
-            arrived_at: now,
+            arrived_at: u32::try_from(now).unwrap_or(u32::MAX),
             q1_base_ms,
             q2_base_ms,
             rpc_ms,
@@ -353,8 +355,8 @@ enum ReqStage {
     },
     /// Executing SQL query #2 (after RPC or nested).
     QuerySecond {
-        /// Optional outer connection held by a nested request.
-        first_conn: Option<ConnHandle>,
+        /// Optional outer fast-lane lease ID held by a nested request (`0` if none).
+        first_fast_lease: u64,
         /// Connection running query #2.
         second_conn: ConnHandle,
     },
@@ -365,6 +367,8 @@ enum ReqStage {
 struct ActiveRequest {
     /// Workload class.
     class: RequestClass,
+    /// Synchronized external RPC latency (ms).
+    rpc_ms: u16,
     /// Arrival timestamp from `load_gen` (ms).
     arrived_at: DiscreteTime,
     /// Timestamp when the current pool acquisition started (ms).
@@ -377,8 +381,6 @@ struct ActiveRequest {
     q1_base_ms: f32,
     /// Base duration of query #2 (ms).
     q2_base_ms: f32,
-    /// Synchronized external RPC latency (ms).
-    rpc_ms: DiscreteTime,
     /// Current state-machine stage.
     stage: ReqStage,
 }
@@ -390,14 +392,14 @@ struct QueuedRequest {
     req_id: u64,
     /// Workload class.
     class: RequestClass,
+    /// Synchronized external RPC latency (ms).
+    rpc_ms: u16,
     /// Arrival timestamp (ms).
     arrived_at: DiscreteTime,
     /// Base duration of query #1 (ms).
     q1_base_ms: f32,
     /// Base duration of query #2 (ms).
     q2_base_ms: f32,
-    /// Synchronized external RPC latency (ms).
-    rpc_ms: DiscreteTime,
 }
 
 /// Bounded application worker pool and request-lifecycle telemetry collector.
@@ -414,7 +416,7 @@ struct AppServer {
     /// Cached external RPC agent ID.
     rpc_id: Option<AgentId>,
     /// Active requests currently running on worker threads.
-    active: BTreeMap<u64, ActiveRequest>,
+    active: FxHashMap<u64, ActiveRequest>,
     /// Requests queued waiting for an application worker.
     backlog: VecDeque<QueuedRequest>,
     /// Requests arriving inside `[warmup_ms, measure_end_ms)`.
@@ -426,13 +428,13 @@ struct AppServer {
     /// Measured requests that failed due to DB `statement_timeout`.
     measured_stmt_timeouts: u64,
     /// End-to-end latencies (ms) of completed measured requests.
-    all_latencies: Vec<f64>,
+    all_latencies: Vec<DiscreteTime>,
     /// End-to-end latencies (ms) of completed fast-OLTP measured requests.
-    fast_latencies: Vec<f64>,
+    fast_latencies: Vec<DiscreteTime>,
     /// Pool queue wait times (ms) of completed measured requests.
-    pool_waits: Vec<f64>,
+    pool_waits: Vec<DiscreteTime>,
     /// DB execution times (ms) of completed measured requests.
-    db_execs: Vec<f64>,
+    db_execs: Vec<DiscreteTime>,
 }
 
 impl AppServer {
@@ -443,22 +445,31 @@ impl AppServer {
             .horizon_ms
             .saturating_sub(DRAIN_MARGIN_MS)
             .max(spec.workload.warmup_ms + 1);
+        let est_measured = if spec.pool.halt_on_deadlock {
+            0
+        } else {
+            let window_ms = measure_end_ms.saturating_sub(spec.workload.warmup_ms) as f64;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let raw = (window_ms * spec.workload.rps / 1000.0 * 1.25).clamp(0.0, 16_384.0) as usize;
+            raw
+        };
+        let active_cap = spec.pool.app_workers.saturating_mul(2).max(16);
         Self {
             spec,
             measure_end_ms,
             pool_id: None,
             db_id: None,
             rpc_id: None,
-            active: BTreeMap::new(),
+            active: FxHashMap::with_capacity_and_hasher(active_cap, FxBuildHasher),
             backlog: VecDeque::new(),
             measured_arrived: 0,
             measured_completed: 0,
             measured_acquire_timeouts: 0,
             measured_stmt_timeouts: 0,
-            all_latencies: Vec::new(),
-            fast_latencies: Vec::new(),
-            pool_waits: Vec::new(),
-            db_execs: Vec::new(),
+            all_latencies: Vec::with_capacity(est_measured),
+            fast_latencies: Vec::with_capacity(est_measured),
+            pool_waits: Vec::with_capacity(est_measured),
+            db_execs: Vec::with_capacity(est_measured),
         }
     }
 
@@ -499,13 +510,13 @@ impl AppServer {
             req.req_id,
             ActiveRequest {
                 class: req.class,
+                rpc_ms: req.rpc_ms,
                 arrived_at: req.arrived_at,
                 acquire_sent_at: now,
                 total_pool_wait_ms: 0,
                 total_db_exec_ms: 0,
                 q1_base_ms: req.q1_base_ms,
                 q2_base_ms: req.q2_base_ms,
-                rpc_ms: req.rpc_ms,
                 stage: ReqStage::AcquiringFirst,
             },
         );
@@ -537,14 +548,14 @@ impl AppServer {
         now: DiscreteTime,
     ) {
         if self.is_measured(req.arrived_at) {
-            let e2e = now.saturating_sub(req.arrived_at) as f64;
+            let e2e = now.saturating_sub(req.arrived_at);
             self.measured_completed += 1;
             self.all_latencies.push(e2e);
             if req.class == RequestClass::Fast {
                 self.fast_latencies.push(e2e);
             }
-            self.pool_waits.push(req.total_pool_wait_ms as f64);
-            self.db_execs.push(req.total_db_exec_ms as f64);
+            self.pool_waits.push(req.total_pool_wait_ms);
+            self.db_execs.push(req.total_db_exec_ms);
         }
         self.admit_from_backlog(ctx);
     }
@@ -580,7 +591,7 @@ impl AppServer {
             }
             ReqStage::AcquiringAfterRpc => {
                 entry.stage = ReqStage::QuerySecond {
-                    first_conn: None,
+                    first_fast_lease: 0,
                     second_conn: conn,
                 };
                 ctx.send_to(
@@ -593,7 +604,7 @@ impl AppServer {
             }
             ReqStage::AcquiringNested { first_conn } => {
                 entry.stage = ReqStage::QuerySecond {
-                    first_conn: Some(first_conn),
+                    first_fast_lease: first_conn.lease_id,
                     second_conn: conn,
                 };
                 ctx.send_to(
@@ -637,14 +648,16 @@ impl AppServer {
         let Some(pool_id) = self.pool_id else {
             return;
         };
-        let Some(mut req) = self.active.remove(&req_id) else {
+        let now = ctx.time();
+        let Entry::Occupied(mut occupied) = self.active.entry(req_id) else {
             return;
         };
-        req.total_db_exec_ms = req.total_db_exec_ms.saturating_add(exec_ms);
-        let now = ctx.time();
-        match req.stage {
+        let req_mut = occupied.get_mut();
+        req_mut.total_db_exec_ms = req_mut.total_db_exec_ms.saturating_add(exec_ms);
+        match req_mut.stage {
             ReqStage::QueryFirst { conn } => {
                 if !ok {
+                    let req = occupied.remove();
                     ctx.send_to(pool_id, PoolMsg::ReleaseConn { conn });
                     if self.is_measured(req.arrived_at) {
                         self.measured_stmt_timeouts += 1;
@@ -652,8 +665,9 @@ impl AppServer {
                     self.admit_from_backlog(ctx);
                     return;
                 }
-                match req.class {
+                match req_mut.class {
                     RequestClass::Fast | RequestClass::Slow => {
+                        let req = occupied.remove();
                         ctx.send_to(pool_id, PoolMsg::ReleaseConn { conn });
                         self.finish_success(ctx, req, now);
                     }
@@ -665,17 +679,15 @@ impl AppServer {
                                 None
                             }
                         };
-                        req.stage = ReqStage::InExternalRpc { held_conn };
-                        let delay_ms = req.rpc_ms;
-                        self.active.insert(req_id, req);
+                        req_mut.stage = ReqStage::InExternalRpc { held_conn };
+                        let delay_ms = req_mut.rpc_ms;
                         if let Some(rpc_id) = self.rpc_id {
                             ctx.send_to(rpc_id, PoolMsg::CallRpc { req_id, delay_ms });
                         }
                     }
                     RequestClass::Nested => {
-                        req.acquire_sent_at = now;
-                        req.stage = ReqStage::AcquiringNested { first_conn: conn };
-                        self.active.insert(req_id, req);
+                        req_mut.acquire_sent_at = now;
+                        req_mut.stage = ReqStage::AcquiringNested { first_conn: conn };
                         ctx.send_to(
                             pool_id,
                             PoolMsg::AcquireConn {
@@ -688,12 +700,21 @@ impl AppServer {
                 }
             }
             ReqStage::QuerySecond {
-                first_conn,
+                first_fast_lease,
                 second_conn,
             } => {
+                let req = occupied.remove();
                 ctx.send_to(pool_id, PoolMsg::ReleaseConn { conn: second_conn });
-                if let Some(outer) = first_conn {
-                    ctx.send_to(pool_id, PoolMsg::ReleaseConn { conn: outer });
+                if first_fast_lease != 0 {
+                    ctx.send_to(
+                        pool_id,
+                        PoolMsg::ReleaseConn {
+                            conn: ConnHandle {
+                                lane: PoolLane::Fast,
+                                lease_id: first_fast_lease,
+                            },
+                        },
+                    );
                 }
                 if ok {
                     self.finish_success(ctx, req, now);
@@ -707,7 +728,9 @@ impl AppServer {
             ReqStage::AcquiringFirst
             | ReqStage::InExternalRpc { .. }
             | ReqStage::AcquiringAfterRpc
-            | ReqStage::AcquiringNested { .. } => {}
+            | ReqStage::AcquiringNested { .. } => {
+                occupied.remove();
+            }
         }
     }
 
@@ -722,7 +745,7 @@ impl AppServer {
         };
         if let Some(conn) = held_conn {
             entry.stage = ReqStage::QuerySecond {
-                first_conn: None,
+                first_fast_lease: 0,
                 second_conn: conn,
             };
             if let Some(db_id) = self.db_id {
@@ -763,16 +786,21 @@ impl Agent<PoolMsg> for AppServer {
                 q2_base_ms,
                 rpc_ms,
             } => {
+                let arrived_at = if arrived_at == u32::MAX {
+                    msg.queued_time
+                } else {
+                    DiscreteTime::from(arrived_at)
+                };
                 if self.is_measured(arrived_at) {
                     self.measured_arrived += 1;
                 }
                 let item = QueuedRequest {
                     req_id,
                     class,
+                    rpc_ms,
                     arrived_at,
                     q1_base_ms,
                     q2_base_ms,
-                    rpc_ms,
                 };
                 if self.active.len() < self.spec.pool.app_workers {
                     self.start_request(ctx, item);
@@ -1083,7 +1111,7 @@ struct Database {
     /// Next unique query sequence ID.
     next_query_seq: u64,
     /// Currently executing queries.
-    active: BTreeMap<u64, ActiveQuery>,
+    active: FxHashMap<u64, ActiveQuery>,
     /// Peak concurrent queries observed after warmup.
     max_active_post_warmup: usize,
     /// Time-weighted integral of active concurrency after warmup.
@@ -1099,12 +1127,13 @@ impl Database {
         let usl_table = (0..=max_conc)
             .map(|c| spec.hardware.usl_slowdown(c))
             .collect();
+        let active_cap = max_conc.saturating_mul(2).max(16);
         Self {
             spec,
             usl_table,
             app_id: None,
             next_query_seq: 1,
-            active: BTreeMap::new(),
+            active: FxHashMap::with_capacity_and_hasher(active_cap, FxBuildHasher),
             max_active_post_warmup: 0,
             active_area_post_warmup: 0.0,
             last_area_tick: spec.workload.warmup_ms,
@@ -1240,7 +1269,11 @@ impl Agent<PoolMsg> for ExternalRpc {
             return;
         };
         if let PoolMsg::CallRpc { req_id, delay_ms } = msg.payload {
-            ctx.send_after(delay_ms.max(1), app_id, PoolMsg::RpcDone { req_id });
+            ctx.send_after(
+                DiscreteTime::from(delay_ms.max(1)),
+                app_id,
+                PoolMsg::RpcDone { req_id },
+            );
         }
     }
 }
@@ -1313,48 +1346,210 @@ pub(crate) fn evaluate_run(
     sim.run();
     let end_time = sim.time();
     let penalty_ms = (spec.pool.acquire_timeout_ms * 4).max(500) as f64;
-    let Some(app) = sim
-        .find_by_name("app")
-        .and_then(|a| a.downcast_ref::<AppServer>())
-    else {
-        return Ok(empty_outcome(penalty_ms));
-    };
     let Some(pool) = sim
         .find_by_name("pool")
         .and_then(|a| a.downcast_ref::<ConnPool>())
     else {
         return Ok(empty_outcome(penalty_ms));
     };
+    let deadlock_events = pool.fast_lane.deadlock_events + pool.slow_lane.deadlock_events;
+    let deadlock_tick = pool
+        .fast_lane
+        .first_deadlock_tick
+        .or(pool.slow_lane.first_deadlock_tick);
     let Some(db) = sim
         .find_by_name("db")
         .and_then(|a| a.downcast_ref::<Database>())
     else {
         return Ok(empty_outcome(penalty_ms));
     };
-    Ok(summarize_agents(spec, app, pool, db, end_time, penalty_ms))
+    let mean_db_active = db.mean_active_until(end_time);
+    let Some(app) = sim
+        .find_by_name_mut("app")
+        .and_then(|a| a.downcast_mut::<AppServer>())
+    else {
+        return Ok(empty_outcome(penalty_ms));
+    };
+    Ok(summarize_agents(
+        spec,
+        app,
+        deadlock_events,
+        deadlock_tick,
+        mean_db_active,
+        end_time,
+        penalty_ms,
+    ))
+}
+
+/// Computes the exact Type-7 quantile at `p` from a sorted non-empty slice.
+fn quantile_sorted(sorted: &[DiscreteTime], p: f64) -> f64 {
+    let last = sorted.len() - 1;
+    if last == 0 || p <= 0.0 {
+        return sorted[0] as f64;
+    }
+    if p >= 1.0 {
+        return sorted[last] as f64;
+    }
+    let position = p * last as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let lower_index = (position.floor() as usize).min(last);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let upper_index = (position.ceil() as usize).min(last);
+    let a = sorted[lower_index] as f64;
+    if lower_index == upper_index {
+        return a;
+    }
+    let b = sorted[upper_index] as f64;
+    let fraction = (position - lower_index as f64).clamp(0.0, 1.0);
+    fraction.mul_add(b - a, a)
+}
+
+/// Computes the exact Type-7 quantile at `p` in place via linear-time selection.
+fn quantile_in_place(values: &mut [DiscreteTime], p: f64, penalty_ms: f64) -> f64 {
+    if values.is_empty() {
+        return penalty_ms;
+    }
+    let last = values.len() - 1;
+    if last == 0 || p <= 0.0 {
+        return values.iter().copied().min().unwrap_or(0) as f64;
+    }
+    if p >= 1.0 {
+        return values.iter().copied().max().unwrap_or(0) as f64;
+    }
+    let position = p * last as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let lower_index = (position.floor() as usize).min(last);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let upper_index = (position.ceil() as usize).min(last);
+    let (_, pivot, right) = values.select_nth_unstable(lower_index);
+    let a = *pivot as f64;
+    if lower_index == upper_index {
+        return a;
+    }
+    let b = right.iter().copied().min().unwrap_or(*pivot) as f64;
+    let fraction = (position - lower_index as f64).clamp(0.0, 1.0);
+    fraction.mul_add(b - a, a)
+}
+
+/// Computes the exact incremental weighted mean matching `QuantileSummary::upper_cvar`.
+fn weighted_tail_mean(values: impl Iterator<Item = f64>, partial: Option<(f64, f64)>) -> f64 {
+    let mut mean = 0.0_f64;
+    let mut weight_sum = 0.0_f64;
+    for value in values {
+        if weight_sum <= 0.0 {
+            mean = value;
+            weight_sum = 1.0;
+        } else {
+            weight_sum += 1.0;
+            let step = 1.0 / weight_sum;
+            mean = step.mul_add(value - mean, mean);
+        }
+    }
+    if let Some((value, weight)) = partial {
+        if weight > 0.0 {
+            if weight_sum <= 0.0 {
+                mean = value;
+            } else {
+                weight_sum += weight;
+                let step = weight / weight_sum;
+                mean = step.mul_add(value - mean, mean);
+            }
+        }
+    }
+    mean
+}
+
+/// Computes exact `(p50, p99, upper_cvar95)` in place without sorting the lower 95%.
+fn all_latency_stats_in_place(values: &mut [DiscreteTime], penalty_ms: f64) -> (f64, f64, f64) {
+    let n = values.len();
+    if n == 0 {
+        return (penalty_ms, penalty_ms, penalty_ms);
+    }
+    let tail_fraction = 1.0 - Probability::P95.get();
+    let mass = tail_fraction * n as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let full = (mass.floor() as usize).min(n);
+    let remainder = (mass - full as f64).clamp(0.0, 1.0);
+
+    if n < 64 || full == 0 || full >= n {
+        values.sort_unstable();
+        let p50 = quantile_sorted(values, Probability::P50.get());
+        let p99 = quantile_sorted(values, Probability::P99.get());
+        let cvar95 = if full == 0 {
+            values[n - 1] as f64
+        } else {
+            let partial = if remainder > 0.0 && full < n {
+                Some((values[n - full - 1] as f64, remainder))
+            } else {
+                None
+            };
+            weighted_tail_mean(values[n - full..].iter().rev().map(|&v| v as f64), partial)
+        };
+        return (p50, p99, cvar95);
+    }
+
+    let tail_start = n - full;
+    let (lower_part, partial_val, tail) = values.select_nth_unstable(tail_start - 1);
+    tail.sort_unstable();
+    let partial = if remainder > 0.0 {
+        Some((*partial_val as f64, remainder))
+    } else {
+        None
+    };
+    let cvar95 = weighted_tail_mean(tail.iter().rev().map(|&v| v as f64), partial);
+
+    let last = n - 1;
+    let p99_pos = Probability::P99.get() * last as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let p99_lo = (p99_pos.floor() as usize).min(last);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let p99_hi = (p99_pos.ceil() as usize).min(last);
+    let a99 = tail[p99_lo - tail_start] as f64;
+    let p99 = if p99_lo == p99_hi {
+        a99
+    } else {
+        let b99 = tail[p99_hi - tail_start] as f64;
+        let frac = (p99_pos - p99_lo as f64).clamp(0.0, 1.0);
+        frac.mul_add(b99 - a99, a99)
+    };
+
+    let p50_pos = Probability::P50.get() * last as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let p50_lo = (p50_pos.floor() as usize).min(last);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let p50_hi = (p50_pos.ceil() as usize).min(last);
+    let (_, p50_pivot, p50_right) = lower_part.select_nth_unstable(p50_lo);
+    let a50 = *p50_pivot as f64;
+    let p50 = if p50_lo == p50_hi {
+        a50
+    } else {
+        let b50 = p50_right.iter().copied().min().unwrap_or(*p50_pivot) as f64;
+        let frac = (p50_pos - p50_lo as f64).clamp(0.0, 1.0);
+        frac.mul_add(b50 - a50, a50)
+    };
+    (p50, p99, cvar95)
 }
 
 /// Extracts [`PoolOutcome`] metrics from finished agents.
 fn summarize_agents(
     spec: &SimSpec,
-    app: &AppServer,
-    pool: &ConnPool,
-    db: &Database,
+    app: &mut AppServer,
+    deadlock_events: u64,
+    deadlock_tick: Option<DiscreteTime>,
+    mean_db_active: f64,
     end_time: DiscreteTime,
     penalty_ms: f64,
 ) -> PoolOutcome {
     let window_end = app.measure_end_ms.min(end_time);
     let window_secs = window_end.saturating_sub(spec.workload.warmup_ms).max(1) as f64 / 1000.0;
     let arrived = app.measured_arrived.max(1) as f64;
-    let all_q = QuantileReducer::from_results(app.all_latencies.iter().copied()).ok();
-    let fast_q = QuantileReducer::from_results(app.fast_latencies.iter().copied()).ok();
-    let wait_q = QuantileReducer::from_results(app.pool_waits.iter().copied()).ok();
-    let exec_q = QuantileReducer::from_results(app.db_execs.iter().copied()).ok();
-    let deadlock_events = pool.fast_lane.deadlock_events + pool.slow_lane.deadlock_events;
-    let deadlock_tick = pool
-        .fast_lane
-        .first_deadlock_tick
-        .or(pool.slow_lane.first_deadlock_tick);
+    let (p50_ms, p99_ms, cvar95_ms) =
+        all_latency_stats_in_place(&mut app.all_latencies, penalty_ms);
+    let fast_p99_ms =
+        quantile_in_place(&mut app.fast_latencies, Probability::P99.get(), penalty_ms);
+    let pool_wait_p95_ms =
+        quantile_in_place(&mut app.pool_waits, Probability::P95.get(), penalty_ms);
+    let db_exec_p95_ms = quantile_in_place(&mut app.db_execs, Probability::P95.get(), penalty_ms);
 
     PoolOutcome {
         throughput_rps: app.measured_completed as f64 / window_secs,
@@ -1363,15 +1558,13 @@ fn summarize_agents(
         stmt_timeout_rate: app.measured_stmt_timeouts as f64 / arrived,
         deadlocked: deadlock_events > 0,
         deadlock_tick,
-        mean_db_active: db.mean_active_until(end_time),
-        p50_ms: all_q.as_ref().map_or(penalty_ms, QuantileSummary::median),
-        p99_ms: all_q.as_ref().map_or(penalty_ms, QuantileSummary::p99),
-        cvar95_ms: all_q
-            .as_ref()
-            .map_or(penalty_ms, |q| q.upper_cvar(Probability::P95)),
-        fast_p99_ms: fast_q.as_ref().map_or(penalty_ms, QuantileSummary::p99),
-        pool_wait_p95_ms: wait_q.as_ref().map_or(penalty_ms, QuantileSummary::p95),
-        db_exec_p95_ms: exec_q.as_ref().map_or(penalty_ms, QuantileSummary::p95),
+        mean_db_active,
+        p50_ms,
+        p99_ms,
+        cvar95_ms,
+        fast_p99_ms,
+        pool_wait_p95_ms,
+        db_exec_p95_ms,
     }
 }
 
