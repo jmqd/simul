@@ -383,8 +383,8 @@ impl<M> SimulationBuilder<M> {
         self
     }
 
-    /// Counts the ticks each agent spends asleep. Off by default; it forces
-    /// dense scheduling.
+    /// Counts the ticks each agent spends asleep. Off by default; forces
+    /// dense scheduling only when combined with [`Halt::When`].
     pub const fn asleep_cycles_metric(mut self, enabled: bool) -> Self {
         self.asleep_cycles_metric = enabled;
         self
@@ -489,26 +489,52 @@ struct Tick<'a, M> {
 struct SparseSchedule {
     /// One bit per agent; scanning words skips inactive agents without touching them.
     ready: Vec<u64>,
-    /// Number of set bits, used to return to dense scanning when activity rises.
+    /// Number of set bits, used to return to dense scanning when activity rises
+    /// and to stop sparse word scans once every ready agent has been visited.
     ready_count: usize,
+    /// Lower bound on the first nonzero word in `ready`.
+    min_ready_word: usize,
     /// Wake deadlines ordered by time, then stable agent handle.
     sleeping: BinaryHeap<Reverse<(DiscreteTime, usize)>>,
+    /// Whether any agent sleeps until `DiscreteTime::MAX` (never wakes before
+    /// `u64::MAX` overflow, kept out of `sleeping` so idle populations stay O(1)).
+    has_eternal_sleeper: bool,
+    /// When `asleep_cycles_metric` is active in sparse mode, the earliest tick
+    /// not yet credited to each sleeping agent's `asleep_cycle_count`; empty
+    /// when the metric is off.
+    asleep_since: Vec<DiscreteTime>,
 }
 
 impl SparseSchedule {
     /// Rebuilds transient scheduling state, including changes made between runs.
-    fn new<M>(agents: &[SimulationAgent<M>]) -> Self {
+    fn new<M>(
+        agents: &[SimulationAgent<M>],
+        now: DiscreteTime,
+        asleep_cycles_metric: bool,
+    ) -> Self {
+        let words = agents.len().div_ceil(64);
         let mut schedule = Self {
-            ready: vec![0; agents.len().div_ceil(64)],
+            ready: vec![0; words],
             ready_count: 0,
+            min_ready_word: words,
             sleeping: BinaryHeap::new(),
+            has_eternal_sleeper: false,
+            asleep_since: if asleep_cycles_metric {
+                vec![now; agents.len()]
+            } else {
+                Vec::new()
+            },
         };
         let mut sleeping = Vec::new();
         for (handle, agent) in agents.iter().enumerate() {
             if let AgentMode::AsleepUntil { until, .. } = agent.state.mode {
-                sleeping.push(Reverse((until, handle)));
-            } else {
-                schedule.set_ready(handle, Self::runnable(&agent.state));
+                if until == DiscreteTime::MAX {
+                    schedule.has_eternal_sleeper = true;
+                } else {
+                    sleeping.push(Reverse((until, handle)));
+                }
+            } else if Self::runnable(&agent.state) {
+                schedule.set_ready(handle, true);
             }
         }
         schedule.sleeping = BinaryHeap::from(sleeping);
@@ -522,36 +548,33 @@ impl SparseSchedule {
     }
 
     /// Changes membership without introducing duplicate visits.
+    #[inline]
     fn set_ready(&mut self, handle: usize, ready: bool) {
-        let word = &mut self.ready[handle.div_euclid(64)];
+        let word_idx = handle.div_euclid(64);
+        let word = &mut self.ready[word_idx];
         let bit = 1 << handle.rem_euclid(64);
         if (*word & bit != 0) != ready {
             *word ^= bit;
             if ready {
                 self.ready_count += 1;
+                if word_idx < self.min_ready_word {
+                    self.min_ready_word = word_idx;
+                }
             } else {
                 self.ready_count -= 1;
             }
         }
     }
 
-    /// Finds the next runnable handle at or after the cursor.
-    fn next(&self, cursor: usize) -> Option<usize> {
-        let mut index = cursor.div_euclid(64);
-        let mut bits = *self.ready.get(index)? & (u64::MAX << cursor.rem_euclid(64));
-        loop {
-            if bits != 0 {
-                return Some(index * 64 + bits.trailing_zeros() as usize);
-            }
-            index += 1;
-            bits = *self.ready.get(index)?;
-        }
-    }
-
-    /// Defers wake processing until a subsequent tick, even for zero-length sleeps.
+    /// Defers wake processing until a future tick (`deadline > next_time`).
+    #[inline]
     fn sleep(&mut self, handle: usize, deadline: DiscreteTime) {
         self.set_ready(handle, false);
-        self.sleeping.push(Reverse((deadline, handle)));
+        if deadline == DiscreteTime::MAX {
+            self.has_eternal_sleeper = true;
+        } else {
+            self.sleeping.push(Reverse((deadline, handle)));
+        }
     }
 
     /// Returns the earliest tick at or after `now` at which a scheduled agent
@@ -563,6 +586,20 @@ impl SparseSchedule {
         self.sleeping
             .peek()
             .map(|&Reverse((deadline, _))| deadline.max(now))
+            .or_else(|| self.has_eternal_sleeper.then_some(DiscreteTime::MAX))
+    }
+
+    /// Credits pending asleep cycles up to `end_time` for all sleeping agents
+    /// before leaving sparse mode or finishing a run.
+    fn flush_asleep<M>(&self, end_time: DiscreteTime, agents: &mut [SimulationAgent<M>]) {
+        if self.asleep_since.is_empty() {
+            return;
+        }
+        for (agent, &since) in agents.iter_mut().zip(&self.asleep_since) {
+            if let AgentMode::AsleepUntil { until, .. } = agent.state.mode {
+                agent.metadata.asleep_cycle_count += until.min(end_time).saturating_sub(since);
+            }
+        }
     }
 
     /// Marks due agents ready; their state changes only at their ordered visit.
@@ -584,30 +621,43 @@ impl SparseSchedule {
 
 /// How a run chooses which agents to visit each tick.
 enum Scheduler {
-    /// Visits every agent every tick: the simulation is small, or the asleep
-    /// metric must count every sleeping agent every tick.
+    /// Visits every agent every tick: the simulation is small, or a `Halt::When`
+    /// predicate may observe `asleep_cycle_count` before every tick.
     DenseOnly,
     /// Visits every agent until activity falls below the low watermark.
     Dense,
     /// Visits only runnable agents until activity rises above the high
-    /// watermark.
-    Sparse(SparseSchedule),
+    /// watermark. Boxed so the dense loop keeps `Scheduler` register-sized.
+    Sparse(Box<SparseSchedule>),
 }
 
 impl Scheduler {
     /// Starts sparse when the simulation may use a schedule at all.
-    fn new<M>(agents: &[SimulationAgent<M>], asleep_cycles_metric: bool) -> Self {
-        // Small scans are cheaper than maintaining the schedule, and the asleep
-        // metric needs every agent visited every tick, so either keeps dense scans.
-        if agents.len() > SPARSE_SCHEDULE_MIN_AGENTS && !asleep_cycles_metric {
-            Self::Sparse(SparseSchedule::new(agents))
+    fn new<M>(
+        agents: &[SimulationAgent<M>],
+        now: DiscreteTime,
+        asleep_cycles_metric: bool,
+        has_predicate_halt: bool,
+    ) -> Self {
+        // Small scans are cheaper than maintaining the schedule, and a
+        // `Halt::When` predicate can inspect `asleep_cycle_count` before any
+        // tick, so either keeps dense scans.
+        if agents.len() > SPARSE_SCHEDULE_MIN_AGENTS
+            && !(asleep_cycles_metric && has_predicate_halt)
+        {
+            Self::Sparse(Box::new(SparseSchedule::new(
+                agents,
+                now,
+                asleep_cycles_metric,
+            )))
         } else {
             Self::DenseOnly
         }
     }
 
     /// Returns the schedule while visits are sparse.
-    const fn sparse_mut(&mut self) -> Option<&mut SparseSchedule> {
+    #[inline]
+    fn sparse_mut(&mut self) -> Option<&mut SparseSchedule> {
         match self {
             Self::Sparse(active) => Some(active),
             Self::Dense | Self::DenseOnly => None,
@@ -616,10 +666,21 @@ impl Scheduler {
 
     /// Marks agents due at `time` ready, and switches to dense visits once a
     /// quarter of the agents are ready.
-    fn before_tick<M>(&mut self, time: DiscreteTime, agents: &[SimulationAgent<M>]) {
+    #[inline]
+    fn before_tick<M>(&mut self, time: DiscreteTime, agents: &mut [SimulationAgent<M>]) {
+        if matches!(self, Self::Sparse(_)) {
+            self.before_tick_sparse(time, agents);
+        }
+    }
+
+    /// Outlined sparse wake-up and high-watermark transition so dense tick loops
+    /// stay compact.
+    #[inline(never)]
+    fn before_tick_sparse<M>(&mut self, time: DiscreteTime, agents: &mut [SimulationAgent<M>]) {
         if let Self::Sparse(active) = self {
             active.wake(time, agents);
             if active.ready_count >= agents.len().div_ceil(4) {
+                active.flush_asleep(time, agents);
                 *self = Self::Dense;
             }
         }
@@ -628,9 +689,39 @@ impl Scheduler {
     /// Switches back to sparse visits once fewer than an eighth of the agents
     /// ran a callback. Separate low and high watermarks amortize rebuilding
     /// across busy and quiet phases instead of switching around one threshold.
-    fn after_tick<M>(&mut self, callbacks: usize, agents: &[SimulationAgent<M>]) {
+    #[inline]
+    fn after_tick<M>(
+        &mut self,
+        callbacks: usize,
+        next_time: DiscreteTime,
+        agents: &[SimulationAgent<M>],
+        asleep_cycles_metric: bool,
+    ) {
         if matches!(self, Self::Dense) && callbacks < agents.len().div_ceil(8) {
-            *self = Self::Sparse(SparseSchedule::new(agents));
+            self.switch_to_sparse(next_time, agents, asleep_cycles_metric);
+        }
+    }
+
+    /// Outlined rebuild of the sparse schedule when activity drops below the
+    /// low watermark.
+    #[inline(never)]
+    fn switch_to_sparse<M>(
+        &mut self,
+        next_time: DiscreteTime,
+        agents: &[SimulationAgent<M>],
+        asleep_cycles_metric: bool,
+    ) {
+        *self = Self::Sparse(Box::new(SparseSchedule::new(
+            agents,
+            next_time,
+            asleep_cycles_metric,
+        )));
+    }
+
+    /// Flushes any deferred sparse asleep-cycle counts at the end of a run.
+    fn finish<M>(&self, end_time: DiscreteTime, agents: &mut [SimulationAgent<M>]) {
+        if let Self::Sparse(active) = self {
+            active.flush_asleep(end_time, agents);
         }
     }
 }
@@ -1490,7 +1581,18 @@ impl<M> Simulation<M> {
                 agent.record_queue_depth(time);
             }
         }
-        let mut scheduler = Scheduler::new(&self.agents, self.enable_agent_asleep_cycles_metric);
+        let pause_at = until.unwrap_or(DiscreteTime::MAX);
+        let (stop_at, has_predicate) = match &self.halt {
+            Halt::AtTime(time) => ((*time).min(pause_at), false),
+            Halt::Never => (pause_at, false),
+            Halt::When(_) => (pause_at, true),
+        };
+        let mut scheduler = Scheduler::new(
+            &self.agents,
+            self.time,
+            self.enable_agent_asleep_cycles_metric,
+            has_predicate,
+        );
         let quiet_ticks =
             QuietTicks::new(&self.halt, self.enable_agent_asleep_cycles_metric, until);
 
@@ -1499,12 +1601,6 @@ impl<M> Simulation<M> {
         // For non-predicate halts, one compare checks halt, pause, and u64::MAX
         // overflow together; `self.time < stop_at` guarantees `self.time + 1`
         // cannot overflow.
-        let pause_at = until.unwrap_or(DiscreteTime::MAX);
-        let (stop_at, has_predicate) = match &self.halt {
-            Halt::AtTime(time) => ((*time).min(pause_at), false),
-            Halt::Never => (pause_at, false),
-            Halt::When(_) => (pause_at, true),
-        };
         let outcome = loop {
             if has_predicate && self.halt_reached() {
                 break RunOutcome::Halted;
@@ -1519,7 +1615,7 @@ impl<M> Simulation<M> {
                 panic!("simulation time exceeds u64::MAX");
             }
             let next_time = self.time + 1;
-            scheduler.before_tick(self.time, &self.agents);
+            scheduler.before_tick(self.time, &mut self.agents);
             let callbacks = match scheduler.sparse_mut() {
                 Some(active) => self.run_sparse_tick(&mut command_buffer, active),
                 None => self.run_dense_tick(&mut command_buffer),
@@ -1535,7 +1631,12 @@ impl<M> Simulation<M> {
                     TickStop::Yielded(agent, tag) => RunOutcome::Yielded { agent, tag },
                 };
             }
-            scheduler.after_tick(callbacks, &self.agents);
+            scheduler.after_tick(
+                callbacks,
+                self.time,
+                &self.agents,
+                self.enable_agent_asleep_cycles_metric,
+            );
             // A tick without callbacks issued no commands, so state can change
             // again only when an agent becomes runnable or a delayed message
             // arrives.
@@ -1543,6 +1644,7 @@ impl<M> Simulation<M> {
                 self.skip_quiet_ticks(&mut scheduler, quiet_ticks);
             }
         };
+        scheduler.finish(self.time, &mut self.agents);
 
         (self.mode, self.halt_reason, self.yield_point) = match &outcome {
             RunOutcome::Halted => (SimulationMode::Completed, None, None),
@@ -1641,19 +1743,60 @@ impl<M> Simulation<M> {
         commands: &mut CommandBuffer<M>,
         schedule: &mut SparseSchedule,
     ) -> usize {
-        let (agents, mut tick) = self.split_tick(commands);
-        let mut callbacks = 0;
-        let mut cursor = 0;
-        while let Some(handle) = schedule.next(cursor) {
-            cursor = handle + 1;
-            let (ran, requested_sleep_until) =
-                visit_agent(&mut agents[handle], None, handle, &mut tick);
-            callbacks += usize::from(ran);
-            match requested_sleep_until {
-                Some(deadline) => schedule.sleep(handle, deadline),
-                None => schedule.set_ready(handle, SparseSchedule::runnable(&agents[handle].state)),
-            }
+        let mut remaining = schedule.ready_count;
+        if remaining == 0 {
+            return 0;
         }
+        let (agents, mut tick) = self.split_tick(commands);
+        let next_time = tick.meta.time + 1;
+        let track_asleep = !schedule.asleep_since.is_empty();
+        let mut callbacks = 0;
+        let mut word_idx = schedule.min_ready_word;
+        let mut new_min_word = schedule.ready.len();
+        while remaining > 0 && word_idx < schedule.ready.len() {
+            let mut bits = schedule.ready[word_idx];
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                remaining -= 1;
+                let handle = word_idx * 64 + bit;
+                let agent = &mut agents[handle];
+                if track_asleep {
+                    if let AgentMode::AsleepUntil { until, .. } = agent.state.mode {
+                        agent.metadata.asleep_cycle_count +=
+                            until.saturating_sub(schedule.asleep_since[handle]);
+                    }
+                }
+                let (ran, requested_sleep_until) = visit_agent(agent, None, handle, &mut tick);
+                callbacks += usize::from(ran);
+                match requested_sleep_until {
+                    Some(deadline) => {
+                        if track_asleep {
+                            schedule.asleep_since[handle] = next_time;
+                        }
+                        if deadline <= next_time {
+                            // Wakes on the next tick: keep ready bit set to skip heap push/pop.
+                            if word_idx < new_min_word {
+                                new_min_word = word_idx;
+                            }
+                        } else {
+                            schedule.sleep(handle, deadline);
+                        }
+                    }
+                    None => {
+                        if SparseSchedule::runnable(&agents[handle].state) {
+                            if word_idx < new_min_word {
+                                new_min_word = word_idx;
+                            }
+                        } else {
+                            schedule.set_ready(handle, false);
+                        }
+                    }
+                }
+            }
+            word_idx += 1;
+        }
+        schedule.min_ready_word = new_min_word;
         callbacks
     }
 
