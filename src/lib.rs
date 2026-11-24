@@ -108,9 +108,9 @@ pub mod trace;
 struct ReadmeDoctests;
 
 use agent::{
-    AgentCommand, AgentCommandType, AgentContext, AgentId, AgentInitializer, AgentMetadata,
-    AgentMode, AgentState, AgentStreamCache, MessageDrain, MessageHistory, MessageProcessingStatus,
-    Peers, QueueDepthChange, SimulationAgent, TimerId, WakeMode,
+    AgentContext, AgentId, AgentInitializer, AgentMetadata, AgentMode, AgentState,
+    AgentStreamCache, CommandBuffer, MessageDrain, MessageHistory, MessageProcessingStatus, Peers,
+    PendingSend, QueueDepthChange, SimulationAgent, SpecialCommand, TimerId, WakeMode,
 };
 use experiment::{
     CandidateId, FixedReplications, MasterSeed, RunError, TrialContext, TrialRecord, TrialStream,
@@ -221,9 +221,8 @@ pub struct Simulation<M = ()> {
     /// The agent and tag from the latest [`AgentContext::yield_control`], if paused at a yield.
     yield_point: Option<(AgentId, String)>,
 
-    /// Messages sent with a delay and their receivers, by arrival tick and
-    /// then send order.
-    in_flight: BTreeMap<(DiscreteTime, u64), (AgentId, Message<M>)>,
+    /// Messages sent with a delay, keyed by arrival tick and then send order.
+    in_flight: BTreeMap<(DiscreteTime, u64), Message<M>>,
 
     /// Earliest arrival tick in `in_flight`, or `DiscreteTime::MAX` when empty.
     next_arrival: DiscreteTime,
@@ -488,13 +487,11 @@ struct Tick<'a, M> {
     /// Name index for simulations too large to scan names.
     agent_name_handle_map: &'a FxHashMap<String, AgentId>,
     /// Commands issued during the tick, applied at its end.
-    commands: &'a mut Vec<AgentCommand<M>>,
+    commands: &'a mut CommandBuffer<M>,
     /// Lazily derived stream roots by handle.
     agent_streams: &'a mut AgentStreamCache,
     /// Monotonic send-order sequence for delayed messages.
     next_in_flight: &'a mut u64,
-    /// Set when any callback in this tick cancels a timer.
-    has_cancellations: &'a mut bool,
     /// Active structured trace sink, if tracing is enabled.
     trace: Option<&'a mut SimulationTrace>,
 }
@@ -708,6 +705,14 @@ pub enum RunOutcome {
     },
 }
 
+/// Early stop requested by buffered commands during a tick.
+enum TickStop {
+    /// First halt interrupt (or unknown-destination halt) in issue order.
+    Interrupted(String),
+    /// First yield request in issue order when no interrupt occurred.
+    Yielded(AgentId, String),
+}
+
 /// Records a consumed message to an active trace out of line.
 #[cold]
 #[inline(never)]
@@ -816,7 +821,6 @@ fn visit_agent<M>(
         agent_streams: &mut *tick.agent_streams,
         calls: 0,
         next_in_flight: &mut *tick.next_in_flight,
-        has_cancellations: &mut *tick.has_cancellations,
     };
     // Every awake agent handles at most one queued message per tick; proactive
     // agents then also tick.
@@ -904,7 +908,6 @@ fn visit_agent_multi_drain<M>(
             agent_streams: &mut *tick.agent_streams,
             calls,
             next_in_flight: &mut *tick.next_in_flight,
-            has_cancellations: &mut *tick.has_cancellations,
         };
         agent.agent.on_message(&mut ctx, &msg);
         calls = ctx.calls;
@@ -950,7 +953,6 @@ fn visit_agent_multi_drain<M>(
             agent_streams: &mut *tick.agent_streams,
             calls,
             next_in_flight: &mut *tick.next_in_flight,
-            has_cancellations: &mut *tick.has_cancellations,
         };
         agent.agent.on_tick(&mut ctx);
     }
@@ -1187,7 +1189,7 @@ impl<M> Simulation<M> {
     /// arrived yet, in arrival order (then send order). A run that halts leaves
     /// them in flight, and the next run delivers them.
     pub fn in_flight(&self) -> impl ExactSizeIterator<Item = &Message<M>> + DoubleEndedIterator {
-        self.in_flight.values().map(|(_, message)| message)
+        self.in_flight.values()
     }
 
     /// Cancels a pending delayed message scheduled with
@@ -1455,7 +1457,7 @@ impl<M> Simulation<M> {
         self.mode = SimulationMode::Running;
         self.halt_reason = None;
         self.yield_point = None;
-        let mut command_buffer: Vec<AgentCommand<M>> = Vec::new();
+        let mut command_buffer: CommandBuffer<M> = CommandBuffer::new();
         if self.enable_queue_depth_metric {
             // Queues may have been edited between runs.
             let time = self.time;
@@ -1469,41 +1471,44 @@ impl<M> Simulation<M> {
 
         // The halt check comes first, so a run that both halts and reaches
         // `until` at one tick completes.
-        // One compare per tick: an unset pause only matches at u64::MAX, where
-        // `until.is_some()` lets an unpaused run reach the overflow panic.
+        // For non-predicate halts, one compare checks halt, pause, and u64::MAX
+        // overflow together; `self.time < stop_at` guarantees `self.time + 1`
+        // cannot overflow.
         let pause_at = until.unwrap_or(DiscreteTime::MAX);
+        let (stop_at, has_predicate) = match &self.halt {
+            Halt::AtTime(time) => ((*time).min(pause_at), false),
+            Halt::Never => (pause_at, false),
+            Halt::When(_) => (pause_at, true),
+        };
         let outcome = loop {
-            if self.halt_reached() {
+            if has_predicate && self.halt_reached() {
                 break RunOutcome::Halted;
             }
-            if self.time >= pause_at && until.is_some() {
-                break RunOutcome::PausedAtTime;
-            }
-            let Some(next_time) = self.time.checked_add(1) else {
+            if self.time >= stop_at {
+                if !has_predicate && self.halt_reached() {
+                    break RunOutcome::Halted;
+                }
+                if until.is_some() {
+                    break RunOutcome::PausedAtTime;
+                }
                 panic!("simulation time exceeds u64::MAX");
-            };
-            let mut has_cancellations = false;
+            }
+            let next_time = self.time + 1;
             scheduler.before_tick(self.time, &self.agents);
             let callbacks = match scheduler.sparse_mut() {
-                Some(active) => {
-                    self.run_sparse_tick(&mut command_buffer, &mut has_cancellations, active)
-                }
-                None => self.run_dense_tick(&mut command_buffer, &mut has_cancellations),
+                Some(active) => self.run_sparse_tick(&mut command_buffer, active),
+                None => self.run_dense_tick(&mut command_buffer),
             };
 
-            let (interrupt, yield_point) = self.process_command_buffer(
-                &mut command_buffer,
-                has_cancellations,
-                scheduler.sparse_mut(),
-                next_time,
-            );
+            let stop =
+                self.process_command_buffer(&mut command_buffer, scheduler.sparse_mut(), next_time);
 
             self.time = next_time;
-            if let Some(reason) = interrupt {
-                break RunOutcome::Interrupted(reason);
-            }
-            if let Some((agent, tag)) = yield_point {
-                break RunOutcome::Yielded { agent, tag };
+            if let Some(stop) = stop {
+                break match *stop {
+                    TickStop::Interrupted(reason) => RunOutcome::Interrupted(reason),
+                    TickStop::Yielded(agent, tag) => RunOutcome::Yielded { agent, tag },
+                };
             }
             scheduler.after_tick(callbacks, &self.agents);
             // A tick without callbacks issued no commands, so state can change
@@ -1550,8 +1555,7 @@ impl<M> Simulation<M> {
     /// Borrows the agents mutably beside the inputs every visit shares.
     fn split_tick<'a>(
         &'a mut self,
-        commands: &'a mut Vec<AgentCommand<M>>,
-        has_cancellations: &'a mut bool,
+        commands: &'a mut CommandBuffer<M>,
     ) -> (&'a mut [SimulationAgent<M>], Tick<'a, M>) {
         let agent_count = self.agents.len();
         let trace = self
@@ -1570,19 +1574,14 @@ impl<M> Simulation<M> {
             agent_name_handle_map: &self.agent_name_handle_map,
             commands,
             next_in_flight: &mut self.next_in_flight,
-            has_cancellations,
             trace,
         };
         (&mut self.agents, tick)
     }
 
     /// Visits every agent in handle order and returns how many callbacks ran.
-    fn run_dense_tick(
-        &mut self,
-        commands: &mut Vec<AgentCommand<M>>,
-        has_cancellations: &mut bool,
-    ) -> usize {
-        let (agents, mut tick) = self.split_tick(commands, has_cancellations);
+    fn run_dense_tick(&mut self, commands: &mut CommandBuffer<M>) -> usize {
+        let (agents, mut tick) = self.split_tick(commands);
         let mut callbacks = 0;
         for handle in 0..agents.len() {
             let (ran, _) = visit_agent(agents, handle, &mut tick);
@@ -1597,11 +1596,10 @@ impl<M> Simulation<M> {
     #[inline(never)]
     fn run_sparse_tick(
         &mut self,
-        commands: &mut Vec<AgentCommand<M>>,
-        has_cancellations: &mut bool,
+        commands: &mut CommandBuffer<M>,
         schedule: &mut SparseSchedule,
     ) -> usize {
-        let (agents, mut tick) = self.split_tick(commands, has_cancellations);
+        let (agents, mut tick) = self.split_tick(commands);
         let mut callbacks = 0;
         let mut cursor = 0;
         while let Some(handle) = schedule.next(cursor) {
@@ -1693,49 +1691,126 @@ impl<M> Simulation<M> {
     }
 
     /// Applies buffered Agent commands in the order they were issued, and
-    /// returns the first halt interrupt reason and the first yield point among
-    /// them, if any.
+    /// returns the early stop requested by the first interrupt or yield, if any.
     #[inline]
     fn process_command_buffer(
         &mut self,
-        command_buffer: &mut Vec<AgentCommand<M>>,
-        has_cancellations: bool,
+        command_buffer: &mut CommandBuffer<M>,
         mut schedule: Option<&mut SparseSchedule>,
         next_time: DiscreteTime,
-    ) -> (Option<String>, Option<(AgentId, String)>) {
-        let mut interrupt = None;
-        let mut yield_point = None;
-        let cancelled_next_tick = if has_cancellations {
-            self.cancel_due_timers(command_buffer, next_time)
-        } else {
-            Vec::new()
-        };
+    ) -> Option<Box<TickStop>> {
+        if !command_buffer.specials.is_empty() {
+            return self.process_command_buffer_with_specials(command_buffer, schedule, next_time);
+        }
         // Delayed messages arriving next tick were sent in earlier ticks, so
         // they arrive ahead of this tick's sends.
         if self.next_arrival <= next_time {
             self.deliver_due(next_time, schedule.as_deref_mut());
         }
-        for command in command_buffer.drain(..) {
-            match command.ty {
-                AgentCommandType::SendMessage(message) => {
-                    self.record_produced(command.agent_handle, &message);
-                    if self.trace_active() {
-                        self.record_trace_sent(command.agent_handle, &message, next_time);
-                    }
-                    if let Some(destination) = message.destination {
-                        self.deliver(destination, message, schedule.as_deref_mut(), next_time);
-                    } else if let Some(reason) =
-                        self.handle_unknown_destination(command.agent_handle, self.time)
-                    {
-                        interrupt.get_or_insert(reason);
-                    }
-                }
+        if command_buffer.sends.is_empty() {
+            return None;
+        }
+        let time = self.time;
+        let trace_active = self.trace_active();
+        let mut interrupt: Option<String> = None;
+        for send in command_buffer.sends.drain(..) {
+            let message = Message::sent(time, send.sender, send.destination, send.payload);
+            let handle = send.sender.index();
+            self.record_produced(handle, &message);
+            if trace_active {
+                self.record_trace_sent(handle, &message, next_time);
+            }
+            if let Some(destination) = message.destination {
+                self.deliver(
+                    destination,
+                    message,
+                    schedule.as_deref_mut(),
+                    next_time,
+                    trace_active,
+                );
+            } else if let Some(reason) = self.handle_unknown_destination(handle, time) {
+                interrupt.get_or_insert(reason);
+            }
+        }
+        interrupt.map(|reason| Box::new(TickStop::Interrupted(reason)))
+    }
 
-                AgentCommandType::SendDelayed { timer, message } => {
+    /// Records and delivers one ordinary end-of-tick send from the special-command
+    /// slow path.
+    #[inline]
+    fn apply_pending_send(
+        &mut self,
+        send: PendingSend<M>,
+        time: DiscreteTime,
+        next_time: DiscreteTime,
+        schedule: Option<&mut SparseSchedule>,
+        trace_active: bool,
+        interrupt: &mut Option<String>,
+    ) {
+        let message = Message::sent(time, send.sender, send.destination, send.payload);
+        let handle = send.sender.index();
+        self.record_produced(handle, &message);
+        if trace_active {
+            self.record_trace_sent(handle, &message, next_time);
+        }
+        if let Some(destination) = message.destination {
+            self.deliver(destination, message, schedule, next_time, trace_active);
+        } else if let Some(reason) = self.handle_unknown_destination(handle, time) {
+            interrupt.get_or_insert(reason);
+        }
+    }
+
+    /// Slow path when a tick buffered delayed sends, timer cancellations,
+    /// yields, or halt interrupts; interleaves them with ordinary sends in
+    /// exact issue order.
+    #[inline(never)]
+    fn process_command_buffer_with_specials(
+        &mut self,
+        command_buffer: &mut CommandBuffer<M>,
+        mut schedule: Option<&mut SparseSchedule>,
+        next_time: DiscreteTime,
+    ) -> Option<Box<TickStop>> {
+        let has_cancellations = std::mem::replace(&mut command_buffer.has_cancellations, false);
+        let cancelled_next_tick = if has_cancellations {
+            self.cancel_due_timers(&command_buffer.specials, next_time)
+        } else {
+            Vec::new()
+        };
+        if self.next_arrival <= next_time {
+            self.deliver_due(next_time, schedule.as_deref_mut());
+        }
+        let time = self.time;
+        let trace_active = self.trace_active();
+        let mut interrupt: Option<String> = None;
+        let mut yield_point: Option<(AgentId, String)> = None;
+        let mut sends = command_buffer.sends.drain(..);
+        let mut sent_so_far = 0_usize;
+
+        for (at_send, special) in command_buffer.specials.drain(..) {
+            while sent_so_far < at_send {
+                if let Some(send) = sends.next() {
+                    self.apply_pending_send(
+                        send,
+                        time,
+                        next_time,
+                        schedule.as_deref_mut(),
+                        trace_active,
+                        &mut interrupt,
+                    );
+                }
+                sent_so_far += 1;
+            }
+            match special {
+                SpecialCommand::SendDelayed {
+                    sender,
+                    timer,
+                    message,
+                } => {
+                    let handle = sender.index();
                     if timer.arrival == next_time {
-                        self.record_produced(command.agent_handle, &message);
-                        if self.trace_active() {
-                            self.record_trace_sent(command.agent_handle, &message, next_time);
+                        self.record_produced(handle, &message);
+                        if trace_active {
+                            self.record_trace_sent(handle, &message, next_time);
                         }
                         if !cancelled_next_tick.contains(&timer) {
                             if let Some(destination) = message.destination {
@@ -1744,42 +1819,54 @@ impl<M> Simulation<M> {
                                     message,
                                     schedule.as_deref_mut(),
                                     next_time,
+                                    trace_active,
                                 );
                             } else if let Some(reason) =
-                                self.handle_unknown_destination(command.agent_handle, self.time)
+                                self.handle_unknown_destination(handle, time)
                             {
                                 interrupt.get_or_insert(reason);
                             }
                         }
                     } else if let Some(reason) =
-                        self.hold_delayed(command.agent_handle, timer, message, next_time)
+                        self.hold_delayed(handle, timer, message, next_time)
                     {
                         interrupt.get_or_insert(reason);
                     }
                 }
 
-                AgentCommandType::CancelTimer(timer) => {
-                    if timer.arrival > next_time && self.cancel_timer(timer) && self.trace_active()
-                    {
-                        self.record_trace_cancelled(command.agent_handle, timer);
+                SpecialCommand::CancelTimer { sender, timer } => {
+                    if timer.arrival > next_time && self.cancel_timer(timer) && trace_active {
+                        self.record_trace_cancelled(sender.index(), timer);
                     }
                 }
 
-                AgentCommandType::YieldControl(tag) => {
-                    yield_point
-                        .get_or_insert_with(|| (AgentId::from_handle(command.agent_handle), tag));
+                SpecialCommand::YieldControl { sender, tag } => {
+                    yield_point.get_or_insert((sender, tag));
                 }
 
-                AgentCommandType::HaltSimulation(reason) => {
-                    if self.trace_active() {
-                        self.record_trace_halt(command.agent_handle, &reason);
+                SpecialCommand::HaltSimulation { sender, reason } => {
+                    if trace_active {
+                        self.record_trace_halt(sender.index(), &reason);
                     }
                     // The first interrupt in issue order ends the run.
                     interrupt.get_or_insert(reason);
                 }
             }
         }
-        (interrupt, yield_point)
+        for send in sends {
+            self.apply_pending_send(
+                send,
+                time,
+                next_time,
+                schedule.as_deref_mut(),
+                trace_active,
+                &mut interrupt,
+            );
+        }
+        interrupt.map_or_else(
+            || yield_point.map(|(agent, tag)| Box::new(TickStop::Yielded(agent, tag))),
+            |reason| Some(Box::new(TickStop::Interrupted(reason))),
+        )
     }
 
     /// Returns whether structured tracing is currently recording events.
@@ -1801,6 +1888,28 @@ impl<M> Simulation<M> {
                     destination: message.destination,
                     arrival,
                     payload,
+                },
+            );
+        }
+    }
+
+    /// Appends a [`TraceEventKind::MessageDelivered`] event when tracing is active.
+    #[cold]
+    #[inline(never)]
+    fn record_trace_delivered(
+        &mut self,
+        visible_at: DiscreteTime,
+        destination: AgentId,
+        source: Option<AgentId>,
+        queue_depth: usize,
+    ) {
+        if let Some(recorder) = self.trace.as_mut().filter(|r| r.enabled) {
+            recorder.trace.push(
+                visible_at,
+                destination,
+                TraceEventKind::MessageDelivered {
+                    source,
+                    queue_depth,
                 },
             );
         }
@@ -1868,15 +1977,15 @@ impl<M> Simulation<M> {
     #[inline(never)]
     fn cancel_due_timers(
         &mut self,
-        command_buffer: &[AgentCommand<M>],
+        specials: &[(usize, SpecialCommand<M>)],
         next_time: DiscreteTime,
     ) -> Vec<TimerId> {
         let mut cancelled_next_tick = Vec::new();
-        for command in command_buffer {
-            if let AgentCommandType::CancelTimer(timer) = command.ty {
+        for (_, command) in specials {
+            if let SpecialCommand::CancelTimer { sender, timer } = *command {
                 if timer.arrival <= next_time {
                     if self.cancel_timer(timer) && self.trace_active() {
-                        self.record_trace_cancelled(command.agent_handle, timer);
+                        self.record_trace_cancelled(sender.index(), timer);
                     }
                     if timer.arrival == next_time {
                         cancelled_next_tick.push(timer);
@@ -1902,14 +2011,14 @@ impl<M> Simulation<M> {
         if self.trace_active() {
             self.record_trace_sent(handle, &message, timer.arrival);
         }
-        if let Some(destination) = message.destination {
+        if message.destination.is_some() {
             debug_assert!(
                 message.queued_time >= next_time,
                 "a delayed message arrives after the next tick"
             );
             debug_assert_eq!(timer.arrival, message.queued_time + 1);
             self.in_flight
-                .insert((timer.arrival, timer.sequence), (destination, message));
+                .insert((timer.arrival, timer.sequence), message);
             self.next_arrival = self.next_arrival.min(timer.arrival);
             None
         } else {
@@ -1936,11 +2045,11 @@ impl<M> Simulation<M> {
         message: Message<M>,
         schedule: Option<&mut SparseSchedule>,
         visible_at: DiscreteTime,
+        trace_active: bool,
     ) {
         let source = message.source;
         let receiver = &mut self.agents[destination.index()];
         receiver.state.queue.push_back(message);
-        let depth = receiver.state.queue.len();
         if self.enable_queue_depth_metric {
             receiver.record_queue_depth(visible_at);
         }
@@ -1949,15 +2058,9 @@ impl<M> Simulation<M> {
                 active.set_ready(destination.index(), true);
             }
         }
-        if let Some(recorder) = self.trace.as_mut().filter(|r| r.enabled) {
-            recorder.trace.push(
-                visible_at,
-                destination,
-                TraceEventKind::MessageDelivered {
-                    source,
-                    queue_depth: depth,
-                },
-            );
+        if trace_active {
+            let depth = receiver.state.queue.len();
+            self.record_trace_delivered(visible_at, destination, source, depth);
         }
     }
 
@@ -1966,12 +2069,21 @@ impl<M> Simulation<M> {
     /// the cached arrival time when nothing is due.
     #[inline(never)]
     fn deliver_due(&mut self, now: DiscreteTime, mut schedule: Option<&mut SparseSchedule>) {
+        let trace_active = self.trace_active();
         while let Some(entry) = self.in_flight.first_entry() {
             if entry.key().0 > now {
                 break;
             }
-            let (destination, message) = entry.remove();
-            self.deliver(destination, message, schedule.as_deref_mut(), now);
+            let message = entry.remove();
+            if let Some(destination) = message.destination {
+                self.deliver(
+                    destination,
+                    message,
+                    schedule.as_deref_mut(),
+                    now,
+                    trace_active,
+                );
+            }
         }
         self.next_arrival = self
             .in_flight

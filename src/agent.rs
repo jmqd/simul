@@ -393,34 +393,90 @@ impl<M> Default for AgentState<M> {
     }
 }
 
-/// A buffered callback action, applied at the end of the tick.
-pub(crate) struct AgentCommand<M> {
-    /// What the agent asked for.
-    pub(crate) ty: AgentCommandType<M>,
-    /// Handle of the agent that issued the command.
-    pub(crate) agent_handle: usize,
+/// An ordinary end-of-tick message send, stored compactly for cache density.
+pub(crate) struct PendingSend<M> {
+    /// Identity of the agent that sent the message.
+    pub(crate) sender: AgentId,
+    /// Resolved target identity, or `None` for an unknown destination.
+    pub(crate) destination: Option<AgentId>,
+    /// Message payload.
+    pub(crate) payload: M,
 }
 
-/// Actions an agent can request from a callback.
-pub(crate) enum AgentCommandType<M> {
-    /// Record the message as produced and deliver it to its destination at
-    /// the end of the tick.
-    SendMessage(Message<M>),
+/// Infrequent callback actions buffered separately from ordinary sends.
+pub(crate) enum SpecialCommand<M> {
     /// Record the message as produced and deliver it at `timer.arrival` unless
     /// cancelled first.
     SendDelayed {
+        /// Identity of the sending agent.
+        sender: AgentId,
         /// Handle identifying this delayed message.
         timer: TimerId,
         /// The delayed message to deliver on arrival.
         message: Message<M>,
     },
     /// Cancel a pending delayed message if it has not been delivered yet.
-    CancelTimer(TimerId),
+    CancelTimer {
+        /// Identity of the agent issuing the cancellation.
+        sender: AgentId,
+        /// Handle of the timer to cancel.
+        timer: TimerId,
+    },
     /// Pause the simulation after this tick and yield control to an external
     /// controller with the given tag.
-    YieldControl(String),
+    YieldControl {
+        /// Identity of the agent requesting the yield.
+        sender: AgentId,
+        /// Tag supplied to [`AgentContext::yield_control`].
+        tag: String,
+    },
     /// Stop the simulation after this tick; the payload is the reason.
-    HaltSimulation(String),
+    HaltSimulation {
+        /// Identity of the agent requesting the halt.
+        sender: AgentId,
+        /// Reason string supplied to [`AgentContext::send_halt_interrupt`].
+        reason: String,
+    },
+}
+
+/// Per-tick buffer of callback actions that keeps ordinary sends compact while
+/// preserving exact issue order with infrequent commands.
+pub(crate) struct CommandBuffer<M> {
+    /// Ordinary end-of-tick sends in issue order.
+    pub(crate) sends: Vec<PendingSend<M>>,
+    /// Infrequent commands paired with `sends.len()` at issue time so draining
+    /// interleaves them in exact issue order.
+    pub(crate) specials: Vec<(usize, SpecialCommand<M>)>,
+    /// Whether `specials` contains any [`SpecialCommand::CancelTimer`].
+    pub(crate) has_cancellations: bool,
+}
+
+impl<M> CommandBuffer<M> {
+    /// Creates an empty command buffer without allocating.
+    pub(crate) const fn new() -> Self {
+        Self {
+            sends: Vec::new(),
+            specials: Vec::new(),
+            has_cancellations: false,
+        }
+    }
+
+    /// Buffers an ordinary end-of-tick send.
+    #[inline]
+    pub(crate) fn push_send(&mut self, sender: AgentId, destination: Option<AgentId>, payload: M) {
+        self.sends.push(PendingSend {
+            sender,
+            destination,
+            payload,
+        });
+    }
+
+    /// Buffers an infrequent command out of line so ordinary send paths stay
+    /// compact.
+    #[inline(never)]
+    pub(crate) fn push_special(&mut self, command: SpecialCommand<M>) {
+        self.specials.push((self.sends.len(), command));
+    }
 }
 
 /// Agents before and after the visited one, which small simulations scan to
@@ -531,7 +587,7 @@ pub struct AgentContext<'a, M = ()> {
     pub(crate) time: DiscreteTime,
 
     /// Internal buffer for messages and halt requests.
-    pub(crate) commands: &'a mut Vec<AgentCommand<M>>,
+    pub(crate) commands: &'a mut CommandBuffer<M>,
 
     /// Sleep requested by the agent during the current tick.
     pub(crate) requested_sleep_until: &'a mut Option<DiscreteTime>,
@@ -563,9 +619,6 @@ pub struct AgentContext<'a, M = ()> {
 
     /// Monotonic send-order sequence for delayed messages.
     pub(crate) next_in_flight: &'a mut u64,
-
-    /// Set when any callback in the current tick requests a timer cancellation.
-    pub(crate) has_cancellations: &'a mut bool,
 }
 
 impl<'a, M> AgentContext<'a, M> {
@@ -701,9 +754,10 @@ impl<'a, M> AgentContext<'a, M> {
         let timer = TimerId { arrival, sequence };
         let destination = (target.index() < self.agent_count).then_some(target);
         let message = Message::sent(arrival - 1, self.id, destination, payload);
-        self.commands.push(AgentCommand {
-            ty: AgentCommandType::SendDelayed { timer, message },
-            agent_handle: self.id.index(),
+        self.commands.push_special(SpecialCommand::SendDelayed {
+            sender: self.id,
+            timer,
+            message,
         });
         timer
     }
@@ -717,10 +771,10 @@ impl<'a, M> AgentContext<'a, M> {
     /// cancelled, or unknown timer is a no-op.
     #[inline]
     pub fn cancel_timer(&mut self, timer: TimerId) {
-        *self.has_cancellations = true;
-        self.commands.push(AgentCommand {
-            ty: AgentCommandType::CancelTimer(timer),
-            agent_handle: self.id.index(),
+        self.commands.has_cancellations = true;
+        self.commands.push_special(SpecialCommand::CancelTimer {
+            sender: self.id,
+            timer,
         });
     }
 
@@ -755,15 +809,7 @@ impl<'a, M> AgentContext<'a, M> {
     /// Queues a message from this agent for end-of-tick processing.
     #[inline]
     fn queue_message(&mut self, destination: Option<AgentId>, payload: M) {
-        self.commands.push(AgentCommand {
-            ty: AgentCommandType::SendMessage(Message::sent(
-                self.time,
-                self.id,
-                destination,
-                payload,
-            )),
-            agent_handle: self.id.index(),
-        });
+        self.commands.push_send(self.id, destination, payload);
     }
 
     /// Queues a message to a built-in agent's target, resolving it at most once
@@ -790,9 +836,9 @@ impl<'a, M> AgentContext<'a, M> {
     /// [`Simulation::halt_reason`](crate::Simulation::halt_reason).
     #[inline]
     pub fn send_halt_interrupt(&mut self, reason: &str) {
-        self.commands.push(AgentCommand {
-            ty: AgentCommandType::HaltSimulation(reason.to_string()),
-            agent_handle: self.id.index(),
+        self.commands.push_special(SpecialCommand::HaltSimulation {
+            sender: self.id,
+            reason: reason.to_string(),
         });
     }
 
@@ -810,9 +856,9 @@ impl<'a, M> AgentContext<'a, M> {
     /// interrupt in the same tick takes precedence over a yield.
     #[inline]
     pub fn yield_control(&mut self, tag: &str) {
-        self.commands.push(AgentCommand {
-            ty: AgentCommandType::YieldControl(tag.to_string()),
-            agent_handle: self.id.index(),
+        self.commands.push_special(SpecialCommand::YieldControl {
+            sender: self.id,
+            tag: tag.to_string(),
         });
     }
 
