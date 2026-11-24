@@ -39,6 +39,285 @@ const U64_TO_UNIT_F64: f64 = 1.0 / ((1_u64 << 53) as f64);
 /// Longest derivation input hashed from a stack buffer; longer inputs use the
 /// heap. Both paths hash identical bytes.
 const STACK_DERIVATION_INPUT: usize = 256;
+/// Length of one `BLAKE3` compression block in bytes.
+const BLAKE3_BLOCK_LEN: usize = 64;
+/// Length of one `BLAKE3` compression block as a `u32` counter word.
+const BLAKE3_BLOCK_LEN_U32: u32 = 64;
+/// Standard `BLAKE3` initialization vector (first 8 words of SHA-256 IV).
+const BLAKE3_IV: [u32; 8] = [
+    0x6A09_E667,
+    0xBB67_AE85,
+    0x3C6E_F372,
+    0xA54F_F53A,
+    0x510E_527F,
+    0x9B05_688C,
+    0x1F83_D9AB,
+    0x5BE0_CD19,
+];
+/// `BLAKE3` message word permutation schedule across the 7 rounds.
+const BLAKE3_MSG_SCHEDULE: [[usize; 16]; 7] = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8],
+    [3, 4, 10, 12, 13, 2, 7, 14, 6, 5, 9, 0, 11, 15, 8, 1],
+    [10, 7, 12, 9, 14, 3, 13, 15, 4, 0, 11, 2, 5, 8, 1, 6],
+    [12, 13, 9, 11, 15, 10, 14, 8, 7, 2, 5, 3, 0, 1, 6, 4],
+    [9, 14, 11, 5, 8, 12, 15, 1, 13, 3, 0, 10, 2, 6, 4, 7],
+    [11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13],
+];
+/// `BLAKE3` flag: first block of a chunk.
+const BLAKE3_CHUNK_START: u32 = 1 << 0;
+/// `BLAKE3` flag: final block of a chunk.
+const BLAKE3_CHUNK_END: u32 = 1 << 1;
+/// `BLAKE3` flag: root output node.
+const BLAKE3_ROOT: u32 = 1 << 3;
+/// `BLAKE3` flag: keyed-hash mode.
+const BLAKE3_KEYED_HASH: u32 = 1 << 4;
+/// Combined `BLAKE3` flags for a single-block keyed hash (`len <= 64`).
+const BLAKE3_KEYED_SINGLE_FLAGS: u32 =
+    BLAKE3_KEYED_HASH | BLAKE3_CHUNK_START | BLAKE3_CHUNK_END | BLAKE3_ROOT;
+/// Combined `BLAKE3` flags for block 0 of a multi-block keyed chunk.
+const BLAKE3_KEYED_START_FLAGS: u32 = BLAKE3_KEYED_HASH | BLAKE3_CHUNK_START;
+/// Combined `BLAKE3` flags for the final block of a multi-block keyed chunk.
+const BLAKE3_KEYED_END_FLAGS: u32 = BLAKE3_KEYED_HASH | BLAKE3_CHUNK_END | BLAKE3_ROOT;
+
+/// Unpacks 32 little-endian bytes into 8 `u32` words.
+#[inline]
+const fn words_from_le_bytes_32(bytes: &[u8; 32]) -> [u32; 8] {
+    let mut words = [0_u32; 8];
+    let mut idx = 0;
+    while idx < 8 {
+        let base = idx * 4;
+        words[idx] = u32::from_le_bytes([
+            bytes[base],
+            bytes[base + 1],
+            bytes[base + 2],
+            bytes[base + 3],
+        ]);
+        idx += 1;
+    }
+    words
+}
+
+/// Unpacks the first 64 little-endian bytes of `bytes` into 16 `u32` words.
+#[inline]
+const fn words_from_le_bytes_64(bytes: &[u8]) -> [u32; 16] {
+    assert!(bytes.len() >= BLAKE3_BLOCK_LEN);
+    let mut words = [0_u32; 16];
+    let mut idx = 0;
+    while idx < 16 {
+        let base = idx * 4;
+        words[idx] = u32::from_le_bytes([
+            bytes[base],
+            bytes[base + 1],
+            bytes[base + 2],
+            bytes[base + 3],
+        ]);
+        idx += 1;
+    }
+    words
+}
+
+/// Packs 8 `u32` words into 32 little-endian bytes.
+#[inline]
+const fn le_bytes_from_words_32(words: &[u32; 8]) -> [u8; 32] {
+    let mut out = [0_u8; 32];
+    let mut idx = 0;
+    while idx < 8 {
+        let bytes = words[idx].to_le_bytes();
+        let base = idx * 4;
+        out[base] = bytes[0];
+        out[base + 1] = bytes[1];
+        out[base + 2] = bytes[2];
+        out[base + 3] = bytes[3];
+        idx += 1;
+    }
+    out
+}
+
+/// One `BLAKE3` quarter-round mixing function.
+#[inline]
+const fn blake3_g(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
+    state[a] = state[a].wrapping_add(state[b]).wrapping_add(mx);
+    state[d] = (state[d] ^ state[a]).rotate_right(16);
+    state[c] = state[c].wrapping_add(state[d]);
+    state[b] = (state[b] ^ state[c]).rotate_right(12);
+    state[a] = state[a].wrapping_add(state[b]).wrapping_add(my);
+    state[d] = (state[d] ^ state[a]).rotate_right(8);
+    state[c] = state[c].wrapping_add(state[d]);
+    state[b] = (state[b] ^ state[c]).rotate_right(7);
+}
+
+/// One `BLAKE3` round (4 column mixes followed by 4 diagonal mixes).
+#[inline]
+const fn blake3_round(state: &mut [u32; 16], msg: &[u32; 16], round: usize) {
+    let s = BLAKE3_MSG_SCHEDULE[round];
+    blake3_g(state, 0, 4, 8, 12, msg[s[0]], msg[s[1]]);
+    blake3_g(state, 1, 5, 9, 13, msg[s[2]], msg[s[3]]);
+    blake3_g(state, 2, 6, 10, 14, msg[s[4]], msg[s[5]]);
+    blake3_g(state, 3, 7, 11, 15, msg[s[6]], msg[s[7]]);
+    blake3_g(state, 0, 5, 10, 15, msg[s[8]], msg[s[9]]);
+    blake3_g(state, 1, 6, 11, 12, msg[s[10]], msg[s[11]]);
+    blake3_g(state, 2, 7, 8, 13, msg[s[12]], msg[s[13]]);
+    blake3_g(state, 3, 4, 9, 14, msg[s[14]], msg[s[15]]);
+}
+
+/// Compresses one chunk-0 `BLAKE3` block in place into `cv`.
+#[inline]
+const fn blake3_compress_chunk0(cv: &mut [u32; 8], msg: &[u32; 16], block_len: u32, flags: u32) {
+    let mut state = [
+        cv[0],
+        cv[1],
+        cv[2],
+        cv[3],
+        cv[4],
+        cv[5],
+        cv[6],
+        cv[7],
+        BLAKE3_IV[0],
+        BLAKE3_IV[1],
+        BLAKE3_IV[2],
+        BLAKE3_IV[3],
+        0,
+        0,
+        block_len,
+        flags,
+    ];
+    blake3_round(&mut state, msg, 0);
+    blake3_round(&mut state, msg, 1);
+    blake3_round(&mut state, msg, 2);
+    blake3_round(&mut state, msg, 3);
+    blake3_round(&mut state, msg, 4);
+    blake3_round(&mut state, msg, 5);
+    blake3_round(&mut state, msg, 6);
+    cv[0] = state[0] ^ state[8];
+    cv[1] = state[1] ^ state[9];
+    cv[2] = state[2] ^ state[10];
+    cv[3] = state[3] ^ state[11];
+    cv[4] = state[4] ^ state[12];
+    cv[5] = state[5] ^ state[13];
+    cv[6] = state[6] ^ state[14];
+    cv[7] = state[7] ^ state[15];
+}
+
+/// Out-of-line wrapper around [`blake3_compress_chunk0`] for dynamic message
+/// blocks so callers can inline small block assembly without duplicating the
+/// 7-round compression body.
+#[inline(never)]
+const fn blake3_compress_chunk0_outlined(
+    cv: &mut [u32; 8],
+    msg: &[u32; 16],
+    block_len: u32,
+    flags: u32,
+) {
+    blake3_compress_chunk0(cv, msg, block_len, flags);
+}
+
+/// Unpacks 32 little-endian bytes into 4 `u64` words for fast equality checks.
+#[inline]
+const fn u64s_from_le_bytes_32(bytes: &[u8; 32]) -> [u64; 4] {
+    [
+        u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]),
+        u64::from_le_bytes([
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ]),
+        u64::from_le_bytes([
+            bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23],
+        ]),
+        u64::from_le_bytes([
+            bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30], bytes[31],
+        ]),
+    ]
+}
+
+/// Per-thread cache of block-0 `BLAKE3` chaining values for the 8 fixed
+/// `(scope, TrialStream)` trial prefixes under the most recent `MasterSeed`.
+///
+/// Every trial derivation prefix is 71-83 bytes, so its first 64-byte block
+/// depends only on `(master_seed, common, stream)`. Caching the block-0
+/// chaining value is a pure memoization that halves `BLAKE3` compression work
+/// on repeated trial derivations without changing any output bit.
+struct TrialPrefixCache {
+    /// Master seed whose block-0 chaining values are cached (as four `u64`s).
+    master: std::cell::Cell<[u64; 4]>,
+    /// Bitmask of populated slots (`0..8`) for `master`.
+    valid_mask: std::cell::Cell<u8>,
+    /// Cached block-0 chaining value for each `(common, stream)` slot.
+    cvs: [std::cell::Cell<[u32; 8]>; 8],
+}
+
+impl TrialPrefixCache {
+    /// Creates an empty per-thread trial-prefix cache.
+    const fn new() -> Self {
+        Self {
+            master: std::cell::Cell::new([0; 4]),
+            valid_mask: std::cell::Cell::new(0),
+            cvs: [const { std::cell::Cell::new([0; 8]) }; 8],
+        }
+    }
+}
+
+thread_local! {
+    /// Per-thread block-0 chaining value cache for [`SeedDeriver::trial_seed`].
+    static TRIAL_PREFIX_CACHE: TrialPrefixCache = const { TrialPrefixCache::new() };
+}
+
+/// Computes and stores a missing block-0 chaining value in `cache`.
+#[cold]
+#[inline(never)]
+fn fill_trial_block0_cv(
+    cache: &TrialPrefixCache,
+    master: &[u8; 32],
+    master_words: [u64; 4],
+    slot: usize,
+) -> [u32; 8] {
+    let bit = 1_u8 << slot;
+    let mut cv = words_from_le_bytes_32(master);
+    blake3_compress_chunk0(
+        &mut cv,
+        &TRIAL_PREFIX_BLOCK0_WORDS[slot],
+        BLAKE3_BLOCK_LEN_U32,
+        BLAKE3_KEYED_START_FLAGS,
+    );
+    let mask = cache.valid_mask.get();
+    if mask != 0 && cache.master.get() == master_words {
+        cache.cvs[slot].set(cv);
+        cache.valid_mask.set(mask | bit);
+    } else {
+        cache.master.set(master_words);
+        cache.cvs[slot].set(cv);
+        cache.valid_mask.set(bit);
+    }
+    cv
+}
+
+/// Returns the block-0 `BLAKE3` chaining value for `(master, slot)`, computing
+/// and memoizing it lazily per thread.
+#[inline]
+fn cached_trial_block0_cv(master: &[u8; 32], slot: usize) -> [u32; 8] {
+    let master_words = u64s_from_le_bytes_32(master);
+    TRIAL_PREFIX_CACHE.with(|cache| {
+        let bit = 1_u8 << slot;
+        if (cache.valid_mask.get() & bit) != 0 && cache.master.get() == master_words {
+            return cache.cvs[slot].get();
+        }
+        fill_trial_block0_cv(cache, master, master_words, slot)
+    })
+}
+
+/// Pre-unpacked first 64-byte block of each of the 8 trial prefixes, indexed by
+/// `(common as usize) * 4 + stream_index`.
+const TRIAL_PREFIX_BLOCK0_WORDS: [[u32; 16]; 8] = [
+    words_from_le_bytes_64(&INDEP_TRIAL_NOISE_PREFIX),
+    words_from_le_bytes_64(&INDEP_LAYOUT_NOISE_PREFIX),
+    words_from_le_bytes_64(&INDEP_EXECUTION_NOISE_PREFIX),
+    words_from_le_bytes_64(&INDEP_HOLDOUT_PREFIX),
+    words_from_le_bytes_64(&COMMON_TRIAL_NOISE_PREFIX),
+    words_from_le_bytes_64(&COMMON_LAYOUT_NOISE_PREFIX),
+    words_from_le_bytes_64(&COMMON_EXECUTION_NOISE_PREFIX),
+    words_from_le_bytes_64(&COMMON_HOLDOUT_PREFIX),
+];
 
 /// Builds a frozen V1 domain-separator prefix:
 /// `ROOT_NAMESPACE || (namespace.len() as u64).to_le_bytes() || namespace || suffix`.
@@ -257,6 +536,17 @@ pub enum TrialStream {
 }
 
 impl TrialStream {
+    /// Returns the `0..8` table index for `(common, self)`.
+    const fn cache_slot(self, common: bool) -> usize {
+        let base = if common { 4 } else { 0 };
+        base + match self {
+            Self::TrialNoise => 0,
+            Self::LayoutNoise => 1,
+            Self::ExecutionNoise => 2,
+            Self::ValidationHoldout => 3,
+        }
+    }
+
     /// Returns the pre-encoded V1 derivation prefix for this stream family
     /// under either the common-random or candidate-independent scope.
     const fn derivation_prefix(self, common: bool) -> &'static [u8] {
@@ -599,21 +889,41 @@ impl SeedDeriver {
     /// Derives an independent proposal seed for a stable proposal token.
     #[must_use]
     pub fn proposal_seed(self, token: u64) -> DerivedSeed {
-        let mut input = [0_u8; PROPOSAL_PREFIX.len() + 8];
-        input[..PROPOSAL_PREFIX.len()].copy_from_slice(&PROPOSAL_PREFIX);
-        input[PROPOSAL_PREFIX.len()..].copy_from_slice(&token.to_le_bytes());
-        DerivedSeed(*blake3::keyed_hash(&self.master.0, &input).as_bytes())
+        const INPUT_LEN: usize = PROPOSAL_PREFIX.len() + 8;
+        const INPUT_LEN_U32: u32 = 55;
+        const _: () = assert!(INPUT_LEN == INPUT_LEN_U32 as usize);
+        let mut block = [0_u8; BLAKE3_BLOCK_LEN];
+        block[..PROPOSAL_PREFIX.len()].copy_from_slice(&PROPOSAL_PREFIX);
+        block[PROPOSAL_PREFIX.len()..INPUT_LEN].copy_from_slice(&token.to_le_bytes());
+        let mut cv = words_from_le_bytes_32(&self.master.0);
+        blake3_compress_chunk0(
+            &mut cv,
+            &words_from_le_bytes_64(&block),
+            INPUT_LEN_U32,
+            BLAKE3_KEYED_SINGLE_FLAGS,
+        );
+        DerivedSeed(le_bytes_from_words_32(&cv))
     }
 
     /// Derives an independent proposal seed for one stable vector dimension.
     #[must_use]
     pub fn proposal_dimension_seed(self, token: u64, dimension: u64) -> DerivedSeed {
-        let mut input = [0_u8; PROPOSAL_PREFIX.len() + 16];
-        input[..PROPOSAL_PREFIX.len()].copy_from_slice(&PROPOSAL_PREFIX);
-        input[PROPOSAL_PREFIX.len()..PROPOSAL_PREFIX.len() + 8]
+        const INPUT_LEN: usize = PROPOSAL_PREFIX.len() + 16;
+        const INPUT_LEN_U32: u32 = 63;
+        const _: () = assert!(INPUT_LEN == INPUT_LEN_U32 as usize);
+        let mut block = [0_u8; BLAKE3_BLOCK_LEN];
+        block[..PROPOSAL_PREFIX.len()].copy_from_slice(&PROPOSAL_PREFIX);
+        block[PROPOSAL_PREFIX.len()..PROPOSAL_PREFIX.len() + 8]
             .copy_from_slice(&token.to_le_bytes());
-        input[PROPOSAL_PREFIX.len() + 8..].copy_from_slice(&dimension.to_le_bytes());
-        DerivedSeed(*blake3::keyed_hash(&self.master.0, &input).as_bytes())
+        block[PROPOSAL_PREFIX.len() + 8..INPUT_LEN].copy_from_slice(&dimension.to_le_bytes());
+        let mut cv = words_from_le_bytes_32(&self.master.0);
+        blake3_compress_chunk0(
+            &mut cv,
+            &words_from_le_bytes_64(&block),
+            INPUT_LEN_U32,
+            BLAKE3_KEYED_SINGLE_FLAGS,
+        );
+        DerivedSeed(le_bytes_from_words_32(&cv))
     }
 
     /// Derives an optimizer-acceptance seed for a generation and step.
@@ -642,6 +952,7 @@ impl SeedDeriver {
     }
 
     /// Derives a candidate-specific or common-random trial stream.
+    #[inline]
     fn trial_seed(
         self,
         key: TrialId,
@@ -660,6 +971,26 @@ impl SeedDeriver {
         header[..8].copy_from_slice(&scope_id.to_le_bytes());
         header[8..12].copy_from_slice(&key.replication().value().to_le_bytes());
         header[12..20].copy_from_slice(&u64::try_from(tag.len()).unwrap_or(u64::MAX).to_le_bytes());
+
+        let prefix_tail = &prefix[BLAKE3_BLOCK_LEN..];
+        let tail_head_len = prefix_tail.len() + header.len();
+        if let Some(rem_len) = tail_head_len.checked_add(tag.len()) {
+            if rem_len <= BLAKE3_BLOCK_LEN {
+                let mut block = [0_u8; BLAKE3_BLOCK_LEN];
+                block[..prefix_tail.len()].copy_from_slice(prefix_tail);
+                block[prefix_tail.len()..tail_head_len].copy_from_slice(&header);
+                block[tail_head_len..rem_len].copy_from_slice(tag.as_bytes());
+                let mut cv = cached_trial_block0_cv(&self.master.0, stream.cache_slot(common));
+                let block_len = u32::try_from(rem_len).unwrap_or(BLAKE3_BLOCK_LEN_U32);
+                blake3_compress_chunk0_outlined(
+                    &mut cv,
+                    &words_from_le_bytes_64(&block),
+                    block_len,
+                    BLAKE3_KEYED_END_FLAGS,
+                );
+                return DerivedSeed(le_bytes_from_words_32(&cv));
+            }
+        }
         self.derive_with_tail(prefix, &header, tag.as_bytes())
     }
 
@@ -781,6 +1112,7 @@ impl TrialContext {
 
     /// Derives a stream unique to this candidate, replication, family, and tag.
     #[must_use]
+    #[inline]
     pub fn independent_rng(self, stream: TrialStream, tag: &str) -> TrialRng {
         self.independent_seed(stream, tag).rng()
     }
@@ -791,12 +1123,14 @@ impl TrialContext {
     /// [`CandidateId`] is excluded from the seed so paired candidates see
     /// identical draws on each replication while replications vary.
     #[must_use]
+    #[inline]
     pub fn common_rng(self, stream: TrialStream, tag: &str) -> TrialRng {
         self.common_seed(stream, tag).rng()
     }
 
     /// Derives an independent stream seed without consuming it.
     #[must_use]
+    #[inline]
     pub fn independent_seed(self, stream: TrialStream, tag: &str) -> DerivedSeed {
         SeedDeriver::new(self.replay.master_seed).trial_seed(
             self.replay.trial,
@@ -812,6 +1146,7 @@ impl TrialContext {
     /// Depends on `common_random_group`, [`ReplicationId`], `stream`, and `tag`,
     /// excluding [`CandidateId`].
     #[must_use]
+    #[inline]
     pub fn common_seed(self, stream: TrialStream, tag: &str) -> DerivedSeed {
         SeedDeriver::new(self.replay.master_seed).trial_seed(
             self.replay.trial,
@@ -3008,5 +3343,86 @@ mod tests {
         assert_eq!(Ordering::Less, pos_zero.cmp(&one));
         assert_eq!(1.0_f64.to_bits(), f64::from(one).to_bits());
         assert!(FiniteValue::try_from(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn direct_blake3_derivation_matches_reference_across_boundaries_and_seed_switches() {
+        let reference = |master: MasterSeed, namespace: &[u8], fields: &[&[u8]]| -> DerivedSeed {
+            let mut hasher = blake3::Hasher::new_keyed(&master.bytes());
+            hasher.update(ROOT_NAMESPACE);
+            hasher.update(&(namespace.len() as u64).to_le_bytes());
+            hasher.update(namespace);
+            for field in fields {
+                hasher.update(field);
+            }
+            DerivedSeed(*hasher.finalize().as_bytes())
+        };
+
+        let streams = [
+            (TrialStream::TrialNoise, TRIAL_NOISE_NAMESPACE),
+            (TrialStream::LayoutNoise, LAYOUT_NOISE_NAMESPACE),
+            (TrialStream::ExecutionNoise, EXECUTION_NOISE_NAMESPACE),
+            (TrialStream::ValidationHoldout, HOLDOUT_NAMESPACE),
+        ];
+
+        for master_val in [0_u64, 1, 0x0123_4567_89ab_cdef, u64::MAX] {
+            let master = MasterSeed::from_u64(master_val);
+            let deriver = SeedDeriver::new(master);
+            assert_eq!(
+                deriver.proposal_seed(42),
+                reference(master, PROPOSAL_NAMESPACE, &[&42_u64.to_le_bytes()])
+            );
+            assert_eq!(
+                deriver.proposal_dimension_seed(42, 7),
+                reference(
+                    master,
+                    PROPOSAL_NAMESPACE,
+                    &[&42_u64.to_le_bytes(), &7_u64.to_le_bytes()]
+                )
+            );
+            assert_eq!(
+                deriver.acceptance_seed(3, 9),
+                reference(
+                    master,
+                    ACCEPTANCE_NAMESPACE,
+                    &[&3_u64.to_le_bytes(), &9_u64.to_le_bytes()]
+                )
+            );
+            let ctx = context(master, 17, 23, 99);
+            for (stream, stream_ns) in streams {
+                for tag_len in [0_usize, 1, 5, 24, 25, 26, 36, 37, 38, 63, 64, 65, 160] {
+                    let tag = "a".repeat(tag_len);
+                    let tag_len_bytes = (tag_len as u64).to_le_bytes();
+                    assert_eq!(
+                        ctx.independent_seed(stream, &tag),
+                        reference(
+                            master,
+                            INDEPENDENT_NAMESPACE,
+                            &[
+                                stream_ns,
+                                &17_u64.to_le_bytes(),
+                                &23_u32.to_le_bytes(),
+                                &tag_len_bytes,
+                                tag.as_bytes(),
+                            ]
+                        )
+                    );
+                    assert_eq!(
+                        ctx.common_seed(stream, &tag),
+                        reference(
+                            master,
+                            COMMON_NAMESPACE,
+                            &[
+                                stream_ns,
+                                &99_u64.to_le_bytes(),
+                                &23_u32.to_le_bytes(),
+                                &tag_len_bytes,
+                                tag.as_bytes(),
+                            ]
+                        )
+                    );
+                }
+            }
+        }
     }
 }
