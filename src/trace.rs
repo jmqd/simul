@@ -13,8 +13,24 @@
 use crate::agent::{AgentId, TimerId};
 use crate::experiment::{ReplayKey, TrialContext};
 use crate::{DiscreteTime, Simulation, SimulationMode};
-use std::fmt::Write as _;
 use std::io;
+
+/// Buffer flush threshold for streaming JSONL and Perfetto exports.
+const WRITE_FLUSH_THRESHOLD: usize = 8 * 1024;
+
+/// Pre-quoted fallback agent name when an event references an unknown index.
+const UNKNOWN_JSON_NAME: &str = "\"unknown\"";
+
+/// Two-digit base-10 lookup table for fast integer formatting.
+const DEC_DIGITS_LUT: &[u8; 200] = b"\
+0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+
+/// Lowercase hexadecimal digits for JSON control-character escapes.
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 /// One structured lifecycle event captured by [`SimulationTrace`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,12 +172,18 @@ impl SimulationTrace {
     ///
     /// Returns any underlying I/O error from `writer`.
     pub fn write_jsonl(&self, writer: &mut impl io::Write) -> io::Result<()> {
-        let mut line = String::with_capacity(192);
+        let escaped_names = self.escaped_agent_names();
+        let mut buf = String::with_capacity(WRITE_FLUSH_THRESHOLD + 256);
         for event in &self.events {
-            line.clear();
-            self.format_jsonl_event(event, &mut line);
-            line.push('\n');
-            writer.write_all(line.as_bytes())?;
+            format_jsonl_event(event, &escaped_names, &mut buf);
+            buf.push('\n');
+            if buf.len() >= WRITE_FLUSH_THRESHOLD {
+                writer.write_all(buf.as_bytes())?;
+                buf.clear();
+            }
+        }
+        if !buf.is_empty() {
+            writer.write_all(buf.as_bytes())?;
         }
         Ok(())
     }
@@ -169,9 +191,10 @@ impl SimulationTrace {
     /// Serializes the trace as a `JSONL` string.
     #[must_use]
     pub fn to_jsonl(&self) -> String {
+        let escaped_names = self.escaped_agent_names();
         let mut out = String::with_capacity(self.events.len().saturating_mul(128));
         for event in &self.events {
-            self.format_jsonl_event(event, &mut out);
+            format_jsonl_event(event, &escaped_names, &mut out);
             out.push('\n');
         }
         out
@@ -188,213 +211,265 @@ impl SimulationTrace {
     ///
     /// Returns any underlying I/O error from `writer`.
     pub fn write_perfetto_json(&self, writer: &mut impl io::Write) -> io::Result<()> {
-        writer.write_all(b"{\"traceEvents\":[\n")?;
-        let mut first = true;
-        let mut buf = String::with_capacity(256);
+        let escaped_names = self.escaped_agent_names();
+        let mut buf = String::with_capacity(WRITE_FLUSH_THRESHOLD + 256);
+        append_perfetto_header(&escaped_names, &mut buf);
 
-        // Process metadata.
-        write_perfetto_entry(
-            writer,
-            &mut first,
-            r#"{"name":"process_name","ph":"M","pid":1,"tid":0,"args":{"name":"simul"}}"#,
-        )?;
-
-        // Per-agent thread names so Perfetto labels each swimlane.
-        for (index, name) in self.agent_names.iter().enumerate() {
-            buf.clear();
-            let _ = write!(
-                buf,
-                "{{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":{index},\"args\":{{\"name\":"
-            );
-            push_json_string(&mut buf, name);
-            buf.push_str("}}");
-            write_perfetto_entry(writer, &mut first, &buf)?;
-        }
-
-        // Lifecycle events + queue-depth counter points.
         for event in &self.events {
-            buf.clear();
-            self.format_perfetto_event(event, &mut buf);
-            write_perfetto_entry(writer, &mut first, &buf)?;
-
-            if let Some(depth) = queue_depth_of(&event.kind) {
+            append_perfetto_event_and_metrics(event, &escaped_names, &mut buf);
+            if buf.len() >= WRITE_FLUSH_THRESHOLD {
+                writer.write_all(buf.as_bytes())?;
                 buf.clear();
-                let tid = event.agent.index();
-                let name = self.agent_name(event.agent).unwrap_or("unknown");
-                let _ = write!(
-                    buf,
-                    "{{\"name\":\"queue_depth\",\"cat\":\"metrics\",\"ph\":\"C\",\"ts\":{},\"pid\":1,\"tid\":{tid},\"args\":{{",
-                    event.time
-                );
-                push_json_string(&mut buf, name);
-                let _ = write!(buf, ":{depth}}}}}");
-                write_perfetto_entry(writer, &mut first, &buf)?;
             }
         }
 
-        writer.write_all(b"\n]}\n")
+        buf.push_str("\n]}\n");
+        writer.write_all(buf.as_bytes())
     }
 
     /// Serializes the trace as a Chrome Trace / Perfetto JSON string.
     #[must_use]
     pub fn to_perfetto_json(&self) -> String {
-        let mut bytes = Vec::with_capacity(self.events.len().saturating_mul(160) + 128);
-        let _ = self.write_perfetto_json(&mut bytes);
-        String::from_utf8(bytes).unwrap_or_default()
+        let escaped_names = self.escaped_agent_names();
+        let mut out = String::with_capacity(self.events.len().saturating_mul(160) + 128);
+        append_perfetto_header(&escaped_names, &mut out);
+        for event in &self.events {
+            append_perfetto_event_and_metrics(event, &escaped_names, &mut out);
+        }
+        out.push_str("\n]}\n");
+        out
     }
 
-    /// Formats one event as a single JSON object into `out`.
-    fn format_jsonl_event(&self, event: &TraceEvent, out: &mut String) {
-        let agent_name = self.agent_name(event.agent).unwrap_or("unknown");
-        let _ = write!(
-            out,
-            "{{\"time\":{},\"agent_id\":{},\"agent\":",
-            event.time,
-            event.agent.index()
-        );
-        push_json_string(out, agent_name);
-        match &event.kind {
-            TraceEventKind::MessageSent {
-                destination,
-                arrival,
-                payload,
-            } => {
-                out.push_str(",\"event\":\"message_sent\"");
-                if let Some(dst) = destination {
-                    let _ = write!(out, ",\"destination_id\":{},\"destination\":", dst.index());
-                    push_json_string(out, self.agent_name(*dst).unwrap_or("unknown"));
-                } else {
-                    out.push_str(",\"destination_id\":null,\"destination\":null");
-                }
-                let _ = write!(out, ",\"arrival\":{arrival}");
-                if let Some(text) = payload {
-                    out.push_str(",\"payload\":");
-                    push_json_string(out, text);
-                }
+    /// Pre-escapes every agent name as a JSON string literal once per export.
+    fn escaped_agent_names(&self) -> Vec<String> {
+        self.agent_names
+            .iter()
+            .map(|name| {
+                let mut escaped = String::with_capacity(name.len() + 2);
+                push_json_string(&mut escaped, name);
+                escaped
+            })
+            .collect()
+    }
+}
+
+/// Resolves an escaped JSON agent name literal by identity.
+#[inline]
+fn escaped_name(escaped_names: &[String], id: AgentId) -> &str {
+    escaped_names
+        .get(id.index())
+        .map_or(UNKNOWN_JSON_NAME, String::as_str)
+}
+
+/// Formats one event as a single JSON object into `out`.
+fn format_jsonl_event(event: &TraceEvent, escaped_names: &[String], out: &mut String) {
+    out.push_str("{\"time\":");
+    push_u64(out, event.time);
+    out.push_str(",\"agent_id\":");
+    push_usize(out, event.agent.index());
+    out.push_str(",\"agent\":");
+    out.push_str(escaped_name(escaped_names, event.agent));
+    match &event.kind {
+        TraceEventKind::MessageSent {
+            destination,
+            arrival,
+            payload,
+        } => {
+            out.push_str(",\"event\":\"message_sent\"");
+            if let Some(dst) = destination {
+                out.push_str(",\"destination_id\":");
+                push_usize(out, dst.index());
+                out.push_str(",\"destination\":");
+                out.push_str(escaped_name(escaped_names, *dst));
+            } else {
+                out.push_str(",\"destination_id\":null,\"destination\":null");
             }
-            TraceEventKind::TimerCancelled { timer } => {
-                let _ = write!(
-                    out,
-                    ",\"event\":\"timer_cancelled\",\"arrival\":{}",
-                    timer.arrival()
-                );
-            }
-            TraceEventKind::MessageDelivered {
-                source,
-                queue_depth,
-            } => {
-                out.push_str(",\"event\":\"message_delivered\"");
-                append_optional_source(out, *source, self);
-                let _ = write!(out, ",\"queue_depth\":{queue_depth}");
-            }
-            TraceEventKind::MessageConsumed {
-                source,
-                queued_time,
-                queue_depth,
-            } => {
-                out.push_str(",\"event\":\"message_consumed\"");
-                append_optional_source(out, *source, self);
-                let _ = write!(
-                    out,
-                    ",\"queued_time\":{queued_time},\"queue_depth\":{queue_depth}"
-                );
-            }
-            TraceEventKind::AgentSlept { until } => {
-                let _ = write!(out, ",\"event\":\"agent_slept\",\"until\":{until}");
-            }
-            TraceEventKind::AgentWoke => {
-                out.push_str(",\"event\":\"agent_woke\"");
-            }
-            TraceEventKind::HaltInterrupt { reason } => {
-                out.push_str(",\"event\":\"halt_interrupt\",\"reason\":");
-                push_json_string(out, reason);
+            out.push_str(",\"arrival\":");
+            push_u64(out, *arrival);
+            if let Some(text) = payload {
+                out.push_str(",\"payload\":");
+                push_json_string(out, text);
             }
         }
-        out.push('}');
+        TraceEventKind::TimerCancelled { timer } => {
+            out.push_str(",\"event\":\"timer_cancelled\",\"arrival\":");
+            push_u64(out, timer.arrival());
+        }
+        TraceEventKind::MessageDelivered {
+            source,
+            queue_depth,
+        } => {
+            out.push_str(",\"event\":\"message_delivered\"");
+            append_optional_source(out, *source, escaped_names);
+            out.push_str(",\"queue_depth\":");
+            push_usize(out, *queue_depth);
+        }
+        TraceEventKind::MessageConsumed {
+            source,
+            queued_time,
+            queue_depth,
+        } => {
+            out.push_str(",\"event\":\"message_consumed\"");
+            append_optional_source(out, *source, escaped_names);
+            out.push_str(",\"queued_time\":");
+            push_u64(out, *queued_time);
+            out.push_str(",\"queue_depth\":");
+            push_usize(out, *queue_depth);
+        }
+        TraceEventKind::AgentSlept { until } => {
+            out.push_str(",\"event\":\"agent_slept\",\"until\":");
+            push_u64(out, *until);
+        }
+        TraceEventKind::AgentWoke => {
+            out.push_str(",\"event\":\"agent_woke\"");
+        }
+        TraceEventKind::HaltInterrupt { reason } => {
+            out.push_str(",\"event\":\"halt_interrupt\",\"reason\":");
+            push_json_string(out, reason);
+        }
     }
+    out.push('}');
+}
 
-    /// Formats one event as a Chrome Trace JSON object into `out`.
-    fn format_perfetto_event(&self, event: &TraceEvent, out: &mut String) {
-        let tid = event.agent.index();
-        let ts = event.time;
-        match &event.kind {
-            TraceEventKind::MessageSent {
-                destination,
-                arrival,
-                payload,
-            } => {
-                let _ = write!(
-                    out,
-                    "{{\"name\":\"send\",\"cat\":\"message\",\"ph\":\"i\",\"s\":\"t\",\"ts\":{ts},\"pid\":1,\"tid\":{tid},\"args\":{{\"arrival\":{arrival}"
-                );
-                if let Some(dst) = destination {
-                    out.push_str(",\"destination\":");
-                    push_json_string(out, self.agent_name(*dst).unwrap_or("unknown"));
-                }
-                if let Some(text) = payload {
-                    out.push_str(",\"payload\":");
-                    push_json_string(out, text);
-                }
-                out.push_str("}}");
+/// Appends the Perfetto trace header and process/thread metadata entries.
+fn append_perfetto_header(escaped_names: &[String], out: &mut String) {
+    out.push_str(
+        "{\"traceEvents\":[\n{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":1,\"tid\":0,\"args\":{\"name\":\"simul\"}}",
+    );
+    for (index, name) in escaped_names.iter().enumerate() {
+        out.push_str(",\n{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":");
+        push_usize(out, index);
+        out.push_str(",\"args\":{\"name\":");
+        out.push_str(name);
+        out.push_str("}}");
+    }
+}
+
+/// Appends one comma-prefixed Perfetto event and optional `queue_depth` counter.
+fn append_perfetto_event_and_metrics(
+    event: &TraceEvent,
+    escaped_names: &[String],
+    out: &mut String,
+) {
+    out.push_str(",\n");
+    format_perfetto_event(event, escaped_names, out);
+    if let Some(depth) = queue_depth_of(&event.kind) {
+        out.push_str(",\n{\"name\":\"queue_depth\",\"cat\":\"metrics\",\"ph\":\"C\",\"ts\":");
+        push_u64(out, event.time);
+        out.push_str(",\"pid\":1,\"tid\":");
+        push_usize(out, event.agent.index());
+        out.push_str(",\"args\":{");
+        out.push_str(escaped_name(escaped_names, event.agent));
+        out.push(':');
+        push_usize(out, depth);
+        out.push_str("}}");
+    }
+}
+
+/// Appends the shared Perfetto event prefix up through `tid`.
+#[inline]
+fn push_perfetto_prefix(out: &mut String, head: &str, ts: DiscreteTime, tid: usize) {
+    out.push_str(head);
+    push_u64(out, ts);
+    out.push_str(",\"pid\":1,\"tid\":");
+    push_usize(out, tid);
+}
+
+/// Appends optional Perfetto `"source"` field and closes the event's `args`.
+#[inline]
+fn finish_perfetto_source(out: &mut String, source: Option<AgentId>, escaped_names: &[String]) {
+    if let Some(src) = source {
+        out.push_str(",\"source\":");
+        out.push_str(escaped_name(escaped_names, src));
+    }
+    out.push_str("}}");
+}
+
+/// Formats one event as a Chrome Trace JSON object into `out`.
+fn format_perfetto_event(event: &TraceEvent, escaped_names: &[String], out: &mut String) {
+    const SEND_HEAD: &str =
+        "{\"name\":\"send\",\"cat\":\"message\",\"ph\":\"i\",\"s\":\"t\",\"ts\":";
+    const CANCEL_HEAD: &str =
+        "{\"name\":\"cancel_timer\",\"cat\":\"timer\",\"ph\":\"i\",\"s\":\"t\",\"ts\":";
+    const DELIVER_HEAD: &str =
+        "{\"name\":\"deliver\",\"cat\":\"message\",\"ph\":\"i\",\"s\":\"t\",\"ts\":";
+    const CONSUME_HEAD: &str =
+        "{\"name\":\"consume\",\"cat\":\"message\",\"ph\":\"i\",\"s\":\"t\",\"ts\":";
+    const WAKE_HEAD: &str =
+        "{\"name\":\"wake\",\"cat\":\"lifecycle\",\"ph\":\"i\",\"s\":\"t\",\"ts\":";
+    const HALT_HEAD: &str =
+        "{\"name\":\"halt_interrupt\",\"cat\":\"control\",\"ph\":\"i\",\"s\":\"g\",\"ts\":";
+
+    let tid = event.agent.index();
+    let ts = event.time;
+    match &event.kind {
+        TraceEventKind::MessageSent {
+            destination,
+            arrival,
+            payload,
+        } => {
+            push_perfetto_prefix(out, SEND_HEAD, ts, tid);
+            out.push_str(",\"args\":{\"arrival\":");
+            push_u64(out, *arrival);
+            if let Some(dst) = destination {
+                out.push_str(",\"destination\":");
+                out.push_str(escaped_name(escaped_names, *dst));
             }
-            TraceEventKind::TimerCancelled { timer } => {
-                let _ = write!(
-                    out,
-                    "{{\"name\":\"cancel_timer\",\"cat\":\"timer\",\"ph\":\"i\",\"s\":\"t\",\"ts\":{ts},\"pid\":1,\"tid\":{tid},\"args\":{{\"arrival\":{}}}}}",
-                    timer.arrival()
-                );
+            if let Some(text) = payload {
+                out.push_str(",\"payload\":");
+                push_json_string(out, text);
             }
-            TraceEventKind::MessageDelivered {
-                source,
-                queue_depth,
-            } => {
-                let _ = write!(
-                    out,
-                    "{{\"name\":\"deliver\",\"cat\":\"message\",\"ph\":\"i\",\"s\":\"t\",\"ts\":{ts},\"pid\":1,\"tid\":{tid},\"args\":{{\"queue_depth\":{queue_depth}"
-                );
-                if let Some(src) = source {
-                    out.push_str(",\"source\":");
-                    push_json_string(out, self.agent_name(*src).unwrap_or("unknown"));
-                }
-                out.push_str("}}");
-            }
-            TraceEventKind::MessageConsumed {
-                source,
-                queued_time,
-                queue_depth,
-            } => {
-                let wait = ts.saturating_sub(*queued_time);
-                let _ = write!(
-                    out,
-                    "{{\"name\":\"consume\",\"cat\":\"message\",\"ph\":\"i\",\"s\":\"t\",\"ts\":{ts},\"pid\":1,\"tid\":{tid},\"args\":{{\"queued_time\":{queued_time},\"wait\":{wait},\"queue_depth\":{queue_depth}"
-                );
-                if let Some(src) = source {
-                    out.push_str(",\"source\":");
-                    push_json_string(out, self.agent_name(*src).unwrap_or("unknown"));
-                }
-                out.push_str("}}");
-            }
-            TraceEventKind::AgentSlept { until } => {
-                let dur = until.saturating_sub(ts);
-                let _ = write!(
-                    out,
-                    "{{\"name\":\"sleep\",\"cat\":\"lifecycle\",\"ph\":\"X\",\"ts\":{ts},\"dur\":{dur},\"pid\":1,\"tid\":{tid},\"args\":{{\"until\":{until}}}}}"
-                );
-            }
-            TraceEventKind::AgentWoke => {
-                let _ = write!(
-                    out,
-                    "{{\"name\":\"wake\",\"cat\":\"lifecycle\",\"ph\":\"i\",\"s\":\"t\",\"ts\":{ts},\"pid\":1,\"tid\":{tid}}}"
-                );
-            }
-            TraceEventKind::HaltInterrupt { reason } => {
-                let _ = write!(
-                    out,
-                    "{{\"name\":\"halt_interrupt\",\"cat\":\"control\",\"ph\":\"i\",\"s\":\"g\",\"ts\":{ts},\"pid\":1,\"tid\":{tid},\"args\":{{\"reason\":"
-                );
-                push_json_string(out, reason);
-                out.push_str("}}");
-            }
+            out.push_str("}}");
+        }
+        TraceEventKind::TimerCancelled { timer } => {
+            push_perfetto_prefix(out, CANCEL_HEAD, ts, tid);
+            out.push_str(",\"args\":{\"arrival\":");
+            push_u64(out, timer.arrival());
+            out.push_str("}}");
+        }
+        TraceEventKind::MessageDelivered {
+            source,
+            queue_depth,
+        } => {
+            push_perfetto_prefix(out, DELIVER_HEAD, ts, tid);
+            out.push_str(",\"args\":{\"queue_depth\":");
+            push_usize(out, *queue_depth);
+            finish_perfetto_source(out, *source, escaped_names);
+        }
+        TraceEventKind::MessageConsumed {
+            source,
+            queued_time,
+            queue_depth,
+        } => {
+            push_perfetto_prefix(out, CONSUME_HEAD, ts, tid);
+            out.push_str(",\"args\":{\"queued_time\":");
+            push_u64(out, *queued_time);
+            out.push_str(",\"wait\":");
+            push_u64(out, ts.saturating_sub(*queued_time));
+            out.push_str(",\"queue_depth\":");
+            push_usize(out, *queue_depth);
+            finish_perfetto_source(out, *source, escaped_names);
+        }
+        TraceEventKind::AgentSlept { until } => {
+            out.push_str("{\"name\":\"sleep\",\"cat\":\"lifecycle\",\"ph\":\"X\",\"ts\":");
+            push_u64(out, ts);
+            out.push_str(",\"dur\":");
+            push_u64(out, until.saturating_sub(ts));
+            out.push_str(",\"pid\":1,\"tid\":");
+            push_usize(out, tid);
+            out.push_str(",\"args\":{\"until\":");
+            push_u64(out, *until);
+            out.push_str("}}");
+        }
+        TraceEventKind::AgentWoke => {
+            push_perfetto_prefix(out, WAKE_HEAD, ts, tid);
+            out.push('}');
+        }
+        TraceEventKind::HaltInterrupt { reason } => {
+            push_perfetto_prefix(out, HALT_HEAD, ts, tid);
+            out.push_str(",\"args\":{\"reason\":");
+            push_json_string(out, reason);
+            out.push_str("}}");
         }
     }
 }
@@ -449,46 +524,88 @@ const fn queue_depth_of(kind: &TraceEventKind) -> Option<usize> {
 }
 
 /// Appends optional `source_id` and `source` fields to a JSONL event.
-fn append_optional_source(out: &mut String, source: Option<AgentId>, trace: &SimulationTrace) {
+#[inline]
+fn append_optional_source(out: &mut String, source: Option<AgentId>, escaped_names: &[String]) {
     if let Some(src) = source {
-        let _ = write!(out, ",\"source_id\":{},\"source\":", src.index());
-        push_json_string(out, trace.agent_name(src).unwrap_or("unknown"));
+        out.push_str(",\"source_id\":");
+        push_usize(out, src.index());
+        out.push_str(",\"source\":");
+        out.push_str(escaped_name(escaped_names, src));
     } else {
         out.push_str(",\"source_id\":null,\"source\":null");
     }
 }
 
-/// Writes one comma-separated entry into a Perfetto `traceEvents` array.
-fn write_perfetto_entry(
-    writer: &mut impl io::Write,
-    first: &mut bool,
-    entry: &str,
-) -> io::Result<()> {
-    if *first {
-        *first = false;
-    } else {
-        writer.write_all(b",\n")?;
+/// Appends a `usize` in base 10.
+#[inline]
+fn push_usize(out: &mut String, value: usize) {
+    push_u64(out, u64::try_from(value).unwrap_or(u64::MAX));
+}
+
+/// Appends a `u64` in base 10 without invoking `std::fmt` machinery.
+#[inline]
+fn push_u64(out: &mut String, mut value: u64) {
+    if value < 10 {
+        out.push(char::from(b'0' + u8::try_from(value).unwrap_or(0)));
+        return;
     }
-    writer.write_all(entry.as_bytes())
+    let mut buf = [0_u8; 20];
+    let mut pos = buf.len();
+    while value >= 100 {
+        let rem = usize::try_from(value.rem_euclid(100)).unwrap_or(0) * 2;
+        value = value.div_euclid(100);
+        pos -= 2;
+        buf[pos] = DEC_DIGITS_LUT[rem];
+        buf[pos + 1] = DEC_DIGITS_LUT[rem + 1];
+    }
+    if value >= 10 {
+        let rem = usize::try_from(value).unwrap_or(0) * 2;
+        pos -= 2;
+        buf[pos] = DEC_DIGITS_LUT[rem];
+        buf[pos + 1] = DEC_DIGITS_LUT[rem + 1];
+    } else {
+        pos -= 1;
+        buf[pos] = b'0' + u8::try_from(value).unwrap_or(0);
+    }
+    if let Ok(digits) = std::str::from_utf8(&buf[pos..]) {
+        out.push_str(digits);
+    }
 }
 
 /// Appends `value` as a valid RFC 8259 JSON string literal.
+#[inline]
 fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str(r#"\""#),
-            '\\' => out.push_str(r"\\"),
-            '\u{08}' => out.push_str(r"\b"),
-            '\u{0C}' => out.push_str(r"\f"),
-            '\n' => out.push_str(r"\n"),
-            '\r' => out.push_str(r"\r"),
-            '\t' => out.push_str(r"\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
+    let bytes = value.as_bytes();
+    let mut start = 0;
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte >= 0x20 && byte != b'"' && byte != b'\\' {
+            continue;
         }
+        if start < i {
+            out.push_str(&value[start..i]);
+        }
+        match byte {
+            b'"' => out.push_str(r#"\""#),
+            b'\\' => out.push_str(r"\\"),
+            0x08 => out.push_str(r"\b"),
+            0x0C => out.push_str(r"\f"),
+            b'\n' => out.push_str(r"\n"),
+            b'\r' => out.push_str(r"\r"),
+            b'\t' => out.push_str(r"\t"),
+            control => {
+                let hi = usize::from(control >> 4);
+                let lo = usize::from(control & 0x0f);
+                let esc = [b'\\', b'u', b'0', b'0', HEX_LOWER[hi], HEX_LOWER[lo]];
+                if let Ok(text) = std::str::from_utf8(&esc) {
+                    out.push_str(text);
+                }
+            }
+        }
+        start = i + 1;
+    }
+    if start < bytes.len() {
+        out.push_str(&value[start..]);
     }
     out.push('"');
 }
@@ -671,6 +788,40 @@ mod tests {
         let mut out = String::new();
         push_json_string(&mut out, "a\"b\\c\n\t\x01");
         assert_eq!(r#""a\"b\\c\n\t\u0001""#, out);
+    }
+
+    #[test]
+    fn push_u64_and_json_escaping_cover_boundaries_and_utf8() {
+        for value in [
+            0_u64,
+            1,
+            9,
+            10,
+            11,
+            99,
+            100,
+            999,
+            1000,
+            9999,
+            10_000,
+            123_456_789_012_345,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            let mut out = String::new();
+            push_u64(&mut out, value);
+            assert_eq!(value.to_string(), out);
+        }
+
+        let mut all_controls = String::new();
+        for b in 0_u8..0x20 {
+            all_controls.push(char::from(b));
+        }
+        all_controls.push_str("café\"\\日本語\x08\x0c\r\n\t");
+        let mut escaped = String::new();
+        push_json_string(&mut escaped, &all_controls);
+        assert!(escaped.starts_with(r#""\u0000\u0001"#));
+        assert!(escaped.ends_with(r#"café\"\\日本語\b\f\r\n\t""#));
     }
 
     #[test]
